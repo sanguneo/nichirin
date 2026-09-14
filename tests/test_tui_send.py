@@ -150,9 +150,9 @@ class ComposerTests(ComposerCase):
         original = self.reader.rooms
         reads: list[int] = []
 
-        def counted(*arguments: object, **keywords: object):
+        def counted(limit: int | None = None) -> list:
             reads.append(1)
-            return original(*arguments, **keywords)
+            return original(limit)
 
         self.reader.rooms = counted  # type: ignore[method-assign]
         self.type("안녕")

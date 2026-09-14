@@ -127,6 +127,16 @@ Taken from a live client, not guessed.
 - The composer keeps focus for the whole time a room is open, so no letter is
   a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
   used to do. `test_tui_send.py` pins that a typed `q` does not quit.
+- **Console input comes from `ReadConsoleInputW`, never `msvcrt`.**
+  `kbhit()` is true for key-up, focus, mouse and buffer-resize records while
+  `getwch()` blocks on them, so the loop stalled until the next real key
+  arrived: the screen sat one keystroke behind and backspace looked broken.
+  Key-up and non-key records are dropped, and an astral character is rejoined
+  from the two UTF-16 halves the console delivers it as.
+- **The viewport anchors by a flag resolved at render time.**
+  `ChatState.anchor_top` exists because the top is a distance from the bottom,
+  and neither the body nor the screen height is known when the key is handled.
+  A digest opens at its own first line; a conversation opens at its newest.
 - **Typing must not redraw the conversation.** `_transcript_lines` is cached
   per (width, message count). Rebuilding it on every keystroke measured 71 ms
   per key at the default 400-message window and 142 ms at 800, which is what
