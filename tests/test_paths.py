@@ -99,5 +99,53 @@ class NameTests(unittest.TestCase):
         self.assertEqual(found, sorted(found))
 
 
+class DatabaseDiscoveryTests(unittest.TestCase):
+    """Pinned before the walk was rewritten: same files, same order."""
+
+    def profile(self) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "chat_data" / "deep").mkdir(parents=True)
+        (root / "media").mkdir()
+        for relative in (
+            "TalkUserDB.edb",
+            "chat_data/chatListInfo.edb",
+            "chat_data/chatLogs_1001.edb",
+            "chat_data/deep/nested.EDB",
+            "chat_data/chatLogs_1001.edb-wal",
+            "media/photo.jpg",
+            "appstate.dat",
+            ".edb",
+        ):
+            (root / relative).write_bytes(b"x")
+        return root
+
+    def test_every_database_at_any_depth_is_found(self) -> None:
+        root = self.profile()
+        found = [path.relative_to(root).as_posix() for path in paths.database_paths(root)]
+        self.assertEqual(
+            found,
+            [
+                # Windows path comparison folds case, so the profile-root
+                # database sorts after the chat_data directory.
+                "chat_data/chatListInfo.edb",
+                "chat_data/chatLogs_1001.edb",
+                "chat_data/deep/nested.EDB",
+                "TalkUserDB.edb",
+            ],
+        )
+
+    def test_a_name_that_is_only_the_suffix_is_not_a_database(self) -> None:
+        root = self.profile()
+        self.assertNotIn(".edb", [path.name for path in paths.database_paths(root)])
+
+    def test_the_write_ahead_log_is_not_a_database(self) -> None:
+        root = self.profile()
+        self.assertNotIn(
+            "chatLogs_1001.edb-wal", [path.name for path in paths.database_paths(root)]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
