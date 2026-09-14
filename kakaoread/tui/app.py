@@ -343,9 +343,9 @@ class App:
         chat = self.chat
         assert chat is not None
         room = chat.room
-        right = self.theme.fg("muted", f"{room.kind} · {room.member_count}명")
+        # The room is named in the footer; repeating it here spent a row on
+        # something the reader already knows.
         lines = [
-            self._title_row(room.title, right, width),
             self._hints(
                 [
                     ("enter", "전송"),
@@ -538,8 +538,10 @@ class App:
         assert chat is not None
         room = chat.room
         loaded = f"{len(chat.messages)} loaded"
+        people = f"{room.kind} · {room.member_count}명"
         anchor = [Segment(room.title, self.theme.fg("accent", room.title))]
         middle = [
+            Segment(people, self.theme.fg("muted", people)),
             Segment(loaded, self.theme.fg("muted", loaded)),
             Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
         ]

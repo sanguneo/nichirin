@@ -238,6 +238,23 @@ class ConsoleCaretTests(unittest.TestCase):
         self.assertNotIn(SHOW_CURSOR, painted)
 
 
+class ChatChromeTests(ComposerCase):
+    """The room is named once, in the footer, not twice."""
+
+    def test_the_top_row_does_not_repeat_the_room_name(self) -> None:
+        self.assertNotIn(self.chat.room.title, self.frame()[0])
+
+    def test_the_footer_still_names_the_room(self) -> None:
+        self.assertIn(self.chat.room.title, self.frame()[-1])
+
+    def test_the_member_count_survives_the_lost_title_row(self) -> None:
+        self.assertIn("2명", self.frame()[-1])
+
+    def test_the_reclaimed_row_goes_to_the_conversation(self) -> None:
+        body = [line for line in self.frame()[:-5] if line.strip()]
+        self.assertTrue(any("first" in line for line in body))
+
+
 class PollSchedulingTests(unittest.TestCase):
     """Polling must never sit in front of the person typing."""
 
