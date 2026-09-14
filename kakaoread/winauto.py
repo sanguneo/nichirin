@@ -76,8 +76,20 @@ class RoomListBackend(Protocol):
         """Return the room-list control inside the main window, if it is up."""
         ...
 
+    def main_state(self) -> str:
+        """Report the main window as "visible", "minimized", "hidden" or "missing"."""
+        ...
+
     def show_main_window(self) -> bool:
         """Bring the main window back from the tray. True when it is up."""
+        ...
+
+    def restore_main_window(self, state: str) -> None:
+        """Put the main window back the way it was found."""
+        ...
+
+    def minimize_window(self, handle: int) -> None:
+        """Park a window in the taskbar, where it covers nothing."""
         ...
 
     def scroll_to_top(self, control: int) -> None:
@@ -146,8 +158,13 @@ class RoomOpener:
         """
         wanted = {room, *aliases}
         control = self._backend.room_list()
-        if control is None and self._backend.show_main_window():
-            control = self._backend.room_list()
+        disturbed: Optional[str] = None
+        if control is None:
+            # The main window is in the tray. Note how it was so it can be put
+            # back: the point of opening a room is to not take over the screen.
+            disturbed = self._backend.main_state()
+            if self._backend.show_main_window():
+                control = self._backend.room_list()
         if control is None:
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
@@ -166,9 +183,16 @@ class RoomOpener:
                 if window.title in known:
                     continue
                 if window.title in wanted:
+                    # Parked rather than left in front: a room this opened was
+                    # not asked for by the person looking at the screen.
+                    self._backend.minimize_window(window.handle)
+                    if disturbed is not None:
+                        self._backend.restore_main_window(disturbed)
                     return window
                 # Opened by mistake: put the desktop back as it was.
                 self._backend.close_window(window.handle)
+        if disturbed is not None:
+            self._backend.restore_main_window(disturbed)
         raise KakaoReadError(
             ErrorCode.WINDOW_NOT_FOUND,
             f"{room!r} was not among the first {self._rows} rooms in the list; "
@@ -287,6 +311,8 @@ _VK_RETURN = 0x0D
 _MK_LBUTTON = 0x0001
 _SW_SHOW = 5
 _SW_RESTORE = 9
+_SW_HIDE = 0
+_SW_MINIMIZE = 6
 _WM_MOUSEWHEEL = 0x020A
 _WHEEL_UP = 120
 _WHEEL_NOTCHES = 8
@@ -429,6 +455,32 @@ class Win32Backend:
 
     def close_window(self, handle: int) -> None:
         self._user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
+
+    def _main_window(self) -> Optional[int]:
+        for handle in self._all_top_level():
+            if self._title(handle) == MAIN_WINDOW_TITLE:
+                return handle
+        return None
+
+    def main_state(self) -> str:
+        handle = self._main_window()
+        if handle is None:
+            return "missing"
+        if not self._user32.IsWindowVisible(handle):
+            return "hidden"
+        return "minimized" if self._user32.IsIconic(handle) else "visible"
+
+    def restore_main_window(self, state: str) -> None:
+        handle = self._main_window()
+        if handle is None:
+            return
+        if state == "hidden":
+            self._user32.ShowWindow(handle, _SW_HIDE)
+        elif state == "minimized":
+            self._user32.ShowWindow(handle, _SW_MINIMIZE)
+
+    def minimize_window(self, handle: int) -> None:
+        self._user32.ShowWindow(handle, _SW_MINIMIZE)
 
     def show_main_window(self) -> bool:
         """Bring the main window back, including from the tray.

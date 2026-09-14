@@ -31,6 +31,8 @@ class FakeDesktop:
         self.list_control: int | None = LIST_CONTROL
         self.restored = 0
         self.restorable = True
+        self.main = "visible"
+        self.minimized: list[int] = []
         self.draft = ""
         self.actions: list[str] = []
 
@@ -38,10 +40,21 @@ class FakeDesktop:
     def room_list(self) -> int | None:
         return self.list_control
 
+    def main_state(self) -> str:
+        return self.main
+
     def show_main_window(self) -> bool:
         self.restored += 1
+        self.main = "visible" if self.restorable else "hidden"
         self.list_control = LIST_CONTROL if self.restorable else None
         return self.list_control is not None
+
+    def restore_main_window(self, state: str) -> None:
+        self.main = state
+        self.log.append(f"main:{state}")
+
+    def minimize_window(self, handle: int) -> None:
+        self.minimized.append(handle)
 
     def scroll_to_top(self, control: int) -> None:
         assert control == LIST_CONTROL
@@ -233,6 +246,34 @@ class ScrollTests(unittest.TestCase):
             "받는 방", "안녕", open_if_needed=True
         )
         self.assertEqual(desktop.log, [])
+
+
+class TidinessTests(unittest.TestCase):
+    """What was opened is parked, and what was disturbed is put back."""
+
+    def test_a_room_this_opened_is_minimised(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(desktop.minimized, [window.handle])
+
+    def test_a_room_the_user_already_had_open_is_left_as_it_is(self) -> None:
+        desktop = FakeDesktop(["받는 방"], already_open=["받는 방"])
+        Sender(desktop, running=lambda: True, opener=opener(desktop)).send(
+            "받는 방", "안녕", open_if_needed=True
+        )
+        self.assertEqual(desktop.minimized, [], "a window the user arranged was moved")
+
+    def test_a_main_window_from_the_tray_goes_back_to_the_tray(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.main = "hidden"
+        desktop.list_control = None
+        opener(desktop).open("받는 방")
+        self.assertEqual(desktop.main, "hidden", "the tray icon was left as a window")
+
+    def test_a_main_window_that_was_already_up_is_not_touched(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        opener(desktop).open("받는 방")
+        self.assertNotIn("main:visible", desktop.log)
 
 
 if __name__ == "__main__":

@@ -163,6 +163,16 @@ yourself would;
 sending afterwards does not. The self-chat is out of reach this way, because
 its window is titled with the account's own name rather than `나와의 채팅`.
 
+The room it opens is left minimised, and a main window taken out of the tray
+is put back into it: opening a conversation to send one line should not take
+over the screen. A window you already had open is never moved. Parking a chat
+window minimised is the supported arrangement — sending into it works exactly
+the same, with no focus change and no cursor movement.
+
+연 대화방 창은 최소화된 채로 두고, 트레이에서 꺼낸 메인 창은 다시 트레이로
+돌려놓습니다. 이미 열어두신 창은 건드리지 않습니다. 대화방 창은 **최소화해서
+작업표시줄에 두는 것이 정식 사용법**입니다 — 그 상태로 전송이 그대로 됩니다.
+
 `--open` 은 대화방 창이 닫혀 있을 때 도구가 직접 엽니다. 커서를 움직이지 않고
 목록에 더블클릭 메시지를 부친 뒤, 열린 창의 제목이 정확히 일치할 때만 보냅니다.
 빗나가면 엉뚱한 창이 잠깐 열렸다 닫힐 뿐 메시지는 나가지 않습니다. 창을 여는

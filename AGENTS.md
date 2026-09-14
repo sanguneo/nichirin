@@ -224,6 +224,17 @@ Taken from a live client, not guessed.
   is reset.** A room found at row 0 one minute was missed across all eight
   rows the next, because the scan itself had moved the list. `scroll_to_top`
   wheels it back before **every** row, by posting `WM_MOUSEWHEEL`.
+- **The desktop is put back the way it was found.** A room this opened is
+  minimised, because nobody asked for it to be in front; a room the user
+  already had open is never moved. A main window taken out of the tray goes
+  back to the tray. Verified live from a cold tray state: the room ended
+  minimised, the main window ended hidden, in 5.4 s.
+- **A minimised window sends.** Proven end to end against the live client:
+  the window stayed `iconic` through the send, the cursor did not move, the
+  foreground did not change, and the message read back from the log. A
+  hidden window also accepts text (written and read back), but `chat_windows`
+  deliberately sees only visible ones, so hiding is not a supported parking
+  spot — minimising is.
 - **Scanning rows opens real rooms, and opening a room marks it read.** That
   is the true cost of a miss, not the flicker. Keep `SEARCHED_ROWS` small and
   prefer rooms near the top of the list.
