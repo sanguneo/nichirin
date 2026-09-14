@@ -12,7 +12,7 @@ import sys
 import unittest
 
 from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, ChatState
+from kakaoread.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
 from kakaoread.tui.console import HIDE_CURSOR, SHOW_CURSOR, Console, Key
 from kakaoread.tui.layout import display_width, strip_ansi
 from kakaoread.tui.theme import Theme
@@ -272,6 +272,36 @@ class PollSchedulingTests(unittest.TestCase):
 
     def test_an_expensive_poll_backs_off_behind_its_own_cost(self) -> None:
         self.assertAlmostEqual(_next_poll_at(100.0, 0.94), 100.94)
+
+
+class ScrollWindowTests(unittest.TestCase):
+    """The viewport must survive being scrolled past the top."""
+
+    def test_scrolling_to_the_top_shows_a_full_screen(self) -> None:
+        lines = [str(index) for index in range(100)]
+        self.assertEqual(_window(lines, 10_000_000, 20), lines[:20])
+
+    def test_an_ordinary_offset_still_counts_from_the_bottom(self) -> None:
+        lines = [str(index) for index in range(100)]
+        self.assertEqual(_window(lines, 5, 20), lines[75:95])
+
+    def test_a_body_that_already_fits_still_scrolls_off_the_bottom(self) -> None:
+        # This is what keeps arrivals below the fold in a quiet room.
+        lines = ["a", "b", "c"]
+        self.assertEqual(_window(lines, 1, 20), ["a", "b"])
+
+
+class DigestAnchorTests(ComposerCase):
+    def test_a_digest_opens_at_its_own_beginning(self) -> None:
+        self.app._run_command("/sum 30m")
+        body = "\n".join(self.frame())
+        self.assertIn("[digest]", body, "the digest opened past its own header")
+
+
+class FooterHonestyTests(ComposerCase):
+    def test_the_room_list_no_longer_calls_itself_read_only(self) -> None:
+        self.app.chat = None
+        self.assertNotIn("read-only", self.frame()[-1])
 
 
 if __name__ == "__main__":

@@ -67,6 +67,8 @@ class ChatState:
     """Follows this room so arrivals show up without reopening it."""
     unseen: int = 0
     """Arrivals that landed below the viewport while the reader was scrolled up."""
+    anchor_top: bool = True
+    """Show the body from its first line once, when its height is known."""
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
 
@@ -130,7 +132,8 @@ class App:
             self.palette.hue(message.sender)
         watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)
         watcher.prime()
-        self.chat = ChatState(room=room, messages=messages, watcher=watcher)
+        # A conversation opens at its newest line, not at its oldest.
+        self.chat = ChatState(room=room, messages=messages, watcher=watcher, anchor_top=False)
 
     def refresh(self, width: int) -> bool:
         """Pick up anything new. Returns whether the screen needs redrawing."""
@@ -366,6 +369,11 @@ class App:
             if chat.slices
             else self._transcript_lines(width)
         )
+        if chat.anchor_top:
+            # Resolved here because the top is a distance from the bottom, and
+            # neither the body nor the screen height is known any earlier.
+            chat.offset = max(0, len(body) - body_height)
+            chat.anchor_top = False
         window = _window(body, chat.offset, body_height)
         lines.extend(window)
         while len(lines) < height - len(composer) - 2:
@@ -529,7 +537,7 @@ class App:
             Segment(f"{len(self.rooms)} rooms", self.theme.fg("muted", f"{len(self.rooms)} rooms")),
             Segment(f"{len(ring)} keys", self.theme.fg("dim", f"{len(ring)} keys")),
         ]
-        tail = Segment("read-only", self.theme.fg("dim", "read-only"))
+        tail = Segment("read+send", self.theme.fg("dim", "read+send"))
         right = Segment(f"v{__version__}", self.theme.fg("muted", f"v{__version__}"))
         return self._compose_footer(anchor, middle, tail, right, width)
 
@@ -664,7 +672,7 @@ class App:
         elif kind == Key.PAGE_DOWN:
             chat.offset = max(0, chat.offset - 10)
         elif kind == Key.HOME:
-            chat.offset = 10_000_000
+            chat.anchor_top = True
         elif kind == Key.END:
             chat.offset = 0
         if chat.offset == 0:
@@ -752,7 +760,8 @@ class App:
                 return
             chat.slices = slices
             chat.slice_label = f"{arguments[0]} 구간 · {len(slices)}개 · 최근 12h 이내"
-            chat.offset = 0
+            # A digest is read from its beginning, unlike a conversation.
+            chat.anchor_top = True
             chat.notice = ""
         elif name in ("older", "o"):
             chat.notice = ""
@@ -843,11 +852,20 @@ def _clamp_scroll(selected: int, scroll: int, height: int, total: int) -> int:
 
 
 def _window(lines: list[str], offset: int, height: int) -> list[str]:
-    """Take *height* lines ending *offset* lines above the bottom."""
+    """Take *height* lines ending *offset* lines above the bottom.
+
+    When the body is taller than the screen the offset stops where the first
+    line reaches the top; without that stop, the home key left one line on
+    screen instead of the opening screenful. A body that already fits keeps
+    the older behaviour, where scrolling pushes it off the bottom — that is
+    what holds arrivals below the fold in a quiet room.
+    """
     if not lines:
         return []
+    scrollable = len(lines) - height
+    if scrollable > 0:
+        offset = min(offset, scrollable)
     end = max(1, len(lines) - max(0, offset))
-    end = min(end, len(lines))
     start = max(0, end - height)
     return lines[start:end]
 
