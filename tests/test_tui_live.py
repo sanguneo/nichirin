@@ -53,10 +53,11 @@ class LiveTests(unittest.TestCase):
 
         The status line and footer are *expected* to change when messages
         arrive — that is how the reader learns something is waiting — so a
-        viewport-stability assertion must not include them.
+        viewport-stability assertion must not include them. The composer sits
+        in the same excluded tail: what is being typed is not the transcript.
         """
         frame = self.app.render(WIDTH, 24)
-        return "\n".join(strip_ansi(line) for line in frame[3:-2])
+        return "\n".join(strip_ansi(line) for line in frame[3:-5])
 
 
 class ArrivalTests(LiveTests):

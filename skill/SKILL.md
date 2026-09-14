@@ -134,7 +134,7 @@ only when explicitly needed; otherwise they are omitted.
 
 - **Text sending only.** Requires an already-open, uniquely titled chat window
   and the current Korean RichEdit input. No attachments, login automation or
-  history download. The TUI browses conversations and friends but does not compose.
+  history download. The TUI composes and sends through that same input.
 - **Local only.** Only what this computer has cached is visible, and only for
   rooms KakaoTalk has opened. This is not the server's history.
 - **Attachments.** Photos, videos, files, and stickers are not rendered. The

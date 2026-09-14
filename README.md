@@ -84,12 +84,14 @@ so unread counts stay current without a keypress.
 | `enter` | 대화방 열기 |
 | `f` | 대화방 목록 ↔ 친구 목록; 친구에서 `enter`는 기존 1:1 대화 열기 |
 | `pgup` `pgdn` | 페이지 단위 스크롤 |
-| `o` | 이전 기록 400개 더 불러오기 |
+| 글자 입력 | 메시지 작성. 대화방에서 글자는 단축키가 아니라 입력입니다 |
+| `enter` | 전송. `/`로 시작하면 명령으로 실행 |
+| `/older` | 이전 기록 400개 더 불러오기 |
 | `end` | 맨 아래로 (새 메시지 표시 해제) |
 | `/sum 30m`, `/sum 2h` | 구간별 다이제스트 (최대 12h) |
-| `e` | 다이제스트 원문을 홈 디렉터리로 내보내기 |
-| `esc` | 뒤로 / 다이제스트 닫기 |
-| `q` | 종료 |
+| `/export` | 다이제스트 원문을 홈 디렉터리로 내보내기 |
+| `esc` | 초안 지우기 → 다이제스트 닫기 → 뒤로 |
+| `q` | 목록에서 종료. 대화방에서는 `/quit` 또는 ctrl+c |
 
 `/sum` is **extractive, not generative**: with no model in the process, a slice
 reports how busy it was, who carried it, the words it was actually about, and
@@ -99,6 +101,14 @@ so a model can summarise it properly when one is available.
 Speakers are told apart by tint rather than by colour — one base grey with a
 slight per-speaker shift at near-constant lightness, so a long transcript stays
 readable instead of turning into a palette.
+
+An open room carries a message box at the bottom, and it keeps focus the whole
+time: a letter belongs to the message being written, not to a shortcut. `enter`
+hands the text to the same client input the `send` command drives, so the
+sent line appears the way anyone else's does — once the client writes it to the
+log — rather than being echoed optimistically. A refusal (no open chat window,
+a draft already in the box, two rooms sharing a title) is reported on the status
+line and the room stays open.
 
 The browser needs a real interactive console; through a pipe it refuses with
 `INVALID_REQUEST` rather than drawing garbage.

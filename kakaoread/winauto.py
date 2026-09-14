@@ -45,6 +45,13 @@ class SendResult(TypedDict):
     length: int
 
 
+class MessageSender(Protocol):
+    """The one call an interface needs; :class:`Sender` satisfies it."""
+
+    def send(self, room: str, text: str, dry_run: bool = False) -> SendResult:
+        ...
+
+
 class WindowBackend(Protocol):
     """Everything the sender needs from the windowing system."""
 

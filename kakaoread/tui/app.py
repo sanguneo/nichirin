@@ -15,10 +15,10 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Sequence
+from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
-from ..errors import KakaoReadError
+from ..errors import ErrorCode, KakaoReadError
 from ..model import Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
@@ -27,6 +27,7 @@ from .layout import (
     ELLIPSIS,
     Segment,
     display_width,
+    elide_head,
     pad_to_width,
     plan_footer,
     truncate_to_width,
@@ -34,6 +35,9 @@ from .layout import (
 )
 from ..watch import Watcher
 from .theme import SpeakerPalette, Theme
+
+if TYPE_CHECKING:
+    from ..winauto import MessageSender
 
 KST = timezone(timedelta(hours=9))
 HISTORY_WINDOW = 400
@@ -52,8 +56,8 @@ class ChatState:
     messages: list[Message] = field(default_factory=list)
     offset: int = 0
     """Lines scrolled up from the newest message."""
-    command: str = ""
-    editing: bool = False
+    draft: str = ""
+    """What the composer holds; a leading slash makes it a command."""
     slices: list[digest.Slice] = field(default_factory=list)
     slice_label: str = ""
     notice: str = ""
@@ -66,9 +70,16 @@ class ChatState:
 class App:
     """Owns the screen state and turns keystrokes into it."""
 
-    def __init__(self, reader: Reader, theme: Optional[Theme] = None) -> None:
+    def __init__(
+        self,
+        reader: Reader,
+        theme: Optional[Theme] = None,
+        sender: Optional["MessageSender"] = None,
+    ) -> None:
         self.reader = reader
         self.theme = theme if theme is not None else Theme()
+        self._sender = sender
+        """Built on the first send so browsing never touches the desktop."""
         self.rooms: list[Room] = []
         self.selected = 0
         self.scroll = 0
@@ -324,10 +335,10 @@ class App:
             self._title_row(room.title, right, width),
             self._hints(
                 [
+                    ("enter", "전송"),
                     ("↑↓", "scroll"),
-                    ("pgup/pgdn", "page"),
-                    ("o", "older"),
-                    ("/", "command"),
+                    ("/sum 30m", "요약"),
+                    ("/older", "이전"),
                     ("esc", "back"),
                 ],
                 width,
@@ -335,7 +346,8 @@ class App:
             "",
         ]
 
-        body_height = max(1, height - len(lines) - 2)
+        composer = self._composer_lines(width)
+        body_height = max(1, height - len(lines) - len(composer) - 2)
         body = (
             self._digest_lines(width)
             if chat.slices
@@ -343,9 +355,10 @@ class App:
         )
         window = _window(body, chat.offset, body_height)
         lines.extend(window)
-        while len(lines) < height - 2:
+        while len(lines) < height - len(composer) - 2:
             lines.append("")
 
+        lines.extend(composer)
         lines.append(self._status_line(width))
         lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
@@ -446,11 +459,30 @@ class App:
         rows.append(boxed(""))
         return rows
 
+    def _composer_lines(self, width: int) -> list[str]:
+        """Draw the message box, shaped like OmO's prompt.
+
+        It keeps focus the whole time a room is open, because this is a chat
+        window: a letter belongs to the message being written, not to a
+        shortcut. What the letter shortcuts used to do is a slash command now.
+        """
+        chat = self.chat
+        assert chat is not None
+        inner = max(8, width - 2)
+        edge = self.theme.fg("borderMuted", "│")
+        top = self.theme.fg("borderMuted", "╭" + "─" * inner + "╮")
+        bottom = self.theme.fg("borderMuted", "╰" + "─" * inner + "╯")
+
+        # The tail is what is being typed, so a long draft loses its head.
+        written = elide_head(chat.draft, max(1, inner - 5))
+        body = " " + self.theme.fg("accent", "❯ ") + written + self.theme.fg("accent", "▌")
+        if not chat.draft:
+            body += self.theme.fg("dim", " 메시지 입력 후 enter")
+        middle = edge + pad_to_width(truncate_to_width(body, inner), inner) + edge
+        return [top, middle, bottom]
+
     def _status_line(self, width: int) -> str:
         chat = self.chat
-        if chat is not None and chat.editing:
-            prompt = self.theme.fg("accent", "› ") + chat.command
-            return truncate_to_width(prompt + self.theme.fg("dim", "▏"), width)
         if chat is not None and chat.unseen:
             arrivals = self.theme.fg("accent", f"↓ 새 메시지 {chat.unseen}개")
             hint = self.theme.fg("muted", "  (end 키로 맨 아래)")
@@ -573,28 +605,22 @@ class App:
         chat = self.chat
         assert chat is not None
 
-        if chat.editing:
-            self._handle_command_key(kind, text)
-            return
-
         if kind == Key.INTERRUPT:
             self.running = False
+        elif kind == "char":
+            chat.draft += text
+        elif kind == Key.BACKSPACE:
+            chat.draft = chat.draft[:-1]
+        elif kind == Key.ENTER:
+            self._submit(chat)
         elif kind == Key.ESCAPE:
-            if chat.slices:
+            if chat.draft:
+                chat.draft = ""
+            elif chat.slices:
                 chat.slices = []
                 chat.offset = 0
             else:
                 self.chat = None
-        elif kind == "char" and text in ("q", "Q"):
-            self.running = False
-        elif kind == "char" and text == "/":
-            chat.editing = True
-            chat.command = "/"
-        elif kind == "char" and text in ("o", "O"):
-            chat.notice = ""
-            self.load_older()
-        elif kind == "char" and text in ("e", "E") and chat.slices:
-            self._export(chat)
         elif kind == Key.UP:
             chat.offset += 1
         elif kind == Key.DOWN:
@@ -610,23 +636,52 @@ class App:
         if chat.offset == 0:
             chat.unseen = 0
 
-    def _handle_command_key(self, kind: str, text: str) -> None:
+    def _submit(self, chat: ChatState) -> None:
+        """Send what is written, or run it when it starts with a slash."""
+        written = chat.draft.strip()
+        chat.draft = ""
+        if not written:
+            return
+        if written.startswith("/"):
+            self._run_command(written)
+            return
+        self.send_message(written)
+
+    def _require_sender(self) -> "MessageSender":
+        if self._sender is None:
+            from ..winauto import make_sender
+
+            self._sender = make_sender()
+        return self._sender
+
+    def _refuse_ambiguous(self, room: Room) -> None:
+        """Refuse when a window title cannot identify one catalogued room."""
+        same = [other for other in self.reader.rooms() if other.title == room.title]
+        if len(same) != 1:
+            raise KakaoReadError(
+                ErrorCode.AMBIGUOUS_CHAT,
+                f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다",
+            )
+
+    def send_message(self, text: str) -> None:
+        """Hand *text* to this room's own input box in the running client.
+
+        Nothing is echoed here. The message appears the way anyone else's
+        does, once the watcher sees the client write it to the log, so the
+        screen never shows a line the client did not actually send.
+        """
         chat = self.chat
         assert chat is not None
-        if kind == Key.ESCAPE:
-            chat.editing = False
-            chat.command = ""
-        elif kind == Key.BACKSPACE:
-            chat.command = chat.command[:-1]
-            if not chat.command:
-                chat.editing = False
-        elif kind == Key.ENTER:
-            command = chat.command
-            chat.editing = False
-            chat.command = ""
-            self._run_command(command)
-        elif kind == "char":
-            chat.command += text
+        try:
+            self._refuse_ambiguous(chat.room)
+            self._require_sender().send(chat.room.title, text)
+        except KakaoReadError as error:
+            chat.notice = f"전송 실패: {error.message}"
+            return
+        except OSError as error:
+            chat.notice = f"전송 실패: {error}"
+            return
+        chat.notice = "보냈습니다"
 
     def _run_command(self, command: str) -> None:
         chat = self.chat
@@ -658,12 +713,23 @@ class App:
             chat.slice_label = f"{arguments[0]} 구간 · {len(slices)}개 · 최근 12h 이내"
             chat.offset = 0
             chat.notice = ""
+        elif name in ("older", "o"):
+            chat.notice = ""
+            self.load_older()
+        elif name in ("export", "e"):
+            if not chat.slices:
+                chat.notice = "내보낼 다이제스트가 없습니다 (/sum 30m 먼저)"
+                return
+            self._export(chat)
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name == "back":
             self.chat = None
         else:
-            chat.notice = f"알 수 없는 명령: /{name}  (사용 가능: /sum <30m|2h>)"
+            chat.notice = (
+                f"알 수 없는 명령: /{name}  "
+                "(사용 가능: /sum 30m · /older · /export · /back · /quit)"
+            )
 
     def _export(self, chat: ChatState) -> None:
         """Write the sliced text beside the user's other files, never into the repo."""

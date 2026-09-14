@@ -124,6 +124,12 @@ Taken from a live client, not guessed.
   was pressed.
 - Refreshing reuses `watch.Watcher`, so an unchanged room costs one stat
   (0.3 ms measured) and is never decrypted.
+- The composer keeps focus for the whole time a room is open, so no letter is
+  a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
+  used to do. `test_tui_send.py` pins that a typed `q` does not quit.
+- **A sent message is never echoed into the transcript.** It arrives through
+  the watcher like any other message, so the screen cannot show a line the
+  client did not actually send.
 - **Arrivals must not steal the viewport.** When `chat.offset` is zero the view
   follows the newest line; when the reader has scrolled up, the offset is
   advanced by exactly the number of lines appended so the same text stays put,
@@ -183,5 +189,5 @@ Taken from a live client, not guessed.
 ## Deliberately absent
 
 Login automation, protocol reimplementation, history harvesting, attachment
-sending, automatic chat-window opening, TUI composition, and macOS support.
+sending, automatic chat-window opening, and macOS support.
 The supported write operation is text sent through an existing client window.
