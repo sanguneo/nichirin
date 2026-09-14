@@ -149,7 +149,22 @@ disambiguate identical window titles. Give the target a unique title first.
 ```powershell
 python -m kakaoread send --room "Sample Room" --dry-run "Hello"
 python -m kakaoread send --room "Sample Room" "Hello"
+python -m kakaoread send --room "Sample Room" --open "Hello"   # open it first
 ```
+
+`--open` lets the tool open the conversation itself when its window is closed.
+It posts a double-click into KakaoTalk's room list without moving the cursor,
+reads the title of whatever window appears, and closes anything that is not
+the room asked for — rows can only be addressed by coordinate, so a miss
+costs a window that flickers open and shut, never a message in the wrong
+place. Opening does take focus, exactly as clicking the room yourself would;
+sending afterwards does not. The self-chat is out of reach this way, because
+its window is titled with the account's own name rather than `나와의 채팅`.
+
+`--open` 은 대화방 창이 닫혀 있을 때 도구가 직접 엽니다. 커서를 움직이지 않고
+목록에 더블클릭 메시지를 부친 뒤, 열린 창의 제목이 정확히 일치할 때만 보냅니다.
+빗나가면 엉뚱한 창이 잠깐 열렸다 닫힐 뿐 메시지는 나가지 않습니다. 창을 여는
+순간에는 포커스를 가져갑니다 — 직접 클릭할 때와 같습니다.
 
 `send` supports text, including Hangul, emoji and newlines. It does not open
 windows or compose messages in the TUI. Existing drafts are refused rather

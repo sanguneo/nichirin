@@ -206,6 +206,23 @@ Taken from a live client, not guessed.
   window. Duplicate catalog titles remain ambiguous even with `--room-id`.
 - The Korean client's empty `RICHEDIT50W` returns `메시지 입력`, not `""`.
   This literal is reserved as the empty hint. Other drafts must be preserved.
+- **A room can be opened without the mouse.** The room list is
+  `ChatRoomListCtrl` inside the main window, an `EVA_VH_ListControl_Dblclk` that
+  handles double-click in its own WndProc, so posting
+  `WM_LBUTTONDOWN/UP/LBUTTONDBLCLK/UP` at a row opens that room. Posted mouse
+  messages work here even though posted Enter does not reach the send path.
+  The cursor is provably untouched: measured identical before, immediately
+  after, and 0.4 s later.
+- **Rows can only be addressed by coordinate, so a miss is ordinary.** The
+  list is owner-drawn — rows are neither child windows nor UIA elements.
+  Geometry measured at 100% scaling: origin (66,116) inside the main window,
+  pitch 68 px, first row centre 29 px, x 134. Pinned rooms float to the top,
+  so the catalog order is **not** the list order. `RoomOpener` therefore tries
+  rows, reads the title of whatever window appears, closes anything that is
+  not the target, and only a title that matches exactly is sent to.
+- **The window title is the UI's, not the catalog's.** They differ for the
+  self-chat, whose catalog title is `나와의 채팅` while its window carries the
+  account's own name, so `--open` cannot find it.
 - **Do not use WM_SETTEXT.** It leaves the client's send-enabled state wrong.
   EM_SETSEL + EM_REPLACESEL fires the ordinary change path. Post Enter with
   scan-code and key-transition bits; check both PostMessage return values.

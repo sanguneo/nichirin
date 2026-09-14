@@ -20,14 +20,27 @@ guardrail logic is testable without a live desktop.
 from __future__ import annotations
 
 import ctypes
+import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Protocol, TypedDict
+from typing import Callable, Iterable, Optional, Protocol, TypedDict
 
 from .errors import ErrorCode, KakaoReadError
 
 MAIN_WINDOW_TITLE = "카카오톡"
 INPUT_CLASS = "RICHEDIT50W"
 _INPUT_HINT = "메시지 입력"
+ROOM_LIST_PREFIX = "ChatRoomListCtrl"
+
+# The room list is owner-drawn: its rows are neither child windows nor UIA
+# elements, so a row can only be addressed by coordinate. These were measured
+# against a live client at 100% scaling.
+ROW_PITCH = 68
+FIRST_ROW_CENTER = 29
+ROW_X = 134
+SEARCHED_ROWS = 8
+"""How far down the list a room is looked for before giving up."""
+SETTLE_SECONDS = 1.2
+"""How long a posted double-click is given to produce its window."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +62,26 @@ class MessageSender(Protocol):
     """The one call an interface needs; :class:`Sender` satisfies it."""
 
     def send(self, room: str, text: str, dry_run: bool = False) -> SendResult:
+        ...
+
+
+class RoomListBackend(Protocol):
+    """What opening a room needs: the list, a row click, and a way to undo it."""
+
+    def chat_windows(self) -> list[ChatWindow]:
+        """Return KakaoTalk's open chat windows (excluding the main window)."""
+        ...
+
+    def room_list(self) -> Optional[int]:
+        """Return the room-list control inside the main window, if it is up."""
+        ...
+
+    def click_row(self, control: int, row: int) -> None:
+        """Post a double-click at a row, without moving the cursor."""
+        ...
+
+    def close_window(self, handle: int) -> None:
+        """Close a chat window that was opened by mistake."""
         ...
 
 
@@ -76,14 +109,66 @@ class WindowBackend(Protocol):
         ...
 
 
+class RoomOpener:
+    """Open a room by posting a double-click at a row, and verify what opened.
+
+    Nothing about a row identifies the room it holds, so this cannot aim: it
+    tries rows and reads the title of whatever window appears. A window that
+    is not the one asked for is closed again, which is what makes a miss cost
+    a flicker instead of a message in the wrong conversation.
+    """
+
+    def __init__(
+        self,
+        backend: "RoomListBackend",
+        settle: Callable[[], None],
+        rows: int = SEARCHED_ROWS,
+    ) -> None:
+        self._backend = backend
+        self._settle = settle
+        self._rows = rows
+
+    def open(self, room: str) -> ChatWindow:
+        control = self._backend.room_list()
+        if control is None:
+            raise KakaoReadError(
+                ErrorCode.WINDOW_NOT_FOUND,
+                "KakaoTalk's room list is not on screen, so no room can be opened "
+                "from here; restore the main window and try again",
+            )
+
+        known = {window.title for window in self._backend.chat_windows()}
+        for row in range(self._rows):
+            self._backend.click_row(control, row)
+            self._settle()
+            for window in self._backend.chat_windows():
+                if window.title in known:
+                    continue
+                if window.title == room:
+                    return window
+                # Opened by mistake: put the desktop back as it was.
+                self._backend.close_window(window.handle)
+        raise KakaoReadError(
+            ErrorCode.WINDOW_NOT_FOUND,
+            f"{room!r} was not among the first {self._rows} rooms in the list; "
+            "scroll it into view or open it once by hand",
+        )
+
+
 class Sender:
     """Resolve a room's chat window and hand a message to its input."""
 
-    def __init__(self, backend: WindowBackend, running: Callable[[], bool]) -> None:
+    def __init__(
+        self,
+        backend: WindowBackend,
+        running: Callable[[], bool],
+        opener: Optional[RoomOpener] = None,
+    ) -> None:
         self._backend = backend
         self._running = running
+        self._opener = opener
 
-    def resolve(self, room: str) -> ChatWindow:
+    def resolve(self, room: str, open_if_needed: bool = False) -> ChatWindow:
         """Find the one open chat window for *room*, refusing to guess.
 
         The caller resolves catalog substrings first. A longer window title
@@ -101,6 +186,8 @@ class Sender:
         matches = [window for window in windows if window.title.casefold() == needle]
 
         if not matches:
+            if open_if_needed and self._opener is not None:
+                return self._opener.open(room)
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
@@ -114,7 +201,13 @@ class Sender:
             )
         return matches[0]
 
-    def send(self, room: str, text: str, dry_run: bool = False) -> SendResult:
+    def send(
+        self,
+        room: str,
+        text: str,
+        dry_run: bool = False,
+        open_if_needed: bool = False,
+    ) -> SendResult:
         """Type *text* into *room*'s window and send it, or preview when dry.
 
         The message is validated and the window resolved before anything is
@@ -125,7 +218,7 @@ class Sender:
         if "\x00" in text:
             raise KakaoReadError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
-        window = self.resolve(room)
+        window = self.resolve(room, open_if_needed=open_if_needed)
         control = self._backend.input_handle(window.handle)
         if control is None:
             raise KakaoReadError(
@@ -157,9 +250,14 @@ class Sender:
 
 # -- Win32 backend -----------------------------------------------------------
 
+_WM_CLOSE = 0x0010
 _WM_KEYDOWN = 0x0100
 _WM_KEYUP = 0x0101
+_WM_LBUTTONDOWN = 0x0201
+_WM_LBUTTONUP = 0x0202
+_WM_LBUTTONDBLCLK = 0x0203
 _VK_RETURN = 0x0D
+_MK_LBUTTON = 0x0001
 
 
 class Win32Backend:
@@ -219,21 +317,57 @@ class Win32Backend:
         self._user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
         return int(pid.value)
 
-    def chat_windows(self) -> list[ChatWindow]:
+    def _top_level(self) -> list[ChatWindow]:
+        """Every visible titled window this client owns, main window included."""
         found: list[ChatWindow] = []
 
         def visit(handle: int, _param: int) -> bool:
-            if (
-                self._pid_of(handle) == self._pid
-                and self._user32.IsWindowVisible(handle)
-            ):
+            if self._pid_of(handle) == self._pid and self._user32.IsWindowVisible(handle):
                 title = self._title(handle)
-                if title and title != MAIN_WINDOW_TITLE:
+                if title:
                     found.append(ChatWindow(handle=int(handle), title=title))
             return True
 
         self._user32.EnumWindows(self._proc(visit), 0)
         return found
+
+    def chat_windows(self) -> list[ChatWindow]:
+        return [
+            window for window in self._top_level() if window.title != MAIN_WINDOW_TITLE
+        ]
+
+    def room_list(self) -> Optional[int]:
+        """Return the room-list control inside the main window."""
+        found: list[int] = []
+
+        def visit(handle: int, _param: int) -> bool:
+            if self._title(handle).startswith(ROOM_LIST_PREFIX):
+                found.append(int(handle))
+                return False
+            return True
+
+        for window in self._top_level():
+            if window.title != MAIN_WINDOW_TITLE:
+                continue
+            self._user32.EnumChildWindows(window.handle, self._proc(visit), 0)
+            if found:
+                return found[0]
+        return None
+
+    def click_row(self, control: int, row: int) -> None:
+        """Post a double-click at a row. The cursor is never moved or read."""
+        position = ((FIRST_ROW_CENTER + row * ROW_PITCH) << 16) | ROW_X
+        for message, button in (
+            (_WM_LBUTTONDOWN, _MK_LBUTTON),
+            (_WM_LBUTTONUP, 0),
+            (_WM_LBUTTONDBLCLK, _MK_LBUTTON),
+            (_WM_LBUTTONUP, 0),
+        ):
+            if not self._user32.PostMessageW(control, message, button, position):
+                raise OSError(f"PostMessage(row {row}) failed: {ctypes.get_last_error()}")
+
+    def close_window(self, handle: int) -> None:
+        self._user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
 
     def input_handle(self, window: int) -> Optional[int]:
         result: list[int] = []
@@ -286,4 +420,6 @@ def make_sender() -> Sender:
             ErrorCode.KAKAO_NOT_RUNNING,
             "KakaoTalk is not running; start it and open the conversation first",
         )
-    return Sender(Win32Backend(pid), running=lambda: find_pid() == pid)
+    backend = Win32Backend(pid)
+    opener = RoomOpener(backend, settle=lambda: time.sleep(SETTLE_SECONDS))
+    return Sender(backend, running=lambda: find_pid() == pid, opener=opener)

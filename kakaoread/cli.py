@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_room_selector(send, required=True)
     send.add_argument("text", help="Message text (quote whitespace and newlines)")
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
+    send.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_room",
+        help="Open the room from the list first when its window is closed",
+    )
 
     search = commands.add_parser("search", help="Search readable conversations")
     search.add_argument("keyword")
@@ -235,7 +241,12 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             candidates=[r.as_json() for r in duplicates],
         )
     try:
-        result = make_sender().send(room.title, arguments.text, dry_run=arguments.dry_run)
+        result = make_sender().send(
+            room.title,
+            arguments.text,
+            dry_run=arguments.dry_run,
+            open_if_needed=arguments.open_room,
+        )
     except OSError as error:
         raise KakaoReadError(ErrorCode.SEND_FAILED, str(error)) from error
     _emit(success({**result, "roomId": str(room.id)}))

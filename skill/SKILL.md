@@ -104,6 +104,7 @@ the room in the local catalog, then requires an exact window-title match.
 ```powershell
 python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --dry-run "Approved text"
 python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" "Approved text"
+python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --open "Approved text"
 ```
 
 - Confirm recipient and content with the user before sending to others. Existing
@@ -114,7 +115,10 @@ python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" "Approved te
 - `submitted: true` means Enter was queued, not delivered. Read `context` or
   `messages` to find a new matching `fromMe` record before claiming success.
   Never automatically retry an uncertain send.
-- `WINDOW_NOT_FOUND`: ask the user to pop out the conversation.
+- `WINDOW_NOT_FOUND`: the room's window is closed. Retry once with `--open`,
+  which opens it from the room list without moving the cursor and refuses
+  unless the window that appears carries exactly that title; if it still
+  fails, ask the user to open the conversation.
   `INPUT_NOT_FOUND`: the expected input control is absent.
   `SEND_FAILED`: native input/submission failed; inspect before retrying.
 - `AMBIGUOUS_CHAT`: show candidates. If two rooms share the same title, ask
