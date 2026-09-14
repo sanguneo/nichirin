@@ -132,6 +132,14 @@ Taken from a live client, not guessed.
   per key at the default 400-message window and 142 ms at 800, which is what
   made input stutter; cached, a keystroke costs 0.17 ms. Anything that changes
   a loaded message must change that key or the screen will lie.
+- **A send must not re-read the catalog.** `reader.rooms()` measured 3.0 s
+  when the snapshot had gone stale, and sending a message is exactly what
+  makes it stale, so the duplicate-title census comes from the room list the
+  screen already loaded rather than from a fresh read.
+- **Polling yields to typing.** A poll that finds something re-decrypts the
+  room's whole log — 0.62 s and 0.94 s measured on two live rooms — and this
+  loop is single-threaded, so `_poll_due` defers while keys are still arriving
+  and `_next_poll_at` waits behind an expensive room instead of in front of it.
 - **The caret belongs in the composer.** A Korean IME draws half-typed Hangul
   at the terminal caret, and a finished frame leaves the caret after the
   footer, so composition appeared beside the version string. `Console.draw`

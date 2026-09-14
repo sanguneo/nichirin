@@ -12,7 +12,7 @@ import sys
 import unittest
 
 from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.tui.app import App, ChatState
+from kakaoread.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, ChatState
 from kakaoread.tui.console import HIDE_CURSOR, SHOW_CURSOR, Console, Key
 from kakaoread.tui.layout import display_width, strip_ansi
 from kakaoread.tui.theme import Theme
@@ -144,10 +144,25 @@ class ComposerTests(ComposerCase):
         self.app.handle(Key.ENTER, "")
         self.assertIn("PostMessage failed", self.chat.notice)
 
+    def test_sending_never_re_reads_the_catalog(self) -> None:
+        # Re-reading it cost up to 3.0 s per send once the snapshot was stale,
+        # and sending is exactly what makes it stale.
+        original = self.reader.rooms
+        reads: list[int] = []
+
+        def counted(*arguments: object, **keywords: object):
+            reads.append(1)
+            return original(*arguments, **keywords)
+
+        self.reader.rooms = counted  # type: ignore[method-assign]
+        self.type("안녕")
+        self.app.handle(Key.ENTER, "")
+
+        self.assertEqual(reads, [], "a send decrypted the catalog again")
+        self.assertEqual(len(self.sender.sent), 1)
+
     def test_two_rooms_sharing_a_title_refuse_to_send(self) -> None:
-        room = self.chat.room
-        twin = [room, room]
-        self.reader.rooms = lambda limit=None: twin  # type: ignore[method-assign]
+        self.app.titles = [self.chat.room.title, self.chat.room.title]
         self.type("안녕")
         self.app.handle(Key.ENTER, "")
         self.assertEqual(self.sender.sent, [])
@@ -221,6 +236,25 @@ class ConsoleCaretTests(unittest.TestCase):
         painted = self.paint(None)
         self.assertIn(HIDE_CURSOR, painted)
         self.assertNotIn(SHOW_CURSOR, painted)
+
+
+class PollSchedulingTests(unittest.TestCase):
+    """Polling must never sit in front of the person typing."""
+
+    def test_a_recent_keystroke_defers_the_poll(self) -> None:
+        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=9.9))
+
+    def test_a_pause_lets_the_poll_run(self) -> None:
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0))
+
+    def test_a_poll_that_is_not_due_yet_waits(self) -> None:
+        self.assertFalse(_poll_due(now=10.0, due_at=11.0, last_key_at=0.0))
+
+    def test_a_cheap_poll_keeps_the_ordinary_interval(self) -> None:
+        self.assertAlmostEqual(_next_poll_at(100.0, 0.0003), 100.0 + REFRESH_SECONDS)
+
+    def test_an_expensive_poll_backs_off_behind_its_own_cost(self) -> None:
+        self.assertAlmostEqual(_next_poll_at(100.0, 0.94), 100.94)
 
 
 if __name__ == "__main__":

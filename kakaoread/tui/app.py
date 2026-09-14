@@ -44,8 +44,10 @@ HISTORY_WINDOW = 400
 LOAD_MORE_STEP = 400
 KEY_WAIT_SECONDS = 0.12
 """How long a frame waits for input before checking for new messages."""
-REFRESH_SECONDS = 0.6
+REFRESH_SECONDS = 0.35
 """How often to look for arrivals. A poll that finds nothing costs one stat."""
+TYPING_GRACE_SECONDS = 0.4
+"""How long after a keystroke to leave the conversation alone."""
 
 
 @dataclass
@@ -90,6 +92,8 @@ class App:
         self.status = ""
         self.running = True
         self.zone = KST
+        self.titles: list[str] = []
+        """Every catalogued title, so a send never has to re-read the catalog."""
         self.friends: list[Friend] = []
         self.friend_selected = 0
         self.friend_scroll = 0
@@ -100,7 +104,9 @@ class App:
     # -- data ---------------------------------------------------------------
 
     def load_rooms(self) -> None:
-        self.rooms = [room for room in self.reader.rooms() if room.readable]
+        catalogued = self.reader.rooms()
+        self.titles = [room.title for room in catalogued]
+        self.rooms = [room for room in catalogued if room.readable]
 
     def load_friends(self) -> None:
         self.friends = self.reader.friends()
@@ -163,9 +169,11 @@ class App:
     def _refresh_rooms(self) -> bool:
         """Re-read the catalog so unread counts and ordering stay current."""
         try:
-            rooms = [room for room in self.reader.rooms() if room.readable]
+            catalogued = self.reader.rooms()
         except KakaoReadError:
             return False
+        self.titles = [room.title for room in catalogued]
+        rooms = [room for room in catalogued if room.readable]
         changed = [
             (room.id, room.unread, room.last_log_id) for room in rooms
         ] != [(room.id, room.unread, room.last_log_id) for room in self.rooms]
@@ -679,8 +687,15 @@ class App:
         return self._sender
 
     def _refuse_ambiguous(self, room: Room) -> None:
-        """Refuse when a window title cannot identify one catalogued room."""
-        same = [other for other in self.reader.rooms() if other.title == room.title]
+        """Refuse when a window title cannot identify one catalogued room.
+
+        The census is the one this screen already loaded. Re-reading the
+        catalog here cost up to 3.0 s per send: a busy room rewrites it
+        constantly, and sending rewrites it too, so the snapshot almost always
+        had to be decrypted again before the message could go out.
+        """
+        census = self.titles or [other.title for other in self.reader.rooms()]
+        same = [title for title in census if title == room.title]
         if len(same) != 1:
             raise KakaoReadError(
                 ErrorCode.AMBIGUOUS_CHAT,
@@ -775,20 +790,46 @@ class App:
         self.load_rooms()
         if not self.rooms:
             self.status = "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
-        last_refresh = 0.0
+        due_at = 0.0
+        last_key_at = 0.0
         while self.running:
             width, height = force_size() or console.size
             console.draw(self.render(width, height), self.cursor)
 
             kind, text = console.read_key(KEY_WAIT_SECONDS)
             if kind or text:
+                last_key_at = time.monotonic()
                 self.handle(kind, text)
                 continue
 
             now = time.monotonic()
-            if now - last_refresh >= REFRESH_SECONDS:
-                last_refresh = now
-                self.refresh(width)
+            if not _poll_due(now, due_at, last_key_at):
+                continue
+            self.refresh(width)
+            due_at = _next_poll_at(time.monotonic(), time.monotonic() - now)
+
+
+def _poll_due(now: float, due_at: float, last_key_at: float) -> bool:
+    """Whether to look for arrivals now.
+
+    Typing wins. A poll that finds something has to decrypt the room's whole
+    log — measured at 0.62 s and 0.94 s on two live rooms — and this loop is
+    single-threaded, so doing that between keystrokes is what makes input feel
+    stuck rather than slow.
+    """
+    if now - last_key_at < TYPING_GRACE_SECONDS:
+        return False
+    return now >= due_at
+
+
+def _next_poll_at(now: float, work_seconds: float) -> float:
+    """Back off behind a room that is expensive to read.
+
+    Waiting at least as long as the last poll took keeps a busy conversation
+    from consuming the loop; an idle room is unaffected because its poll costs
+    one stat.
+    """
+    return now + max(REFRESH_SECONDS, work_seconds)
 
 
 def _clamp_scroll(selected: int, scroll: int, height: int, total: int) -> int:
