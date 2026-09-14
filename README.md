@@ -1,301 +1,182 @@
 # kakaoread
 
-**Read conversations and friends, follow new messages, and send through KakaoTalk on Windows — for AI agents.**
+내 PC의 카카오톡을 **읽고, 따라가고, 보내는** 윈도우용 CLI. 의존성 0개, 파이썬 표준 라이브러리와 윈도우 API만 씁니다.
 
-**윈도우 카카오톡 대화·친구 목록 조회, 실시간 추적, 메시지 전송 CLI.**
+*A Windows CLI that reads, follows and sends your own KakaoTalk, with no third-party
+dependencies. Korean-first documentation; every command answers in JSON.*
 
-## What it does / 무엇을 하는가
+---
 
-kakaoread decrypts the KakaoTalk desktop client's own local databases and hands
-an AI agent enough context to summarise a conversation or draft a reply.
-Friends also come from the local database. The explicit `send` command drives
-the running client's message input; KakaoTalk itself sends the message.
+## 이 도구가 푸는 문제
 
-카카오톡 데스크톱 클라이언트가 이 PC에 저장한 대화를 읽어, AI 에이전트가 요약하거나
-답장 초안을 쓸 수 있게 합니다. 친구 목록도 로컬에서 읽습니다. 명시적인 `send` 명령은
-실행 중인 카카오톡의 입력창을 조작해 실제 메시지를 보냅니다.
+카카오톡 데스크톱은 대화를 이 컴퓨터에 저장하지만 SQLCipher로 잠급니다. 그리고 그 열쇠는
+**디스크 어디에도 없습니다.** 실행할 때마다 만들어져 클라이언트 프로세스의 메모리에만
+존재합니다. 파일을 아무리 뜯어도 열 수 없다는 뜻입니다.
 
-- **Terminal browser / 터미널 UI** — `kakaoread tui` reads conversations at a
-  desk rather than through JSON
-- **Conversation context / 대화 맥락** — one call returns the room, its recent
-  messages in order, and how far those records actually reach
-- **Follow / 실시간 추적** — stream new messages as NDJSON as they arrive
-- **Search / 검색** — keyword search across the rooms that can be read
-- **Friends / 친구** — local friend list, favorites, optional phone numbers
-- **Send / 전송** — text through an already-open chat window, without moving
-  the cursor, taking focus, or using the clipboard
-- **Inspect / 구조 조회** — schema dump and read-only SQL
+kakaoread는 실행 중인 `KakaoTalk.exe`의 힙에서 SQLCipher의 `codec_ctx` 구조를 찾아 그
+열쇠를 **읽기 전용으로** 가져옵니다. 그리고 파일 선두 16바이트 salt가 같은 데이터베이스와
+짝지어, 이름으로 추측하는 일 없이 "이 열쇠는 증명 가능하게 이 파일의 것"임을 확인합니다.
+프로세스는 조회·읽기 권한으로만 열고, 쓰거나 멈추거나 디버거를 붙이지 않습니다.
 
-## Requirements / 요구 사항
+보내기는 정반대로 접근합니다. 프로토콜을 흉내 내면 동시 접속으로 잡혀 계정이 위험해지므로,
+**이미 로그인된 클라이언트의 입력창**에 글자를 넣고 엔터를 보냅니다. 새 세션도, 두 번째
+로그인도 없습니다.
 
-- Windows 10 or 11
-- 64-bit Python 3.10 or newer (3.11+ additionally keeps decryption off disk)
-- KakaoTalk desktop running and signed in
-
-No third-party packages. The runtime uses only the Python standard library and
-Windows system APIs, so there is no `pip install` step and no virtual
-environment to manage.
-
-서드파티 패키지가 없습니다. 표준 라이브러리와 윈도우 시스템 API만 사용하므로
-`pip install`도, 가상환경도 필요하지 않습니다.
-
-## Install as an agent skill / AI 스킬로 설치
+## 5분 안에
 
 ```powershell
-python install.py
+python -m kakaoread status                     # 지금 무엇이 되는지
+python -m kakaoread context --room "이름"       # 방 하나를 통째로 이해하기
+python -m kakaoread follow --interval 1        # 새 메시지를 NDJSON 으로
+python -m kakaoread send --room "이름" "안녕"   # 실제로 보내기
+python -m kakaoread tui                        # 터미널에서 직접 읽기
 ```
 
-That copies the skill, its runtime, and the licence to
-`~/.agents/skills/kakaoread`. The installed copy is self-contained: it keeps
-working after the source checkout is moved or deleted. Use `--target` for
-another agent's skill directory and `--force` to update an existing install.
+`context` 한 번이면 방을 찾고, 최근 대화를 시간순으로 주고, **그 기록이 어디까지
+닿는지**까지 말해줍니다. 에이전트가 `status` → `rooms` → `messages` 로 세 번 물을 이유가
+없습니다.
+
+모든 명령은 같은 봉투로 답합니다. 성공은 `{"ok": true, ...}`, 실패는
+`{"ok": false, "error": {"code", "message"}}`. 종료 코드는 0, 처리된 실패는 1,
+잘못된 호출은 2. **모든 식별자는 문자열입니다** — 카카오톡 아이디는 2^53을 넘어서
+평범한 JSON 파싱이 숫자를 망가뜨립니다.
+
+## 값으로 말하는 성능
+
+느린 곳은 전부 측정해서 걷어냈습니다. 이 숫자들은 이 저장소의 `AGENTS.md`에 근거와 함께
+남아 있습니다.
+
+| 하는 일 | 전 | 후 |
+| --- | --- | --- |
+| `status` 한 번 | 2.43 s | **0.30 s** |
+| `rooms` 한 번 | 2.54 s | **0.63 s** |
+| `friends` 한 번 | 2.06 s | **0.38 s** |
+| 힙에서 열쇠 찾기 | 426 ms ~ 2.8 s | **0.8 ms** (주소 재사용) |
+| 프로필 DB 목록 | 1,363 ms | **92.8 ms** (`os.walk`) |
+| 대화 20개 다시 읽기 | 1.0 s | **0.6 ms** (스냅샷 캐시) |
+| 놀고 있는 방 1회 확인 | — | **0.3 ms** (stat 한 번) |
+
+열쇠 탐색은 **주소만** `%LOCALAPPDATA%\kakaoread\contexts.json`에 기억합니다. 키도
+salt도 디스크에 쓰지 않으며, 기억한 주소도 새 후보와 똑같이 검증한 뒤에만 씁니다. 힙이
+움직였으면 조용히 전체 탐색으로 되돌아갑니다.
+
+## 보내기
+
+대화방 창이 **존재하기만** 하면 됩니다. 화면에 보일 필요는 없습니다 — 작업표시줄에
+최소화해둔 창으로도 그대로 나갑니다. 포커스를 뺏지 않고 마우스 커서도 움직이지 않습니다.
 
 ```powershell
-python install.py --target "$HOME/.claude/skills/kakaoread"
-python install.py --force
+python -m kakaoread send --room "이름" --dry-run "확인만"
+python -m kakaoread send --room "이름" "보낼 말"
+python -m kakaoread send --room "이름" --open "창이 닫혀 있어도"
 ```
 
-Then ask your agent things like:
+`--open`은 창이 닫혀 있을 때 도구가 직접 엽니다. 카카오톡이 트레이에 내려가 있어도
+메인 창을 되살려 목록을 열고, 방을 찾고, **연 창은 최소화해두고, 트레이는 도로
+트레이로** 돌려놓습니다. 이미 열어두신 창은 건드리지 않습니다.
 
-- "카톡에서 지수랑 최근 대화 요약해줘."
-- "회의 시간 얘기한 카톡 찾아줘."
-- "이 대화 읽고 내 말투로 답장 초안 써줘. 보내지는 마."
+대신 정직하게 적어둡니다. 목록의 행은 읽을 수 없고 누를 수만 있어서, 도구는 눌러보고
+**열린 창의 제목이 정확히 일치할 때만** 그 방으로 인정합니다. 빗나가면 엉뚱한 창이
+잠깐 열렸다 닫히는데, **그렇게 열린 방은 읽음 처리됩니다.** 목록 위쪽 방이면 한 번에
+맞아서 이 비용이 없습니다.
 
-## Terminal browser / 터미널 UI
+그리고 `submitted: true`는 **엔터가 큐에 들어갔다**는 뜻이지 서버가 받았다는 뜻이
+아닙니다. 확인하려면 `context`나 `messages`로 내 계정의 새 기록을 되읽으세요. 불확실한
+전송을 자동으로 재시도하면 같은 말을 두 번 보내게 됩니다.
+
+쓰다 만 초안이 입력창에 있으면 덮지 않고 `BUSY`로 거절합니다.
+
+## 터미널에서 직접
 
 ```powershell
 python -m kakaoread tui
 ```
 
-A room list, a transcript, and time digests, styled to match the OmO
-interactive interface so the two sit side by side.
+대화방 목록, 대화, 친구 목록, 그리고 하단의 입력창. 글자를 치면 메시지가 되고 `/`로
+시작하면 명령이 됩니다. 방을 열어둔 채로 새 메시지가 들어오면 그 자리에서 이어붙는데,
+**위로 스크롤해 과거를 읽는 중이라면 화면을 빼앗지 않고** 상태줄에 `↓ 새 메시지 N개`로
+알립니다.
 
-**Messages arrive while you read.** The open room is followed in the
-background, so a conversation updates in place rather than needing to be
-reopened. An idle check costs about 0.3 ms, because a room whose log has not
-moved is never decrypted. If you have scrolled up into history the viewport
-holds its place and the status line reports `↓ 새 메시지 N개` instead; press
-`end` to drop back to the newest line. The room list refreshes the same way,
-so unread counts stay current without a keypress.
-
-| Key | Action |
+| 키 | 하는 일 |
 | --- | --- |
-| `↑` `↓` | 이동 / 스크롤 |
-| `enter` | 대화방 열기 |
-| `f` | 대화방 목록 ↔ 친구 목록; 친구에서 `enter`는 기존 1:1 대화 열기 |
-| `pgup` `pgdn` | 페이지 단위 스크롤 |
-| 글자 입력 | 메시지 작성. 대화방에서 글자는 단축키가 아니라 입력입니다 |
-| `enter` | 전송. `/`로 시작하면 명령으로 실행 |
-| `/older` | 이전 기록 400개 더 불러오기 |
-| `end` | 맨 아래로 (새 메시지 표시 해제) |
+| 글자 입력 | 메시지 작성 (대화방에서는 글자가 단축키가 아닙니다) |
+| `enter` | 전송. `/`로 시작하면 명령 |
+| `↑` `↓` `pgup` `pgdn` | 스크롤 |
 | `/sum 30m`, `/sum 2h` | 구간별 다이제스트 (최대 12h) |
-| `/export` | 다이제스트 원문을 홈 디렉터리로 내보내기 |
+| `/older` `/export` `/back` `/quit` | 이전 기록 · 원문 내보내기 · 뒤로 · 종료 |
+| `f` | 목록 ↔ 친구 (친구에서 `enter`는 1:1 열기) |
 | `esc` | 초안 지우기 → 다이제스트 닫기 → 뒤로 |
-| `q` | 목록에서 종료. 대화방에서는 `/quit` 또는 ctrl+c |
 
-`/sum` is **extractive, not generative**: with no model in the process, a slice
-reports how busy it was, who carried it, the words it was actually about, and
-its most substantive lines. Nothing is invented. `e` writes the slice text out
-so a model can summarise it properly when one is available.
+`/sum`은 **요약하는 척하지 않습니다.** 이 프로세스 안에는 모델이 없으므로, 구간이 얼마나
+바빴는지·누가 이끌었는지·실제로 쓰인 단어와 대표 문장을 뽑아줄 뿐 문장을 지어내지
+않습니다. `/export`로 원문을 내보내 모델에게 맡기세요.
 
-Speakers are told apart by tint rather than by colour — one base grey with a
-slight per-speaker shift at near-constant lightness, so a long transcript stays
-readable instead of turning into a palette.
+화자는 색이 아니라 **미세한 색조**로 구분합니다. 같은 회색에서 조금씩만 틀어, 긴 대화가
+알록달록해지지 않게 했습니다.
 
-An open room carries a message box at the bottom, and it keeps focus the whole
-time: a letter belongs to the message being written, not to a shortcut. `enter`
-hands the text to the same client input the `send` command drives, so the
-sent line appears the way anyone else's does — once the client writes it to the
-log — rather than being echoed optimistically. A refusal (no open chat window,
-a draft already in the box, two rooms sharing a title) is reported on the status
-line and the room stays open.
-
-The browser needs a real interactive console; through a pipe it refuses with
-`INVALID_REQUEST` rather than drawing garbage.
-
-## Command line / 명령줄
-
-From the repository root, `python -m kakaoread <command>`. From an installed
-skill, `python "<skill-dir>/scripts/kakaoread.py" <command>`.
-
-| Command | Purpose |
-| --- | --- |
-| `context --room "Name"` | 방을 찾아 시간순 대화와 커버리지를 한 번에 반환 |
-| `context --room-id 123 --limit 100` | 아이디로 지정, 더 넓은 창 |
-| `follow --interval 1` | 새 메시지를 NDJSON으로 스트리밍 |
-| `rooms --readable-only` | 읽을 수 있는 대화방 목록 |
-| `messages --room-id 123 --before-id 999` | 과거로 페이지 넘기기 |
-| `search "keyword"` | 읽을 수 있는 방에서 키워드 검색 |
-| `friends --favorites` | 즐겨찾기 친구 조회; 전체 목록은 `friends` |
-| `friends --with-phone` | 명시적으로 전화번호 포함 (기본은 제외) |
-| `send --room "Name" --dry-run "Text"` | 대상과 입력창 점검만; 입력·전송 없음 |
-| `send --room-id 123 "Text"` | 열린 채팅창을 통해 실제 텍스트 전송 |
-| `tui` | 터미널 브라우저 실행 |
-| `status` / `verify` | 접근 상태 확인 / 복호화 검증 |
-| `schema` / `query "SELECT ..."` | 스키마 조회 / 읽기 전용 SQL |
-
-Every command answers with the same envelope — `{"ok": true, ...}` or
-`{"ok": false, "error": {"code", "message"}}` — and exits 0, 1 for a handled
-failure, or 2 for a malformed command. All identifiers are strings, because
-KakaoTalk ids exceed 2^53 and ordinary JSON parsing would corrupt them.
-
-### Sending / 메시지 전송
-
-Open the conversation in its own KakaoTalk window first. The CLI resolves the
-catalog, then requires an exact window-title match. Duplicate catalog titles
-or duplicate open windows are refused with candidates; even a room id cannot
-disambiguate identical window titles. Give the target a unique title first.
+## AI 에이전트에 붙이기
 
 ```powershell
-python -m kakaoread send --room "Sample Room" --dry-run "Hello"
-python -m kakaoread send --room "Sample Room" "Hello"
-python -m kakaoread send --room "Sample Room" --open "Hello"   # open it first
+python install.py
+python install.py --target "$HOME/.claude/skills/kakaoread" --force
 ```
 
-`--open` lets the tool open the conversation itself when its window is closed.
-It posts a double-click into KakaoTalk's room list without moving the cursor,
-reads the title of whatever window appears, and closes anything that is not
-the room asked for — rows can only be addressed by coordinate, so a miss
-costs a window that flickers open and shut, never a message in the wrong
-place — though a room opened while searching **is marked read**, which is the
-real cost of a miss. Opening does take focus, exactly as clicking the room
-yourself would;
-sending afterwards does not. The self-chat is out of reach this way, because
-its window is titled with the account's own name rather than `나와의 채팅`.
+`~/.agents/skills/kakaoread`에 스킬·런타임·라이선스를 복사합니다. 설치본은 자립형이라
+원본 체크아웃을 옮기거나 지워도 계속 동작합니다. 설치 후에는 이렇게 시키면 됩니다.
 
-The room it opens is left minimised, and a main window taken out of the tray
-is put back into it: opening a conversation to send one line should not take
-over the screen. A window you already had open is never moved. Parking a chat
-window minimised is the supported arrangement — sending into it works exactly
-the same, with no focus change and no cursor movement.
+> "카톡에서 지수랑 최근 대화 요약해줘."
+> "회의 시간 얘기한 카톡 찾아줘."
+> "이 대화 읽고 내 말투로 답장 초안 써줘. 보내지는 마."
 
-연 대화방 창은 최소화된 채로 두고, 트레이에서 꺼낸 메인 창은 다시 트레이로
-돌려놓습니다. 이미 열어두신 창은 건드리지 않습니다. 대화방 창은 **최소화해서
-작업표시줄에 두는 것이 정식 사용법**입니다 — 그 상태로 전송이 그대로 됩니다.
+## 필요한 것
 
-`--open` 은 대화방 창이 닫혀 있을 때 도구가 직접 엽니다. 커서를 움직이지 않고
-목록에 더블클릭 메시지를 부친 뒤, 열린 창의 제목이 정확히 일치할 때만 보냅니다.
-빗나가면 엉뚱한 창이 잠깐 열렸다 닫힐 뿐 메시지는 나가지 않습니다. 창을 여는
-순간에는 포커스를 가져갑니다 — 직접 클릭할 때와 같습니다.
+윈도우 10 또는 11, 64비트 파이썬 3.10 이상(3.11+는 복호화가 디스크를 거치지 않습니다),
+그리고 **실행 중이며 로그인된** 카카오톡 데스크톱.
 
-`send` supports text, including Hangul, emoji and newlines. It does not open
-windows or compose messages in the TUI. Existing drafts are refused rather
-than overwritten. The current Korean client's literal empty-input hint
-`메시지 입력` is treated as an empty box, not as a draft; that exact text is
-reserved and cannot itself be sent by this adapter.
+`pip install`도 가상환경도 없습니다. 서드파티 패키지를 쓰지 않습니다.
 
-The response contains `roomId` (string), `room`, `length`, `dryRun` and
-`submitted`. **`submitted: true` means Enter was queued, not server delivery.**
-Use `context` or `messages` to confirm a new matching record from your account;
-do not automatically retry an uncertain result and risk duplicates.
+## 못 하는 것
 
-Confirm the recipient and content before sending to other people. Keep at
-least two seconds between sends; callers enforce this interval. Use self-chat
-or an explicitly authorized test room for real tests. Do not type into the
-target input while a send is running. If a previous WM_SETTEXT experiment left
-the button disabled, close and reopen that chat window before retrying.
+- **로컬에 있는 것만.** 카카오톡이 한 번이라도 연 방만 열쇠가 메모리에 있습니다. 결과가
+  비어 있다고 해서 그런 대화가 없었다는 증거는 아닙니다.
+- **첨부는 안 보입니다.** 사진·동영상·파일·이모티콘은 종류만 알 수 있고 내용은 없습니다.
+- **글자만 보냅니다.** 첨부 전송, 로그인 자동화, 기록 내려받기는 없습니다.
+- **쓰는 도중이면 물러납니다.** 클라이언트가 DB를 다시 쓰는 중이면 찢어진 결과를 주느니
+  거절하고 다시 시도합니다.
+- **무결성은 확인하지만 진위는 아닙니다.** SQLite 무결성과 로그 체크섬은 검증하고,
+  SQLCipher의 페이지별 HMAC은 검증하지 않습니다.
+- **3.10에서는** 복호화 결과가 임시 파일을 거칩니다. 삭제는 하지만 안전 소거는 아닙니다.
+- **클라이언트가 바뀌면** 아무것도 못 읽게 될 수 있습니다.
 
-전송 전에 상대와 내용을 확인하세요. 전송 간격은 호출자가 최소 2초로 유지해야 합니다.
-커서·포커스·클립보드를 사용하지 않지만 실제 메시지가 나가므로, 불확실한 결과를
-자동 재전송하지 말고 먼저 대화 기록에서 확인하세요.
-
-## How it works / 동작 원리
-
-The client derives its SQLCipher keys at run time, so nothing on disk can
-reproduce them. kakaoread finds the live key by scanning the running
-`KakaoTalk.exe` for SQLCipher's `codec_ctx` structure using read-only
-`ReadProcessMemory`, then pairs each key with the database carrying the same
-salt. Pages are decrypted with Windows CNG, and committed write-ahead log
-frames are applied so messages appear without waiting for a checkpoint.
-
-Discovery is remembered between runs. The **addresses** of the contexts found
-in the client are written to `%LOCALAPPDATA%\kakaoread\contexts.json`, so the
-next command re-reads them in under a millisecond instead of searching the
-heap again — `status` goes from 2.43 s to 0.30 s. No key and no salt is ever
-written there, every cached address is validated exactly like a fresh
-candidate, and one that no longer holds a context sends the tool back to a
-full scan.
-
-키 탐색 결과는 **주소만** `%LOCALAPPDATA%\kakaoread\contexts.json` 에 기억해
-다음 호출에서 힙을 다시 뒤지지 않습니다. 키나 salt 는 저장하지 않으며, 주소가
-더는 유효하지 않으면 전체 스캔으로 되돌아갑니다.
-
-The process handle is opened for query and read access only. No process memory
-or database is directly modified. Sending separately uses Win32 control
-messages (`EM_SETSEL`, `EM_REPLACESEL`, then posted Enter), not protocol
-reimplementation or global keyboard/mouse injection.
-
-실행 중인 클라이언트의 메모리에서 키를 읽기 전용으로 찾고, 파일 선두의 salt로 어떤
-데이터베이스의 키인지 대조합니다. 커밋된 WAL 기록까지 반영하므로 체크포인트를
-기다리지 않아도 최신 메시지가 보입니다. 메모리나 원본 DB를 직접 수정하지 않습니다.
-전송은 별도로 카카오톡 입력 컨트롤에 윈도우 메시지를 보내 처리합니다.
-
-### Performance
-
-Reading is whole-file decryption, so the work is avoided rather than optimised:
-a snapshot is cached and reused until the file actually changes. Change
-detection uses `os.stat`, not `ReadDirectoryChangesW` — across a 30-second
-observation of the live client, directory notifications produced **zero**
-events while stat polling caught every change, because NTFS defers
-directory-entry updates while SQLite holds the log handle open. The same
-applies to C#'s `FileSystemWatcher`, which wraps that API.
-
-Measured on a 76.5 MB conversation with 445,714 messages:
-
-| Operation | Time |
-| --- | --- |
-| Reading 20 messages, cold | ~1.0 s |
-| Reading the same messages again | ~0.6 ms |
-| One idle `follow` poll across 6 rooms | ~0.7 ms |
-| One idle refresh while reading in the UI | ~0.3 ms |
-
-## Limits / 제한 사항
-
-- **Client-driven sending.** Requires an open, uniquely titled chat window and
-  the current Korean RichEdit input. No attachment sending, login automation,
-  background window opening, or history download.
-- **Local only.** Only what this computer has cached, and only for rooms
-  KakaoTalk has opened — a key exists only for a database the client loaded.
-  A missing result is not proof a conversation never happened.
-- **Attachments.** Photos, videos, files, and stickers are not rendered.
-- **Live writes.** If the client rewrites a database mid-read, the read is
-  refused and retried rather than returning a torn result.
-- **Plaintext.** On Python 3.11+ the decrypted image stays in memory. On 3.10 a
-  temporary file is used and deleted; deletion is not secure erasure.
-- **Integrity, not authenticity.** SQLite integrity and log checksums are
-  verified; SQLCipher's per-page HMAC is not.
-- **Compatibility.** Client updates or process-access restrictions can stop it
-  from reading at all.
-
-## Development
+## 개발
 
 ```powershell
 python -m unittest discover -t . -s tests
 ```
 
-The suite is synthetic throughout: AES is checked against the NIST SP 800-38A
-vector, page and log handling against fixtures built from real SQLite and real
-BCrypt round-trips. No real conversation, contact, or key belongs in this
-repository, its tests, or its logs.
+412개가 모두 합성 데이터로 돕니다. AES는 NIST SP 800-38A 벡터로, 페이지와 로그 처리는
+진짜 SQLite와 진짜 BCrypt 왕복으로 만든 픽스처로 검증합니다. **실제 대화·연락처·열쇠는
+저장소에도, 테스트에도, 로그에도 들어가지 않습니다.**
 
-## Disclaimer / 면책 조항
+코드를 고칠 생각이라면 `AGENTS.md`를 먼저 읽으세요. 측정으로 얻은 사실과, 모르고 건드리면
+조용히 틀린 답을 내놓는 지점들이 적혀 있습니다.
 
-An independent, unofficial project, not affiliated with or endorsed by Kakao
-Corp. "KakaoTalk" and "카카오톡" are trademarks of Kakao Corp. It reads data
-already stored on your own computer and drives the existing client for sends.
-It does not call Kakao APIs directly, implement the KakaoTalk protocol, or
-patch the application.
+## 출처와 라이선스
 
-이 프로젝트는 카카오와 제휴하거나 보증받지 않은 독립적인 비공식 프로젝트입니다.
-사용자 본인의 로컬 데이터를 읽고, 전송 시에는 실행 중인 카카오톡을 조작합니다.
+SQLCipher 컨테이너 구조, 열쇠 탐색 기법, 데이터베이스 분할 방식은
+**[Brian ByungHyun Shin](https://github.com/brianshin22)** 의
+[kakaocli](https://github.com/silver-flight-group/kakaocli)
+(**[Silver Flight Group](https://github.com/silver-flight-group)**)에서 왔습니다.
 
-## Credits
+MIT. [LICENSE](LICENSE) 참조.
 
-The SQLCipher container layout, key-discovery technique, and database shard
-layout come from [kakaocli](https://github.com/silver-flight-group/kakaocli) by
-**[Brian ByungHyun Shin](https://github.com/brianshin22)** at
-**[Silver Flight Group](https://github.com/silver-flight-group)**.
+## 면책
 
-## License
+카카오와 제휴하거나 보증받지 않은 독립적인 비공식 프로젝트입니다. "카카오톡"과
+"KakaoTalk"은 카카오의 상표입니다. 이 도구는 사용자 본인의 컴퓨터에 이미 저장된 데이터를
+읽고, 전송 시에는 사용자 본인이 로그인해 둔 클라이언트를 조작합니다. 카카오 API를 호출하거나
+프로토콜을 구현하거나 애플리케이션을 변조하지 않습니다.
 
-MIT. See [LICENSE](LICENSE).
+*Not affiliated with or endorsed by Kakao Corp. Reads data already on your own
+machine and drives your own signed-in client; no Kakao API calls, no protocol
+reimplementation, no patching of the application.*
