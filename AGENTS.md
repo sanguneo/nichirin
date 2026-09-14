@@ -1,6 +1,7 @@
 # AGENTS.md — working on kakaoread
 
-Windows-only, read-only KakaoTalk reader in zero-dependency Python 3.10+.
+Windows-only KakaoTalk reader, friend browser and sender in zero-dependency
+Python 3.10+. Reads stay local; the explicit send command drives the client.
 For *using* the tool as an agent, read `skill/SKILL.md`; this file is about
 changing it.
 
@@ -30,6 +31,7 @@ unittest discover tests` breaks the fixture imports.
 | `context.py` | The single call an agent makes |
 | `watch.py` | Stat-gated follow loop |
 | `cli.py` | Argument parsing and the JSON envelope |
+| `winauto.py` | Exact window targeting, draft protection, background text sending |
 | `tui/theme.py` | OmO dark-theme tokens, 256-colour fallback, speaker tints |
 | `tui/layout.py` | Column-accurate width, truncation, wrapping, footer plan |
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |
@@ -145,6 +147,27 @@ Taken from a live client, not guessed.
 - Ambiguity is refused with candidates attached, never resolved by picking the
   first match.
 
+## Friends and sending
+
+- Friends are `talkUser.type = 1`; other known users are not friends.
+  Phone numbers are withheld unless `--with-phone` is explicit. Friend ids
+  and direct-chat ids are serialized as strings. TUI `f` opens the friend list.
+- Send requires a uniquely resolved catalog room and an exact matching open
+  window. Duplicate catalog titles remain ambiguous even with `--room-id`.
+- The Korean client's empty `RICHEDIT50W` returns `메시지 입력`, not `""`.
+  This literal is reserved as the empty hint. Other drafts must be preserved.
+- **Do not use WM_SETTEXT.** It leaves the client's send-enabled state wrong.
+  EM_SETSEL + EM_REPLACESEL fires the ordinary change path. Post Enter with
+  scan-code and key-transition bits; check both PostMessage return values.
+- No SetForegroundWindow, SetFocus, SendInput, clipboard writes or mouse moves.
+  Native message calls have a timeout; a hung client must not hang the CLI.
+- `submitted` means queue acceptance, never confirmed network delivery.
+  Read back a new matching from-me record before claiming delivery. Never
+  automatically retry an uncertain send.
+- Confirm recipient and content before sending to real people. Callers must
+  keep at least two seconds between sends. Real tests use only self-chat or a
+  room explicitly authorized by the user; unit tests never call the desktop.
+
 ## Testing rules
 
 - **No real data, ever.** Not in fixtures, tests, logs, or committed output.
@@ -159,6 +182,6 @@ Taken from a live client, not guessed.
 
 ## Deliberately absent
 
-Sending, logging in, UI automation, history harvesting, and macOS support. This
-reads what is already on the machine; everything else was out of scope by
-design, not left undone.
+Login automation, protocol reimplementation, history harvesting, attachment
+sending, automatic chat-window opening, TUI composition, and macOS support.
+The supported write operation is text sent through an existing client window.

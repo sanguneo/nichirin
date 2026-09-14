@@ -1,18 +1,19 @@
 # kakaoread
 
-**Read, search, and follow your own KakaoTalk conversations on Windows — read-only, for AI agents.**
+**Read conversations and friends, follow new messages, and send through KakaoTalk on Windows — for AI agents.**
 
-**윈도우 카카오톡 대화를 읽고, 검색하고, 실시간으로 따라가는 읽기 전용 CLI.**
+**윈도우 카카오톡 대화·친구 목록 조회, 실시간 추적, 메시지 전송 CLI.**
 
 ## What it does / 무엇을 하는가
 
 kakaoread decrypts the KakaoTalk desktop client's own local databases and hands
-an AI agent enough context to summarise a conversation or draft a reply. It
-never sends, never writes to KakaoTalk, and never contacts Kakao's servers.
+an AI agent enough context to summarise a conversation or draft a reply.
+Friends also come from the local database. The explicit `send` command drives
+the running client's message input; KakaoTalk itself sends the message.
 
 카카오톡 데스크톱 클라이언트가 이 PC에 저장한 대화를 읽어, AI 에이전트가 요약하거나
-답장 초안을 쓸 수 있게 합니다. 보내지 않고, 카카오톡을 수정하지 않으며, 카카오 서버에
-접속하지 않습니다.
+답장 초안을 쓸 수 있게 합니다. 친구 목록도 로컬에서 읽습니다. 명시적인 `send` 명령은
+실행 중인 카카오톡의 입력창을 조작해 실제 메시지를 보냅니다.
 
 - **Terminal browser / 터미널 UI** — `kakaoread tui` reads conversations at a
   desk rather than through JSON
@@ -20,6 +21,9 @@ never sends, never writes to KakaoTalk, and never contacts Kakao's servers.
   messages in order, and how far those records actually reach
 - **Follow / 실시간 추적** — stream new messages as NDJSON as they arrive
 - **Search / 검색** — keyword search across the rooms that can be read
+- **Friends / 친구** — local friend list, favorites, optional phone numbers
+- **Send / 전송** — text through an already-open chat window, without moving
+  the cursor, taking focus, or using the clipboard
 - **Inspect / 구조 조회** — schema dump and read-only SQL
 
 ## Requirements / 요구 사항
@@ -78,6 +82,7 @@ so unread counts stay current without a keypress.
 | --- | --- |
 | `↑` `↓` | 이동 / 스크롤 |
 | `enter` | 대화방 열기 |
+| `f` | 대화방 목록 ↔ 친구 목록; 친구에서 `enter`는 기존 1:1 대화 열기 |
 | `pgup` `pgdn` | 페이지 단위 스크롤 |
 | `o` | 이전 기록 400개 더 불러오기 |
 | `end` | 맨 아래로 (새 메시지 표시 해제) |
@@ -111,6 +116,10 @@ skill, `python "<skill-dir>/scripts/kakaoread.py" <command>`.
 | `rooms --readable-only` | 읽을 수 있는 대화방 목록 |
 | `messages --room-id 123 --before-id 999` | 과거로 페이지 넘기기 |
 | `search "keyword"` | 읽을 수 있는 방에서 키워드 검색 |
+| `friends --favorites` | 즐겨찾기 친구 조회; 전체 목록은 `friends` |
+| `friends --with-phone` | 명시적으로 전화번호 포함 (기본은 제외) |
+| `send --room "Name" --dry-run "Text"` | 대상과 입력창 점검만; 입력·전송 없음 |
+| `send --room-id 123 "Text"` | 열린 채팅창을 통해 실제 텍스트 전송 |
 | `tui` | 터미널 브라우저 실행 |
 | `status` / `verify` | 접근 상태 확인 / 복호화 검증 |
 | `schema` / `query "SELECT ..."` | 스키마 조회 / 읽기 전용 SQL |
@@ -119,6 +128,39 @@ Every command answers with the same envelope — `{"ok": true, ...}` or
 `{"ok": false, "error": {"code", "message"}}` — and exits 0, 1 for a handled
 failure, or 2 for a malformed command. All identifiers are strings, because
 KakaoTalk ids exceed 2^53 and ordinary JSON parsing would corrupt them.
+
+### Sending / 메시지 전송
+
+Open the conversation in its own KakaoTalk window first. The CLI resolves the
+catalog, then requires an exact window-title match. Duplicate catalog titles
+or duplicate open windows are refused with candidates; even a room id cannot
+disambiguate identical window titles. Give the target a unique title first.
+
+```powershell
+python -m kakaoread send --room "Sample Room" --dry-run "Hello"
+python -m kakaoread send --room "Sample Room" "Hello"
+```
+
+`send` supports text, including Hangul, emoji and newlines. It does not open
+windows or compose messages in the TUI. Existing drafts are refused rather
+than overwritten. The current Korean client's literal empty-input hint
+`메시지 입력` is treated as an empty box, not as a draft; that exact text is
+reserved and cannot itself be sent by this adapter.
+
+The response contains `roomId` (string), `room`, `length`, `dryRun` and
+`submitted`. **`submitted: true` means Enter was queued, not server delivery.**
+Use `context` or `messages` to confirm a new matching record from your account;
+do not automatically retry an uncertain result and risk duplicates.
+
+Confirm the recipient and content before sending to other people. Keep at
+least two seconds between sends; callers enforce this interval. Use self-chat
+or an explicitly authorized test room for real tests. Do not type into the
+target input while a send is running. If a previous WM_SETTEXT experiment left
+the button disabled, close and reopen that chat window before retrying.
+
+전송 전에 상대와 내용을 확인하세요. 전송 간격은 호출자가 최소 2초로 유지해야 합니다.
+커서·포커스·클립보드를 사용하지 않지만 실제 메시지가 나가므로, 불확실한 결과를
+자동 재전송하지 말고 먼저 대화 기록에서 확인하세요.
 
 ## How it works / 동작 원리
 
@@ -129,13 +171,15 @@ reproduce them. kakaoread finds the live key by scanning the running
 salt. Pages are decrypted with Windows CNG, and committed write-ahead log
 frames are applied so messages appear without waiting for a checkpoint.
 
-The process is opened for query and read access only. It is never written to,
-suspended, or debugged, and the databases are never modified.
+The process handle is opened for query and read access only. No process memory
+or database is directly modified. Sending separately uses Win32 control
+messages (`EM_SETSEL`, `EM_REPLACESEL`, then posted Enter), not protocol
+reimplementation or global keyboard/mouse injection.
 
 실행 중인 클라이언트의 메모리에서 키를 읽기 전용으로 찾고, 파일 선두의 salt로 어떤
 데이터베이스의 키인지 대조합니다. 커밋된 WAL 기록까지 반영하므로 체크포인트를
-기다리지 않아도 최신 메시지가 보입니다. 카카오톡 프로세스와 원본 파일은 수정하지
-않습니다.
+기다리지 않아도 최신 메시지가 보입니다. 메모리나 원본 DB를 직접 수정하지 않습니다.
+전송은 별도로 카카오톡 입력 컨트롤에 윈도우 메시지를 보내 처리합니다.
 
 ### Performance
 
@@ -158,7 +202,9 @@ Measured on a 76.5 MB conversation with 445,714 messages:
 
 ## Limits / 제한 사항
 
-- **Read-only.** No send, login, or history download. Replies are drafts.
+- **Client-driven sending.** Requires an open, uniquely titled chat window and
+  the current Korean RichEdit input. No attachment sending, login automation,
+  background window opening, or history download.
 - **Local only.** Only what this computer has cached, and only for rooms
   KakaoTalk has opened — a key exists only for a database the client loaded.
   A missing result is not proof a conversation never happened.
@@ -187,11 +233,12 @@ repository, its tests, or its logs.
 
 An independent, unofficial project, not affiliated with or endorsed by Kakao
 Corp. "KakaoTalk" and "카카오톡" are trademarks of Kakao Corp. It reads data
-already stored on your own computer; it does not call Kakao APIs, implement the
-KakaoTalk protocol, or modify the application.
+already stored on your own computer and drives the existing client for sends.
+It does not call Kakao APIs directly, implement the KakaoTalk protocol, or
+patch the application.
 
 이 프로젝트는 카카오와 제휴하거나 보증받지 않은 독립적인 비공식 프로젝트입니다.
-사용자 본인의 컴퓨터에 저장된 데이터만 읽습니다.
+사용자 본인의 로컬 데이터를 읽고, 전송 시에는 실행 중인 카카오톡을 조작합니다.
 
 ## Credits
 

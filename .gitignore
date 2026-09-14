@@ -16,7 +16,7 @@ kakaoread-*-digest.txt
 kakaoread-*.txt
 
 # Local scratch
-_*.py
+/_*.py
 /tmp/
 
 # Editor / OS

@@ -31,13 +31,22 @@ class ErrorCode(str, Enum):
     """Several rooms matched; candidates are returned instead of a guess."""
 
     BUSY = "BUSY"
-    """KakaoTalk kept rewriting the database while it was being read."""
+    """A read raced a database write, or a send found an existing draft."""
 
     READ_FAILED = "READ_FAILED"
     """Decryption or query execution failed for another reason."""
 
     INVALID_REQUEST = "INVALID_REQUEST"
     """The request itself was not answerable, such as unusable SQL."""
+
+    WINDOW_NOT_FOUND = "WINDOW_NOT_FOUND"
+    """No open KakaoTalk chat window matched the room, so there is nowhere to type."""
+
+    INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
+    """The chat window was found but its message input control was not."""
+
+    SEND_FAILED = "SEND_FAILED"
+    """The message could not be handed to the client's input for another reason."""
 
 
 class KakaoReadError(Exception):

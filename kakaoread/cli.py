@@ -49,7 +49,7 @@ def _add_room_selector(parser: argparse.ArgumentParser, required: bool) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kakaoread",
-        description="Read local KakaoTalk conversations on Windows (read-only)",
+        description="Read KakaoTalk conversations and friends, and send through the Windows client",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -79,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include phone numbers (withheld by default)",
     )
+
+    send = commands.add_parser("send", help="Send text through an open KakaoTalk chat window")
+    _add_room_selector(send, required=True)
+    send.add_argument("text", help="Message text (quote whitespace and newlines)")
+    send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
 
     search = commands.add_parser("search", help="Search readable conversations")
     search.add_argument("keyword")
@@ -161,6 +166,9 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         )
         return 0
 
+    if arguments.command == "send":
+        return _send(reader, arguments)
+
     if arguments.command == "search":
         rooms = reader.rooms()
         unreadable = sum(1 for room in rooms if not room.readable)
@@ -208,6 +216,30 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return 0
 
     raise KakaoReadError(ErrorCode.INVALID_REQUEST, f"unsupported command {arguments.command}")
+
+
+def _send(reader: Reader, arguments: argparse.Namespace) -> int:
+    """Resolve the catalog before targeting an exact client window."""
+    from .winauto import make_sender
+
+    if arguments.room is not None and not arguments.room.strip():
+        raise KakaoReadError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+    room = _selected_room(reader, arguments)
+    # A window title cannot distinguish two catalog rooms with the same name,
+    # even if the caller supplied an id and only one window is currently open.
+    duplicates = [r for r in reader.rooms() if r.title.casefold() == room.title.casefold()]
+    if len(duplicates) != 1:
+        raise KakaoReadError(
+            ErrorCode.AMBIGUOUS_CHAT,
+            "multiple catalog rooms share this window title; give the target a unique title",
+            candidates=[r.as_json() for r in duplicates],
+        )
+    try:
+        result = make_sender().send(room.title, arguments.text, dry_run=arguments.dry_run)
+    except OSError as error:
+        raise KakaoReadError(ErrorCode.SEND_FAILED, str(error)) from error
+    _emit(success({**result, "roomId": str(room.id)}))
+    return 0
 
 
 def _tui(reader: Reader) -> int:

@@ -1,14 +1,15 @@
 ---
 name: kakaoread
-description: "Read, search, and follow the user's own local KakaoTalk conversations on Windows, summarise them, and draft replies without sending. Use for kakao, kakaotalk, katok, katalk, 카톡, 카카오톡, 카톡 읽어줘, 대화 요약, 대화 검색, 답장 써줘, 새 메시지 알려줘. Ships a self-contained Python CLI; no account paths or keys need configuring."
+description: "Read, search, and follow the user's local KakaoTalk conversations, list friends, draft replies, and send explicitly authorized text through the Windows client. Use for kakao, kakaotalk, katok, katalk, 카톡, 카카오톡, 대화 요약, 친구 목록, 답장 써줘, 메시지 보내줘. Ships a self-contained Python CLI; no account paths or keys need configuring."
 compatibility: "Windows 10/11, 64-bit Python 3.10+, KakaoTalk desktop client running and signed in."
 ---
 
 # KakaoTalk conversations
 
 Read the user's own locally stored conversations. Answer in the user's
-language. For a reply request, read enough of the conversation to understand
-it, match the user's tone, and return a **draft** — this tool cannot send.
+language. For a draft request, read enough context, match the user's tone,
+and return a draft. Send only when the user explicitly authorizes the recipient
+and content; the `send` command operates the real client.
 
 ## Locate the CLI
 
@@ -39,7 +40,7 @@ Read the answer in this order:
 | `CHAT_NOT_FOUND` | Ask for the title as saved in KakaoTalk. Never guess that a contact is "mom". |
 | `KEY_UNAVAILABLE` | KakaoTalk has never opened that room this session. Ask the user to open it, then retry. |
 | `KAKAO_NOT_RUNNING` | Ask the user to start and sign in to KakaoTalk. |
-| `BUSY` | KakaoTalk was writing during the read. Retry once; it is not an empty conversation. |
+| `BUSY` | During reads, a concurrent database write: retry once. During sends, an existing draft: preserve it and ask the user to clear or finish it. |
 | `coverage.reachesLatestKnown: true` | The messages reach the newest record the catalog knows of — not necessarily the server's. |
 | `coverage.reachesLatestKnown: false` | Newer records exist that were not read. Say so; do not draft as if complete. |
 | `coverage.hasEarlier` | Older local messages exist outside this window. Raise `--limit` if context is thin. |
@@ -78,6 +79,8 @@ exit.
 
 ```powershell
 python "<skill-dir>/scripts/kakaoread.py" rooms --readable-only --limit 50
+python "<skill-dir>/scripts/kakaoread.py" friends
+python "<skill-dir>/scripts/kakaoread.py" friends --favorites
 python "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --limit 100
 python "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --before-id 9876
 python "<skill-dir>/scripts/kakaoread.py" search "meeting time" --limit 20
@@ -92,10 +95,46 @@ opened — its key is not loaded. `search` reports `unsearchableRooms`: if that 
 non-zero, an empty result is **not** evidence a conversation never happened.
 SQL is read-only; check `schema` before assuming column names.
 
+## Sending explicitly authorized text
+
+The target conversation must already be open in its own KakaoTalk window.
+No mouse movement, focus switch or clipboard change is needed. The CLI resolves
+the room in the local catalog, then requires an exact window-title match.
+
+```powershell
+python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --dry-run "Approved text"
+python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" "Approved text"
+```
+
+- Confirm recipient and content with the user before sending to others. Existing
+  explicit authorization for that message is sufficient. A draft request is not
+  permission to send.
+- Run `--dry-run` first: it checks the target and input without changing either.
+- Space sends at least two seconds apart. The caller enforces the interval.
+- `submitted: true` means Enter was queued, not delivered. Read `context` or
+  `messages` to find a new matching `fromMe` record before claiming success.
+  Never automatically retry an uncertain send.
+- `WINDOW_NOT_FOUND`: ask the user to pop out the conversation.
+  `INPUT_NOT_FOUND`: the expected input control is absent.
+  `SEND_FAILED`: native input/submission failed; inspect before retrying.
+- `AMBIGUOUS_CHAT`: show candidates. If two rooms share the same title, ask
+  for a unique window title; `--room-id` alone cannot solve window ambiguity.
+- Preserve existing drafts. Do not type in the target window during a send.
+  The current Korean client stores `메시지 입력` as its empty hint; that exact
+  literal is reserved and cannot itself be sent by this adapter.
+- If an earlier WM_SETTEXT-based tool left the send button disabled, ask the
+  user to close and reopen that chat window. Do not keep injecting into it.
+- Real tests belong only in self-chat or a room explicitly authorized for tests.
+  Tests in the repository are synthetic and never send.
+
+Friends come from the local database. `--with-phone` includes phone numbers
+only when explicitly needed; otherwise they are omitted.
+
 ## Limits, stated plainly
 
-- **Read-only.** There is no send, login, or history download. A draft is a
-  draft; never claim a message was sent.
+- **Text sending only.** Requires an already-open, uniquely titled chat window
+  and the current Korean RichEdit input. No attachments, login automation or
+  history download. The TUI browses conversations and friends but does not compose.
 - **Local only.** Only what this computer has cached is visible, and only for
   rooms KakaoTalk has opened. This is not the server's history.
 - **Attachments.** Photos, videos, files, and stickers are not rendered. The
