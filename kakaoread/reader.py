@@ -297,6 +297,22 @@ class Reader:
             )
         return found
 
+    def stored_title(self, room_id: int) -> Optional[str]:
+        """Return the catalog's own title for a room, before any resolution.
+
+        A room's window carries this rather than the title composed here: the
+        self-chat is stored under the account's own name while it is shown as
+        "나와의 채팅", and a group with no custom title is named after its
+        members by each side independently.
+        """
+        row = self._catalog().execute(
+            "SELECT chatRoomTitle FROM chatRoomList WHERE chatId = ?", (room_id,)
+        ).fetchone()
+        stored = None if row is None else row[0]
+        if isinstance(stored, str) and stored.strip():
+            return stored.strip()
+        return None
+
     def room(self, room_id: int) -> Optional[Room]:
         """Return one conversation by id."""
         return next((found for found in self.rooms() if found.id == room_id), None)

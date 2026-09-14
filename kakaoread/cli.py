@@ -240,12 +240,17 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             "multiple catalog rooms share this window title; give the target a unique title",
             candidates=[r.as_json() for r in duplicates],
         )
+    # The window carries the catalog's own title, which differs from the one
+    # resolved here for the self-chat and for groups with no custom name.
+    stored = reader.stored_title(room.id)
+    aliases = [stored] if stored and stored != room.title else []
     try:
         result = make_sender().send(
             room.title,
             arguments.text,
             dry_run=arguments.dry_run,
             open_if_needed=arguments.open_room,
+            aliases=aliases,
         )
     except OSError as error:
         raise KakaoReadError(ErrorCode.SEND_FAILED, str(error)) from error

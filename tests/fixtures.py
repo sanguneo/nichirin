@@ -43,6 +43,7 @@ CREATE TABLE Profile (userId INTEGER, nickname TEXT, hasMeBadge INTEGER);
 
 FRIEND_TYPE = 1
 NON_FRIEND_TYPE = 1000
+SELF_STORED_TITLE = "계정본인이름"
 
 CATALOG_SCHEMA = """
 CREATE TABLE chatRoomList (
@@ -136,7 +137,9 @@ def build_profile(
         (HUGE_ROOM, HUGE_ID, 1),
     ]
     if with_self_room:
-        rooms.append((SELF_ROOM, "MemoChat", "", 0, 1, 0, 8001, 500, 0))
+        # The client stores the self-chat under the account's own name, which
+        # is also what its window is titled; the reader shows 나와의 채팅.
+        rooms.append((SELF_ROOM, "MemoChat", SELF_STORED_TITLE, 0, 1, 0, 8001, 500, 0))
         members.append((SELF_ROOM, OWN_ID, 1))
 
     catalog = _connect(CATALOG_SCHEMA, {"chatRoomList": rooms, "chatMembers": members})

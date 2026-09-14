@@ -26,8 +26,11 @@ class FakeDesktop:
             for index, title in enumerate(already_open or [])
         ]
         self.clicks: list[int] = []
+        self.log: list[object] = []
         self.closed: list[str] = []
         self.list_control: int | None = LIST_CONTROL
+        self.restored = 0
+        self.restorable = True
         self.draft = ""
         self.actions: list[str] = []
 
@@ -35,9 +38,19 @@ class FakeDesktop:
     def room_list(self) -> int | None:
         return self.list_control
 
+    def show_main_window(self) -> bool:
+        self.restored += 1
+        self.list_control = LIST_CONTROL if self.restorable else None
+        return self.list_control is not None
+
+    def scroll_to_top(self, control: int) -> None:
+        assert control == LIST_CONTROL
+        self.log.append("top")
+
     def click_row(self, control: int, row: int) -> None:
         assert control == LIST_CONTROL
         self.clicks.append(row)
+        self.log.append(row)
         if row < len(self.rows):
             title = self.rows[row]
             if title not in [window.title for window in self.windows]:
@@ -100,13 +113,6 @@ class OpeningTests(unittest.TestCase):
             opener(desktop).open("없는 방")
         self.assertEqual(sorted(desktop.closed), ["둘", "하나"])
 
-    def test_a_missing_room_list_is_a_typed_failure(self) -> None:
-        desktop = FakeDesktop(["하나"])
-        desktop.list_control = None
-        with self.assertRaises(KakaoReadError) as caught:
-            opener(desktop).open("하나")
-        self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
-
     def test_the_search_stops_at_the_row_budget(self) -> None:
         desktop = FakeDesktop(["a", "b", "c", "d"])
         with self.assertRaises(KakaoReadError):
@@ -142,6 +148,91 @@ class SendWithOpeningTests(unittest.TestCase):
         result = self.sender(desktop).send("받는 방", "안녕", dry_run=True, open_if_needed=True)
         self.assertFalse(result["submitted"])
         self.assertEqual(desktop.actions, [])
+
+
+class AliasTests(unittest.TestCase):
+    """A window carries the client's title, which is not always the catalog's."""
+
+    def test_a_room_known_by_another_title_still_opens(self) -> None:
+        desktop = FakeDesktop(["나상권"])
+        window = opener(desktop).open("나와의 채팅", aliases=["나상권"])
+        self.assertEqual(window.title, "나상권")
+
+    def test_an_alias_is_matched_for_an_already_open_window(self) -> None:
+        desktop = FakeDesktop(["나상권"], already_open=["나상권"])
+        sender = Sender(desktop, running=lambda: True, opener=opener(desktop))
+        result = sender.send("나와의 채팅", "안녕", aliases=["나상권"])
+        self.assertEqual(result["room"], "나상권")
+        self.assertEqual(desktop.clicks, [])
+
+    def test_an_alias_does_not_widen_an_ordinary_match(self) -> None:
+        desktop = FakeDesktop(["다른 방"])
+        with self.assertRaises(KakaoReadError):
+            opener(desktop).open("받는 방", aliases=["또 다른 방"])
+
+
+class MainWindowTests(unittest.TestCase):
+    """The room list lives in the main window, which may be in the tray."""
+
+    def test_a_hidden_main_window_is_restored_before_giving_up(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.list_control = None
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(window.title, "받는 방")
+        self.assertEqual(desktop.restored, 1)
+
+    def test_a_main_window_that_cannot_be_restored_is_a_typed_failure(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.list_control = None
+        desktop.restorable = False
+        with self.assertRaises(KakaoReadError) as caught:
+            opener(desktop).open("받는 방")
+        self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
+
+    def test_a_visible_main_window_is_left_alone(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        opener(desktop).open("받는 방")
+        self.assertEqual(desktop.restored, 0, "the main window was disturbed for nothing")
+
+
+class StoredTitleTests(unittest.TestCase):
+    """The alias the CLI passes comes from the catalog's own title column."""
+
+    def test_the_self_chat_keeps_the_name_its_window_carries(self) -> None:
+        from tests.fixtures import SELF_ROOM, SELF_STORED_TITLE, build_reader
+
+        with build_reader() as reader:
+            room = reader.room(SELF_ROOM)
+            assert room is not None
+            self.assertEqual(room.title, "나와의 채팅")
+            self.assertEqual(reader.stored_title(SELF_ROOM), SELF_STORED_TITLE)
+
+    def test_a_room_without_a_stored_title_has_no_alias(self) -> None:
+        from tests.fixtures import GROUP_ROOM, build_reader
+
+        with build_reader() as reader:
+            self.assertIsNone(reader.stored_title(GROUP_ROOM))
+
+
+class ScrollTests(unittest.TestCase):
+    """A row number only means something when the list is at the top.
+
+    Opening rooms moves the list, so a scan that did not reset it addressed
+    different rooms as it went: a room found at row 0 one minute was missed
+    across all eight rows the next.
+    """
+
+    def test_the_list_is_pinned_to_the_top_before_every_row(self) -> None:
+        desktop = FakeDesktop(["남의 방", "찾는 방"])
+        opener(desktop).open("찾는 방")
+        self.assertEqual(desktop.log, ["top", 0, "top", 1])
+
+    def test_an_open_room_needs_no_scrolling(self) -> None:
+        desktop = FakeDesktop(["받는 방"], already_open=["받는 방"])
+        Sender(desktop, running=lambda: True, opener=opener(desktop)).send(
+            "받는 방", "안녕", open_if_needed=True
+        )
+        self.assertEqual(desktop.log, [])
 
 
 if __name__ == "__main__":

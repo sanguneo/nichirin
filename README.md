@@ -157,7 +157,9 @@ It posts a double-click into KakaoTalk's room list without moving the cursor,
 reads the title of whatever window appears, and closes anything that is not
 the room asked for — rows can only be addressed by coordinate, so a miss
 costs a window that flickers open and shut, never a message in the wrong
-place. Opening does take focus, exactly as clicking the room yourself would;
+place — though a room opened while searching **is marked read**, which is the
+real cost of a miss. Opening does take focus, exactly as clicking the room
+yourself would;
 sending afterwards does not. The self-chat is out of reach this way, because
 its window is titled with the account's own name rather than `나와의 채팅`.
 

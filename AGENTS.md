@@ -220,9 +220,21 @@ Taken from a live client, not guessed.
   so the catalog order is **not** the list order. `RoomOpener` therefore tries
   rows, reads the title of whatever window appears, closes anything that is
   not the target, and only a title that matches exactly is sent to.
+- **Opening a room scrolls the list, so a row number is meaningless until it
+  is reset.** A room found at row 0 one minute was missed across all eight
+  rows the next, because the scan itself had moved the list. `scroll_to_top`
+  wheels it back before **every** row, by posting `WM_MOUSEWHEEL`.
+- **Scanning rows opens real rooms, and opening a room marks it read.** That
+  is the true cost of a miss, not the flicker. Keep `SEARCHED_ROWS` small and
+  prefer rooms near the top of the list.
+- **A main window in the tray is hidden, not destroyed.** It fails every
+  visibility test but is still enumerable, so `show_main_window` finds it among
+  all top-level windows and calls `ShowWindow`; that moves no cursor and posts
+  no input. Verified live: hidden with `SW_HIDE`, then brought back by `--open`.
 - **The window title is the UI's, not the catalog's.** They differ for the
-  self-chat, whose catalog title is `나와의 채팅` while its window carries the
-  account's own name, so `--open` cannot find it.
+  self-chat and for groups with no custom name. `reader.stored_title` returns
+  the catalog's own `chatRoomTitle` — `나상권` for a self-chat shown as
+  `나와의 채팅` — and the CLI passes it as an alias the window may carry.
 - **Do not use WM_SETTEXT.** It leaves the client's send-enabled state wrong.
   EM_SETSEL + EM_REPLACESEL fires the ordinary change path. Post Enter with
   scan-code and key-transition bits; check both PostMessage return values.

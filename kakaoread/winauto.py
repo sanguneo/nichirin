@@ -76,6 +76,14 @@ class RoomListBackend(Protocol):
         """Return the room-list control inside the main window, if it is up."""
         ...
 
+    def show_main_window(self) -> bool:
+        """Bring the main window back from the tray. True when it is up."""
+        ...
+
+    def scroll_to_top(self, control: int) -> None:
+        """Pin the list to its first row, so a row number means something."""
+        ...
+
     def click_row(self, control: int, row: int) -> None:
         """Post a double-click at a row, without moving the cursor."""
         ...
@@ -128,23 +136,36 @@ class RoomOpener:
         self._settle = settle
         self._rows = rows
 
-    def open(self, room: str) -> ChatWindow:
+    def open(self, room: str, aliases: Iterable[str] = ()) -> ChatWindow:
+        """Open *room*, accepting any of *aliases* as its window title.
+
+        The titles differ more often than it looks: the self-chat is stored
+        under the account's own name while the reader shows it as 나와의 채팅,
+        and a group with no custom title is named after its members by each
+        side independently.
+        """
+        wanted = {room, *aliases}
         control = self._backend.room_list()
+        if control is None and self._backend.show_main_window():
+            control = self._backend.room_list()
         if control is None:
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
-                "KakaoTalk's room list is not on screen, so no room can be opened "
-                "from here; restore the main window and try again",
+                "KakaoTalk's room list is not on screen and the main window "
+                "would not come back; restore it and try again",
             )
 
         known = {window.title for window in self._backend.chat_windows()}
         for row in range(self._rows):
+            # Opening a room moves the list, so a row number only means
+            # something after the list is put back at its first row.
+            self._backend.scroll_to_top(control)
             self._backend.click_row(control, row)
             self._settle()
             for window in self._backend.chat_windows():
                 if window.title in known:
                     continue
-                if window.title == room:
+                if window.title in wanted:
                     return window
                 # Opened by mistake: put the desktop back as it was.
                 self._backend.close_window(window.handle)
@@ -168,7 +189,12 @@ class Sender:
         self._running = running
         self._opener = opener
 
-    def resolve(self, room: str, open_if_needed: bool = False) -> ChatWindow:
+    def resolve(
+        self,
+        room: str,
+        open_if_needed: bool = False,
+        aliases: Iterable[str] = (),
+    ) -> ChatWindow:
         """Find the one open chat window for *room*, refusing to guess.
 
         The caller resolves catalog substrings first. A longer window title
@@ -182,12 +208,12 @@ class Sender:
                 "KakaoTalk is not running; start it and open the conversation first",
             )
         windows = self._backend.chat_windows()
-        needle = room.strip().casefold()
-        matches = [window for window in windows if window.title.casefold() == needle]
+        wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
+        matches = [window for window in windows if window.title.casefold() in wanted]
 
         if not matches:
             if open_if_needed and self._opener is not None:
-                return self._opener.open(room)
+                return self._opener.open(room, aliases)
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
@@ -207,6 +233,7 @@ class Sender:
         text: str,
         dry_run: bool = False,
         open_if_needed: bool = False,
+        aliases: Iterable[str] = (),
     ) -> SendResult:
         """Type *text* into *room*'s window and send it, or preview when dry.
 
@@ -218,7 +245,7 @@ class Sender:
         if "\x00" in text:
             raise KakaoReadError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
-        window = self.resolve(room, open_if_needed=open_if_needed)
+        window = self.resolve(room, open_if_needed=open_if_needed, aliases=aliases)
         control = self._backend.input_handle(window.handle)
         if control is None:
             raise KakaoReadError(
@@ -258,6 +285,12 @@ _WM_LBUTTONUP = 0x0202
 _WM_LBUTTONDBLCLK = 0x0203
 _VK_RETURN = 0x0D
 _MK_LBUTTON = 0x0001
+_SW_SHOW = 5
+_SW_RESTORE = 9
+_WM_MOUSEWHEEL = 0x020A
+_WHEEL_UP = 120
+_WHEEL_NOTCHES = 8
+"""Enough upward notches to pin a room list of any length to its top."""
 
 
 class Win32Backend:
@@ -317,6 +350,18 @@ class Win32Backend:
         self._user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
         return int(pid.value)
 
+    def _all_top_level(self) -> list[int]:
+        """Every titled window this client owns, hidden ones included."""
+        found: list[int] = []
+
+        def visit(handle: int, _param: int) -> bool:
+            if self._pid_of(handle) == self._pid and self._title(handle):
+                found.append(int(handle))
+            return True
+
+        self._user32.EnumWindows(self._proc(visit), 0)
+        return found
+
     def _top_level(self) -> list[ChatWindow]:
         """Every visible titled window this client owns, main window included."""
         found: list[ChatWindow] = []
@@ -354,6 +399,22 @@ class Win32Backend:
                 return found[0]
         return None
 
+    def scroll_to_top(self, control: int) -> None:
+        """Wheel the list back to its first row. No cursor is moved."""
+        from ctypes import wintypes as _types
+
+        class _Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        point = _Point(ROW_X, FIRST_ROW_CENTER)
+        self._user32.ClientToScreen(control, ctypes.byref(point))
+        position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
+        for _notch in range(_WHEEL_NOTCHES):
+            self._user32.PostMessageW(
+                control, _WM_MOUSEWHEEL, _WHEEL_UP << 16, position
+            )
+        del _types
+
     def click_row(self, control: int, row: int) -> None:
         """Post a double-click at a row. The cursor is never moved or read."""
         position = ((FIRST_ROW_CENTER + row * ROW_PITCH) << 16) | ROW_X
@@ -368,6 +429,23 @@ class Win32Backend:
 
     def close_window(self, handle: int) -> None:
         self._user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
+
+    def show_main_window(self) -> bool:
+        """Bring the main window back, including from the tray.
+
+        A window minimised to the tray is hidden rather than destroyed, so it
+        is still enumerable — it just fails the visibility test every other
+        lookup here applies. Showing it moves no cursor and posts no input.
+        """
+        for handle in self._all_top_level():
+            if self._title(handle) != MAIN_WINDOW_TITLE:
+                continue
+            if not self._user32.IsWindowVisible(handle):
+                self._user32.ShowWindow(handle, _SW_SHOW)
+            if self._user32.IsIconic(handle):
+                self._user32.ShowWindow(handle, _SW_RESTORE)
+            return bool(self._user32.IsWindowVisible(handle))
+        return False
 
     def input_handle(self, window: int) -> Optional[int]:
         result: list[int] = []
