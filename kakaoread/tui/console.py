@@ -32,6 +32,13 @@ _UTF8: Final = 65001
 ALT_SCREEN_ON: Final = "\x1b[?1049h"
 ALT_SCREEN_OFF: Final = "\x1b[?1049l"
 HIDE_CURSOR: Final = "\x1b[?25l"
+AUTOWRAP_OFF: Final = "\x1b[?7l"
+"""Stop the terminal wrapping a frame that is exactly as wide as the screen.
+
+Writing the last cell of such a line wraps the cursor, and the frame's own
+newline then lands a row late: every box below drifts sideways and its right
+border falls off the screen."""
+AUTOWRAP_ON: Final = "\x1b[?7h"
 SHOW_CURSOR: Final = "\x1b[?25h"
 HOME: Final = "\x1b[H"
 CLEAR_BELOW: Final = "\x1b[J"
@@ -198,14 +205,14 @@ class Console:
         reconfigure = getattr(sys.stdout, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
-        sys.stdout.write(ALT_SCREEN_ON + HIDE_CURSOR)
+        sys.stdout.write(ALT_SCREEN_ON + HIDE_CURSOR + AUTOWRAP_OFF)
         sys.stdout.flush()
         self._entered = True
         return self
 
     def __exit__(self, *_exception: object) -> None:
         if self._entered:
-            sys.stdout.write(SHOW_CURSOR + ALT_SCREEN_OFF)
+            sys.stdout.write(AUTOWRAP_ON + SHOW_CURSOR + ALT_SCREEN_OFF)
             sys.stdout.flush()
             self._entered = False
         _restore_vt(self._mode)

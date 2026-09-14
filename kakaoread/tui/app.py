@@ -69,6 +69,10 @@ class ChatState:
     """Arrivals that landed below the viewport while the reader was scrolled up."""
     anchor_top: bool = True
     """Show the body from its first line once, when its height is known."""
+    outbox: Optional[str] = None
+    """Text handed to the client and not yet seen coming back."""
+    delivered: bool = False
+    """Whether the last thing sent has since appeared in the conversation."""
     window_alias: Optional[str] = None
     """The title this room's window carries, when it differs from its own.
 
@@ -167,6 +171,7 @@ class App:
         fresh = [message for message in arrived if message.id not in known]
         if not fresh:
             return False
+        self._confirm_delivery(fresh)
 
         before = len(self._transcript_lines(width))
         for message in fresh:
@@ -181,6 +186,15 @@ class App:
         else:
             chat.unseen = 0
         return True
+
+    def _confirm_delivery(self, arrived: Sequence[Message]) -> None:
+        """Turn the queued mark into a tick once the client writes it back."""
+        chat = self.chat
+        if chat is None or chat.outbox is None:
+            return
+        if any(message.from_me and message.text == chat.outbox for message in arrived):
+            chat.outbox = None
+            chat.delivered = True
 
     def _refresh_rooms(self) -> bool:
         """Re-read the catalog so unread counts and ordering stay current."""
@@ -525,9 +539,17 @@ class App:
         top = self.theme.fg("borderMuted", "╭" + "─" * inner + "╮")
         bottom = self.theme.fg("borderMuted", "╰" + "─" * inner + "╯")
 
+        # Both marks are East-Asian wide, so they measure as the two columns
+        # they occupy; an ambiguous-width glyph here would push the border out.
+        if chat.delivered:
+            mark = self.theme.fg("success", "✅ ")
+        elif chat.outbox is not None:
+            mark = self.theme.fg("muted", "⌛ ")
+        else:
+            mark = ""
         # The tail is what is being typed, so a long draft loses its head.
-        written = elide_head(chat.draft, max(1, inner - 5))
-        body = " " + self.theme.fg("accent", "❯ ") + written + self.theme.fg("accent", "▌")
+        written = elide_head(chat.draft, max(1, inner - 5 - display_width(mark)))
+        body = " " + mark + self.theme.fg("accent", "❯ ") + written + self.theme.fg("accent", "▌")
         if not chat.draft:
             body += self.theme.fg("dim", " 메시지 입력 후 enter")
         middle = edge + pad_to_width(truncate_to_width(body, inner), inner) + edge
@@ -663,6 +685,7 @@ class App:
         if kind == Key.INTERRUPT:
             self.running = False
         elif kind == "char":
+            chat.delivered = False
             chat.draft += text
         elif kind == Key.BACKSPACE:
             chat.draft = chat.draft[:-1]
@@ -750,7 +773,11 @@ class App:
         except OSError as error:
             chat.notice = f"전송 실패: {error}"
             return
-        chat.notice = "보냈습니다"
+        # Marked beside the prompt rather than announced: the composer is
+        # where the message was, so that is where its fate belongs.
+        chat.outbox = text
+        chat.delivered = False
+        chat.notice = ""
 
     def _run_command(self, command: str) -> None:
         chat = self.chat

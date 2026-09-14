@@ -10,10 +10,18 @@ from __future__ import annotations
 import io
 import sys
 import unittest
+from dataclasses import replace
 
 from kakaoread.errors import ErrorCode, KakaoReadError
 from kakaoread.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
-from kakaoread.tui.console import HIDE_CURSOR, SHOW_CURSOR, Console, Key
+from kakaoread.tui.console import (
+    AUTOWRAP_OFF,
+    AUTOWRAP_ON,
+    HIDE_CURSOR,
+    SHOW_CURSOR,
+    Console,
+    Key,
+)
 from kakaoread.tui.layout import display_width, strip_ansi
 from kakaoread.tui.theme import Theme
 from kakaoread.winauto import SendResult
@@ -336,6 +344,84 @@ class BrowserOpensTheRoomTests(ComposerCase):
         self.type("안녕")
         self.app.handle(Key.ENTER, "")
         self.assertEqual(self.sender.calls[0]["aliases"], [])
+
+
+class WrapTests(unittest.TestCase):
+    """A frame as wide as the screen must not wrap into the next row.
+
+    Writing the last cell of a line makes the terminal wrap, and the frame's
+    own newline then lands a row late: the box drifted sideways and its right
+    border fell off the screen.
+    """
+
+    def paint(self) -> str:
+        console = Console()
+        buffer = io.StringIO()
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            console.__enter__()
+            console.__exit__()
+        finally:
+            sys.stdout = original
+        return buffer.getvalue()
+
+    def test_wrapping_is_turned_off_while_the_interface_owns_the_screen(self) -> None:
+        self.assertIn(AUTOWRAP_OFF, self.paint())
+
+    def test_wrapping_is_given_back_on_the_way_out(self) -> None:
+        painted = self.paint()
+        self.assertIn(AUTOWRAP_ON, painted)
+        self.assertLess(painted.index(AUTOWRAP_OFF), painted.index(AUTOWRAP_ON))
+
+
+class SentMarkTests(ComposerCase):
+    """What was sent is marked beside the prompt, not announced in words."""
+
+    def send(self, text: str = "안녕") -> None:
+        self.type(text)
+        self.app.handle(Key.ENTER, "")
+
+    def test_nothing_is_announced_in_the_status_line(self) -> None:
+        self.send()
+        self.assertEqual(self.chat.notice, "")
+
+    def test_a_queued_message_is_marked_beside_the_prompt(self) -> None:
+        self.send()
+        box = self.composer()
+        self.assertIn("⌛", box)
+        self.assertLess(box.index("⌛"), box.index("❯"))
+
+    def test_the_mark_becomes_a_tick_once_the_client_writes_it(self) -> None:
+        self.send("보낸 말")
+        self.chat.messages.append(
+            replace(self.chat.messages[-1], id=99_999, text="보낸 말", from_me=True)
+        )
+        self.app._confirm_delivery(self.chat.messages[-1:])
+        box = self.composer()
+        self.assertIn("✅", box)
+        self.assertNotIn("⌛", box)
+
+    def test_the_box_keeps_its_width_with_a_mark(self) -> None:
+        self.send()
+        for line in self.app.render(WIDTH, HEIGHT):
+            self.assertLessEqual(display_width(line), WIDTH)
+
+    def test_typing_again_clears_a_stale_tick(self) -> None:
+        self.send("보낸 말")
+        self.chat.messages.append(
+            replace(self.chat.messages[-1], id=99_998, text="보낸 말", from_me=True)
+        )
+        self.app._confirm_delivery(self.chat.messages[-1:])
+        self.type("다")
+        self.assertNotIn("✅", self.composer())
+
+    def test_a_message_still_unseen_keeps_its_mark_while_the_next_is_typed(self) -> None:
+        # Hiding it because a new line is being written would hide the one
+        # fact worth knowing: that the last message has not come back yet.
+        self.send()
+        self.type("다")
+        self.assertIn("⌛", self.composer())
 
 
 if __name__ == "__main__":
