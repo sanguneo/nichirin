@@ -171,6 +171,11 @@ Taken from a live client, not guessed.
   at the terminal caret, and a finished frame leaves the caret after the
   footer, so composition appeared beside the version string. `Console.draw`
   takes the cell to park it in, and `App.cursor` carries it.
+- **The browser always opens the room it is sending to.** Someone typing into
+  a conversation has already named their target, so the composer passes
+  `open_if_needed`. The alias the window may carry is read once in `open_room`
+  and kept on `ChatState` — reading it per send would put the 3.0 s catalog
+  decrypt back on the path that was just cleared of it.
 - **A sent message is never echoed into the transcript.** It arrives through
   the watcher like any other message, so the screen cannot show a line the
   client did not actually send.

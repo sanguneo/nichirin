@@ -69,6 +69,12 @@ class ChatState:
     """Arrivals that landed below the viewport while the reader was scrolled up."""
     anchor_top: bool = True
     """Show the body from its first line once, when its height is known."""
+    window_alias: Optional[str] = None
+    """The title this room's window carries, when it differs from its own.
+
+    Read when the room is opened rather than when a message is sent: the
+    catalog is rewritten constantly, and re-reading it cost 3.0 s per send.
+    """
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
 
@@ -132,8 +138,15 @@ class App:
             self.palette.hue(message.sender)
         watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)
         watcher.prime()
+        stored = self.reader.stored_title(room.id)
         # A conversation opens at its newest line, not at its oldest.
-        self.chat = ChatState(room=room, messages=messages, watcher=watcher, anchor_top=False)
+        self.chat = ChatState(
+            room=room,
+            messages=messages,
+            watcher=watcher,
+            anchor_top=False,
+            window_alias=stored if stored and stored != room.title else None,
+        )
 
     def refresh(self, width: int) -> bool:
         """Pick up anything new. Returns whether the screen needs redrawing."""
@@ -723,7 +736,14 @@ class App:
         assert chat is not None
         try:
             self._refuse_ambiguous(chat.room)
-            self._require_sender().send(chat.room.title, text)
+            # The room is the one being read, so opening its window needs no
+            # further confirmation than having typed into it.
+            self._require_sender().send(
+                chat.room.title,
+                text,
+                open_if_needed=True,
+                aliases=[chat.window_alias] if chat.window_alias else [],
+            )
         except KakaoReadError as error:
             chat.notice = f"전송 실패: {error.message}"
             return

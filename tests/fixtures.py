@@ -156,6 +156,10 @@ def build_profile(
         LOG_SCHEMA,
         {"chatLogs": [(6001, FRIEND_ID, 1, "group hello", None, 1_700_000_400, 0)]},
     )
+    self_log = _connect(
+        LOG_SCHEMA,
+        {"chatLogs": [(8001, OWN_ID, 1, "메모", None, 1_700_000_600, 0)]},
+    )
     huge_log = _connect(
         LOG_SCHEMA,
         {"chatLogs": [(HUGE_ID, HUGE_ID, 1, "huge", None, 1_700_000_500, 0)]},
@@ -167,6 +171,7 @@ def build_profile(
         paths.chat_log_name(DIRECT_ROOM): direct_log,
         paths.chat_log_name(GROUP_ROOM): group_log,
         paths.chat_log_name(HUGE_ROOM): huge_log,
+        paths.chat_log_name(SELF_ROOM): self_log,
     }
     key = bytes(32)
     keyring = Keyring(

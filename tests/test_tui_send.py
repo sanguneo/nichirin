@@ -29,9 +29,20 @@ class FakeSender:
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.calls: list[dict] = []
         self.failure: Exception | None = None
 
-    def send(self, room: str, text: str, dry_run: bool = False) -> SendResult:
+    def send(
+        self,
+        room: str,
+        text: str,
+        dry_run: bool = False,
+        open_if_needed: bool = False,
+        aliases=(),
+    ) -> SendResult:
+        self.calls.append(
+            {"room": room, "open_if_needed": open_if_needed, "aliases": list(aliases)}
+        )
         if self.failure is not None:
             raise self.failure
         self.sent.append((room, text))
@@ -302,6 +313,29 @@ class FooterHonestyTests(ComposerCase):
     def test_the_room_list_no_longer_calls_itself_read_only(self) -> None:
         self.app.chat = None
         self.assertNotIn("read-only", self.frame()[-1])
+
+
+class BrowserOpensTheRoomTests(ComposerCase):
+    """Someone reading a room in the browser has already named their target."""
+
+    def test_a_closed_room_is_opened_rather_than_refused(self) -> None:
+        self.type("안녕")
+        self.app.handle(Key.ENTER, "")
+        self.assertTrue(self.sender.calls[0]["open_if_needed"])
+
+    def test_the_title_the_window_carries_is_offered_as_an_alias(self) -> None:
+        from tests.fixtures import SELF_ROOM, SELF_STORED_TITLE
+
+        room = next(room for room in self.app.rooms if room.id == SELF_ROOM)
+        self.app.open_room(room)
+        self.type("안녕")
+        self.app.handle(Key.ENTER, "")
+        self.assertEqual(self.sender.calls[0]["aliases"], [SELF_STORED_TITLE])
+
+    def test_a_room_whose_titles_agree_needs_no_alias(self) -> None:
+        self.type("안녕")
+        self.app.handle(Key.ENTER, "")
+        self.assertEqual(self.sender.calls[0]["aliases"], [])
 
 
 if __name__ == "__main__":
