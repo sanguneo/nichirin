@@ -97,9 +97,11 @@ SQL is read-only; check `schema` before assuming column names.
 
 ## Sending explicitly authorized text
 
-The target conversation must already be open in its own KakaoTalk window.
-No mouse movement, focus switch or clipboard change is needed. The CLI resolves
-the room in the local catalog, then requires an exact window-title match.
+The conversation needs a window, not a place on screen: a chat window parked
+minimised in the taskbar sends exactly like one in front, with no focus change
+and no cursor movement. With `--open` the tool opens the room itself when its
+window is closed, even with KakaoTalk sitting in the tray. The CLI resolves the
+room in the local catalog, then requires an exact window-title match.
 
 ```powershell
 python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --dry-run "Approved text"
@@ -111,6 +113,14 @@ python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --open "Appr
   explicit authorization for that message is sufficient. A draft request is not
   permission to send.
 - Run `--dry-run` first: it checks the target and input without changing either.
+  With `--open` it will still open the room; only the typing is skipped.
+- **`--open` has a cost worth naming to the user.** Rows in KakaoTalk's list
+  cannot be read, only clicked, so the tool clicks down the list until the
+  window that appears carries the right title — and **a room opened while
+  searching is marked read**. It is free when the room is near the top of the
+  list, which recent conversations are. Rooms this opened are left minimised
+  and a main window taken out of the tray is put back; a window the user
+  already had open is never moved.
 - Space sends at least two seconds apart. The caller enforces the interval.
 - `submitted: true` means Enter was queued, not delivered. Read `context` or
   `messages` to find a new matching `fromMe` record before claiming success.
@@ -136,7 +146,7 @@ only when explicitly needed; otherwise they are omitted.
 
 ## Limits, stated plainly
 
-- **Text sending only.** Requires an already-open, uniquely titled chat window
+- **Text sending only.** Requires a uniquely titled chat window
   and the current Korean RichEdit input. No attachments, login automation or
   history download. The TUI composes and sends through that same input.
 - **Local only.** Only what this computer has cached is visible, and only for
