@@ -58,6 +58,23 @@ code that depends on them without re-checking will produce quiet wrong answers.
 - **Prepare the key once per database, not per page.** Per-page CNG setup
   measured 182.2 µs/page against 7.6 µs/page with the handle reused.
 
+### Cost of a single command
+
+Every command pays discovery before it answers, and both halves were slow:
+
+- **The heap scan is remembered, not repeated.** `scan_process` measured 426 ms
+  on a quiet client and 2.8 s when its working set was large. The addresses it
+  found are cached per pid in `%LOCALAPPDATA%\kakaoread\contexts.json` and
+  re-read in 0.8 ms. **Only addresses are stored — never a key or a salt**, and
+  every cached address is decoded and followed exactly like a fresh candidate,
+  so a moved heap yields fewer contexts and falls back to a full scan.
+- **The profile is walked, not globbed.** `rglob("*")` stats every entry in a
+  profile that also holds media and caches: 1.36 s for 298 databases against
+  92.8 ms with `os.walk`. `test_paths.py` pins the resulting order, which folds
+  case because Windows path comparison does.
+- Together: `status` 2.43 s → 0.30 s, `rooms` 2.54 s → 0.63 s, `friends` 2.06 s
+  → 0.38 s, with byte-identical output.
+
 ### Consistency
 
 - `build_image` compares the source **byte for byte** after reading. A stat

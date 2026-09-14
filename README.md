@@ -181,6 +181,18 @@ reproduce them. kakaoread finds the live key by scanning the running
 salt. Pages are decrypted with Windows CNG, and committed write-ahead log
 frames are applied so messages appear without waiting for a checkpoint.
 
+Discovery is remembered between runs. The **addresses** of the contexts found
+in the client are written to `%LOCALAPPDATA%\kakaoread\contexts.json`, so the
+next command re-reads them in under a millisecond instead of searching the
+heap again — `status` goes from 2.43 s to 0.30 s. No key and no salt is ever
+written there, every cached address is validated exactly like a fresh
+candidate, and one that no longer holds a context sends the tool back to a
+full scan.
+
+키 탐색 결과는 **주소만** `%LOCALAPPDATA%\kakaoread\contexts.json` 에 기억해
+다음 호출에서 힙을 다시 뒤지지 않습니다. 키나 salt 는 저장하지 않으며, 주소가
+더는 유효하지 않으면 전체 스캔으로 되돌아갑니다.
+
 The process handle is opened for query and read access only. No process memory
 or database is directly modified. Sending separately uses Win32 control
 messages (`EM_SETSEL`, `EM_REPLACESEL`, then posted Enter), not protocol
