@@ -18,7 +18,8 @@ import shutil
 import sys
 import time
 from ctypes import wintypes
-from typing import Final, Optional
+from dataclasses import dataclass
+from typing import Final, Iterator, Optional
 
 _IDLE_TICK: Final = 0.01
 """How long to idle between keyboard checks; short enough to feel immediate."""
@@ -35,6 +36,23 @@ SHOW_CURSOR: Final = "\x1b[?25h"
 HOME: Final = "\x1b[H"
 CLEAR_BELOW: Final = "\x1b[J"
 CLEAR_LINE: Final = "\x1b[K"
+
+
+_STD_INPUT: Final = -10
+_KEY_EVENT: Final = 0x0001
+_WAIT_SIGNALLED: Final = 0x0000
+
+_HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
+_LOW_SURROGATE: Final = range(0xDC00, 0xE000)
+
+
+@dataclass(frozen=True, slots=True)
+class KeyEvent:
+    """One console input record, reduced to what a keystroke needs."""
+
+    key_down: bool
+    virtual_key: int
+    character: str
 
 
 class Key:
@@ -55,15 +73,29 @@ class Key:
     INTERRUPT: Final = "interrupt"
 
 
-_SPECIAL: Final = {
-    "H": Key.UP,
-    "P": Key.DOWN,
-    "K": Key.LEFT,
-    "M": Key.RIGHT,
-    "I": Key.PAGE_UP,
-    "Q": Key.PAGE_DOWN,
-    "G": Key.HOME,
-    "O": Key.END,
+_BY_VIRTUAL_KEY: Final = {
+    0x08: Key.BACKSPACE,
+    0x09: Key.TAB,
+    0x0D: Key.ENTER,
+    0x1B: Key.ESCAPE,
+    0x21: Key.PAGE_UP,
+    0x22: Key.PAGE_DOWN,
+    0x23: Key.END,
+    0x24: Key.HOME,
+    0x25: Key.LEFT,
+    0x26: Key.UP,
+    0x27: Key.RIGHT,
+    0x28: Key.DOWN,
+}
+
+_BY_CHARACTER: Final = {
+    "\x08": Key.BACKSPACE,
+    "\x7f": Key.BACKSPACE,
+    "\r": Key.ENTER,
+    "\n": Key.ENTER,
+    "\x1b": Key.ESCAPE,
+    "\t": Key.TAB,
+    "\x03": Key.INTERRUPT,
 }
 
 
@@ -119,6 +151,30 @@ def _restore_codepage(page: Optional[int]) -> None:
         pass
 
 
+class _CHARACTER(ctypes.Union):
+    _fields_ = [("UnicodeChar", ctypes.c_wchar), ("AsciiChar", ctypes.c_char)]
+
+
+class _KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        ("uChar", _CHARACTER),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
+
+
+class _EVENT(ctypes.Union):
+    # Sized for the largest record the console can queue, not just a key.
+    _fields_ = [("KeyEvent", _KEY_EVENT_RECORD), ("padding", ctypes.c_byte * 16)]
+
+
+class _INPUT_RECORD(ctypes.Structure):
+    _fields_ = [("EventType", wintypes.WORD), ("Event", _EVENT)]
+
+
 class Console:
     """Owns the terminal while the interface is running."""
 
@@ -126,6 +182,9 @@ class Console:
         self._mode: Optional[int] = None
         self._codepage: Optional[int] = None
         self._entered = False
+        self._kernel32: Optional[ctypes.WinDLL] = None
+        self._pending_surrogate = ""
+        """Half an astral character; a console delivers the two halves apart."""
 
     @property
     def size(self) -> tuple[int, int]:
@@ -177,38 +236,90 @@ class Console:
         sys.stdout.flush()
         del columns
 
+    def _events(self, timeout: float) -> Iterator[KeyEvent]:
+        """Yield whatever the console queued, waiting at most *timeout*.
+
+        Reading the records directly is what keeps the loop alive. The
+        previous version asked ``msvcrt.kbhit()`` whether anything was
+        waiting, but a console also queues key releases, focus changes, mouse
+        moves and buffer resizes; ``kbhit`` says yes to all of them and the
+        ``getwch`` that followed blocks with no deadline, so one stray event
+        held the last keystroke until another key was pressed.
+        """
+        if self._kernel32 is None:
+            self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = self._kernel32
+        handle = kernel32.GetStdHandle(_STD_INPUT)
+        if handle in (0, None) or handle == ctypes.c_void_p(-1).value:
+            return
+        if kernel32.WaitForSingleObject(handle, int(max(0.0, timeout) * 1000)) != _WAIT_SIGNALLED:
+            return
+
+        record = _INPUT_RECORD()
+        read = wintypes.DWORD()
+        waiting = wintypes.DWORD()
+        while True:
+            if not kernel32.GetNumberOfConsoleInputEvents(handle, ctypes.byref(waiting)):
+                return
+            if waiting.value == 0:
+                return
+            if not kernel32.ReadConsoleInputW(handle, ctypes.byref(record), 1, ctypes.byref(read)):
+                return
+            if read.value == 0:
+                return
+            if record.EventType != _KEY_EVENT:
+                continue
+            key = record.Event.KeyEvent
+            character = key.uChar.UnicodeChar
+            yield KeyEvent(
+                key_down=bool(key.bKeyDown),
+                virtual_key=int(key.wVirtualKeyCode),
+                character="" if character in ("", "\x00") else character,
+            )
+
     def read_key(self, timeout: float = 0.0) -> tuple[str, str]:
         """Wait up to *timeout* seconds for a key, returning ``(kind, text)``.
 
         *kind* is a name from :class:`Key` for anything special, ``"char"``
-        when *text* holds a printable character, and empty when the wait
-        expired. Waiting with a deadline rather than blocking is what lets the
-        loop notice messages arriving while nobody is typing.
+        when *text* holds a typed character, and empty when nothing arrived.
+        Waiting with a deadline rather than blocking is what lets the loop
+        notice messages arriving while nobody is typing.
         """
-        import msvcrt
-
-        deadline = time.monotonic() + max(0.0, timeout)
-        while not msvcrt.kbhit():
-            if time.monotonic() >= deadline:
-                return "", ""
-            time.sleep(_IDLE_TICK)
-
-        character = msvcrt.getwch()
-        if character in ("\x00", "\xe0"):
-            return _SPECIAL.get(msvcrt.getwch(), ""), ""
-        if character == "\r":
-            return Key.ENTER, ""
-        if character == "\x1b":
-            return Key.ESCAPE, ""
-        if character in ("\x08", "\x7f"):
-            return Key.BACKSPACE, ""
-        if character == "\t":
-            return Key.TAB, ""
-        if character == "\x03":
-            return Key.INTERRUPT, ""
-        if character.isprintable() or character == " ":
-            return "char", character
+        for event in self._events(timeout):
+            if not event.key_down:
+                continue
+            decoded = self._decode(event)
+            if decoded is not None:
+                return decoded
         return "", ""
+
+    def _decode(self, event: KeyEvent) -> Optional[tuple[str, str]]:
+        """Turn one key press into a keystroke, or nothing at all."""
+        character = event.character
+        if character:
+            named = _BY_CHARACTER.get(character)
+            if named is not None:
+                self._pending_surrogate = ""
+                return named, ""
+            if ord(character) in _HIGH_SURROGATE:
+                self._pending_surrogate = character
+                return None
+            if ord(character) in _LOW_SURROGATE:
+                if not self._pending_surrogate:
+                    return None
+                pair = self._pending_surrogate + character
+                self._pending_surrogate = ""
+                # The console hands an astral character over as two UTF-16
+                # halves; joined as text they stay two unusable code points.
+                whole = pair.encode("utf-16", "surrogatepass").decode("utf-16")
+                return "char", whole
+            self._pending_surrogate = ""
+            if character.isprintable() or character == " ":
+                return "char", character
+            return None
+
+        named = _BY_VIRTUAL_KEY.get(event.virtual_key)
+        return (named, "") if named is not None else None
 
 
 def supports_tui() -> bool:
