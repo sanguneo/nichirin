@@ -167,6 +167,18 @@ Taken from a live client, not guessed.
   room's whole log — 0.62 s and 0.94 s measured on two live rooms — and this
   loop is single-threaded, so `_poll_due` defers while keys are still arriving
   and `_next_poll_at` waits behind an expensive room instead of in front of it.
+- **Autowrap is off while the interface owns the screen.** A frame line is
+  exactly as wide as the screen, and writing its last cell makes the terminal
+  wrap; the frame's own newline then lands a row late, so every box below
+  drifts and its right border falls off.
+- **No emoji in the frame.** ✅/⌛ measure as the two columns the console
+  advances, but the glyph paints over the next cell and the smear survives
+  until something overwrites it. The send marks are plain text — `*` queued,
+  `✓` delivered — and `✓` is width-neutral rather than ambiguous. Their slot is
+  always two columns, so the prompt does not move when a mark appears.
+- **What was sent is marked, not announced.** Typing clears a stale tick but
+  never an unresolved `*`: hiding that would hide the one fact worth knowing,
+  since a queued Enter is not a delivered message.
 - **The caret belongs in the composer.** A Korean IME draws half-typed Hangul
   at the terminal caret, and a finished frame leaves the caret after the
   footer, so composition appeared beside the version string. `Console.draw`

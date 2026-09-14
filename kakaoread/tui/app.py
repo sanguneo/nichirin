@@ -539,14 +539,17 @@ class App:
         top = self.theme.fg("borderMuted", "╭" + "─" * inner + "╮")
         bottom = self.theme.fg("borderMuted", "╰" + "─" * inner + "╯")
 
-        # Both marks are East-Asian wide, so they measure as the two columns
-        # they occupy; an ambiguous-width glyph here would push the border out.
+        # The slot is always two columns wide, so the prompt never moves when
+        # a mark appears. Emoji were tried first and are not usable here: the
+        # console advances two cells but the glyph paints over the next one,
+        # leaving the mark smeared until something overwrote it. These are
+        # plain text, and "✓" is width-neutral rather than ambiguous.
         if chat.delivered:
-            mark = self.theme.fg("success", "✅ ")
+            mark = self.theme.fg("success", "✓") + " "
         elif chat.outbox is not None:
-            mark = self.theme.fg("muted", "⌛ ")
+            mark = self.theme.fg("muted", "*") + " "
         else:
-            mark = ""
+            mark = "  "
         # The tail is what is being typed, so a long draft loses its head.
         written = elide_head(chat.draft, max(1, inner - 5 - display_width(mark)))
         body = " " + mark + self.theme.fg("accent", "❯ ") + written + self.theme.fg("accent", "▌")

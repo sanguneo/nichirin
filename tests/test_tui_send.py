@@ -389,8 +389,14 @@ class SentMarkTests(ComposerCase):
     def test_a_queued_message_is_marked_beside_the_prompt(self) -> None:
         self.send()
         box = self.composer()
-        self.assertIn("⌛", box)
-        self.assertLess(box.index("⌛"), box.index("❯"))
+        self.assertIn("*", box)
+        self.assertLess(box.index("*"), box.index("❯"))
+
+    def test_the_prompt_does_not_move_when_a_mark_appears(self) -> None:
+        # The first attempt used emoji and shifted the prompt on every send.
+        before = self.composer().index("❯")
+        self.send()
+        self.assertEqual(self.composer().index("❯"), before)
 
     def test_the_mark_becomes_a_tick_once_the_client_writes_it(self) -> None:
         self.send("보낸 말")
@@ -399,8 +405,8 @@ class SentMarkTests(ComposerCase):
         )
         self.app._confirm_delivery(self.chat.messages[-1:])
         box = self.composer()
-        self.assertIn("✅", box)
-        self.assertNotIn("⌛", box)
+        self.assertIn("✓", box)
+        self.assertNotIn("*", box)
 
     def test_the_box_keeps_its_width_with_a_mark(self) -> None:
         self.send()
@@ -414,14 +420,14 @@ class SentMarkTests(ComposerCase):
         )
         self.app._confirm_delivery(self.chat.messages[-1:])
         self.type("다")
-        self.assertNotIn("✅", self.composer())
+        self.assertNotIn("✓", self.composer())
 
     def test_a_message_still_unseen_keeps_its_mark_while_the_next_is_typed(self) -> None:
         # Hiding it because a new line is being written would hide the one
         # fact worth knowing: that the last message has not come back yet.
         self.send()
         self.type("다")
-        self.assertIn("⌛", self.composer())
+        self.assertIn("*", self.composer())
 
 
 if __name__ == "__main__":
