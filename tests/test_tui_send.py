@@ -7,11 +7,13 @@ production never raises.
 
 from __future__ import annotations
 
+import io
+import sys
 import unittest
 
 from kakaoread.errors import ErrorCode, KakaoReadError
 from kakaoread.tui.app import App, ChatState
-from kakaoread.tui.console import Key
+from kakaoread.tui.console import HIDE_CURSOR, SHOW_CURSOR, Console, Key
 from kakaoread.tui.layout import display_width, strip_ansi
 from kakaoread.tui.theme import Theme
 from kakaoread.winauto import SendResult
@@ -36,7 +38,9 @@ class FakeSender:
         return {"submitted": True, "dryRun": False, "room": room, "length": len(text)}
 
 
-class ComposerTests(unittest.TestCase):
+class ComposerCase(unittest.TestCase):
+    """Shared fixture: one open room and a sender that never touches a desktop."""
+
     def setUp(self) -> None:
         self.reader = build_reader()
         self.addCleanup(self.reader.close)
@@ -62,6 +66,7 @@ class ComposerTests(unittest.TestCase):
         for character in written:
             self.app.handle("char", character)
 
+class ComposerTests(ComposerCase):
     def test_an_open_room_shows_a_bordered_message_box(self) -> None:
         box = self.composer()
         self.assertIn("╭", box)
@@ -147,6 +152,75 @@ class ComposerTests(unittest.TestCase):
         self.app.handle(Key.ENTER, "")
         self.assertEqual(self.sender.sent, [])
         self.assertIn("특정할 수 없습니다", self.chat.notice)
+
+
+class CostTests(ComposerCase):
+    """Typing must not pay for the conversation it is typed into."""
+
+    def test_typing_does_not_rebuild_the_transcript(self) -> None:
+        lines = self.app._transcript_lines(WIDTH)
+        self.type("가")
+        self.assertIs(self.app._transcript_lines(WIDTH), lines)
+
+    def test_a_new_message_rebuilds_it(self) -> None:
+        lines = self.app._transcript_lines(WIDTH)
+        self.chat.messages.append(self.chat.messages[-1])
+        self.assertIsNot(self.app._transcript_lines(WIDTH), lines)
+
+    def test_a_narrower_screen_rebuilds_it(self) -> None:
+        lines = self.app._transcript_lines(WIDTH)
+        self.assertIsNot(self.app._transcript_lines(WIDTH - 10), lines)
+
+
+class CaretTests(ComposerCase):
+    """The caret is where an IME draws half-typed Hangul, so it must sit in the box."""
+
+    def caret(self) -> tuple[int, int]:
+        frame = self.app.render(WIDTH, HEIGHT)
+        cursor = self.app.cursor
+        self.assertIsNotNone(cursor)
+        assert cursor is not None
+        self.assertIn("❯", strip_ansi(frame[cursor[0]]))
+        return cursor
+
+    def test_the_caret_sits_on_the_prompt_row(self) -> None:
+        row, column = self.caret()
+        self.assertGreater(column, 0)
+        self.assertLess(row, HEIGHT)
+
+    def test_the_caret_follows_double_width_text(self) -> None:
+        _row, before = self.caret()
+        self.type("가")
+        _row, after = self.caret()
+        self.assertEqual(after - before, 2, "the caret ignored Hangul's second column")
+
+    def test_the_room_list_parks_no_caret(self) -> None:
+        self.app.chat = None
+        self.app.render(WIDTH, HEIGHT)
+        self.assertIsNone(self.app.cursor)
+
+
+class ConsoleCaretTests(unittest.TestCase):
+    def paint(self, cursor: tuple[int, int] | None) -> str:
+        console = Console()
+        buffer = io.StringIO()
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            console.draw(["one line"], cursor)
+        finally:
+            sys.stdout = original
+        return buffer.getvalue()
+
+    def test_a_caret_is_positioned_and_shown(self) -> None:
+        painted = self.paint((3, 7))
+        self.assertIn("\x1b[4;8H", painted)
+        self.assertIn(SHOW_CURSOR, painted)
+
+    def test_without_a_caret_the_cursor_stays_hidden(self) -> None:
+        painted = self.paint(None)
+        self.assertIn(HIDE_CURSOR, painted)
+        self.assertNotIn(SHOW_CURSOR, painted)
 
 
 if __name__ == "__main__":

@@ -152,8 +152,14 @@ class Console:
         _restore_vt(self._mode)
         _restore_codepage(self._codepage)
 
-    def draw(self, lines: list[str]) -> None:
-        """Paint one whole frame in a single write."""
+    def draw(self, lines: list[str], cursor: Optional[tuple[int, int]] = None) -> None:
+        """Paint one whole frame in a single write.
+
+        *cursor* is where the caret is parked afterwards. It matters more than
+        it looks: a Korean IME draws its composition at the terminal caret, so
+        leaving the caret wherever the frame happened to end puts half-typed
+        Hangul next to the footer instead of in the message box.
+        """
         columns, rows = self.size
         frame = [HOME]
         for row in range(rows):
@@ -162,6 +168,11 @@ class Console:
             if row < rows - 1:
                 frame.append("\r\n")
         frame.append(CLEAR_BELOW)
+        if cursor is None:
+            frame.append(HIDE_CURSOR)
+        else:
+            row, column = cursor
+            frame.append(f"\x1b[{row + 1};{column + 1}H" + SHOW_CURSOR)
         sys.stdout.write("".join(frame))
         sys.stdout.flush()
         del columns

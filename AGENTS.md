@@ -127,6 +127,15 @@ Taken from a live client, not guessed.
 - The composer keeps focus for the whole time a room is open, so no letter is
   a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
   used to do. `test_tui_send.py` pins that a typed `q` does not quit.
+- **Typing must not redraw the conversation.** `_transcript_lines` is cached
+  per (width, message count). Rebuilding it on every keystroke measured 71 ms
+  per key at the default 400-message window and 142 ms at 800, which is what
+  made input stutter; cached, a keystroke costs 0.17 ms. Anything that changes
+  a loaded message must change that key or the screen will lie.
+- **The caret belongs in the composer.** A Korean IME draws half-typed Hangul
+  at the terminal caret, and a finished frame leaves the caret after the
+  footer, so composition appeared beside the version string. `Console.draw`
+  takes the cell to park it in, and `App.cursor` carries it.
 - **A sent message is never echoed into the transcript.** It arrives through
   the watcher like any other message, so the screen cannot show a line the
   client did not actually send.
