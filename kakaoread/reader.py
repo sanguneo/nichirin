@@ -1,0 +1,380 @@
+"""Query the decrypted databases, doing the least work that answers the question.
+
+Everything is lazy.  Building the key ring means scanning the client's heap,
+and opening a snapshot means decrypting a whole file, so neither happens until
+a caller actually needs it.  That is what lets ``status`` explain that
+KakaoTalk is closed instead of failing to start for the same reason.
+
+The queries target the schema this client really uses rather than a list of
+guessed column aliases.  Two details from that schema shape the code:
+
+* ``chatLogs`` has no index on ``sendAt`` but its primary key is ``logId``,
+  and over the newest 5000 rows of a live room the two orders agreed exactly.
+  Ordering by ``logId`` therefore reads an index instead of sorting hundreds of
+  thousands of rows.
+* The signed-in user is the sole member of the ``MemoChat`` room.  The
+  ``Profile`` table holds several rows and its ``hasMeBadge`` flag marks a
+  different account entirely, so neither is used to identify the account.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+from typing import Any, Iterator, Optional
+
+from . import model, paths
+from .errors import ErrorCode, KakaoReadError
+from .keyring import Keyring
+from .model import Message, Room
+from .snapshot import SnapshotCache
+
+_SELF_CHAT_TITLE = "나와의 채팅"
+_GROUP_TITLE_MEMBERS = 3
+
+
+class Reader:
+    """Read-only access to one signed-in KakaoTalk profile."""
+
+    def __init__(
+        self,
+        user_directory: Optional[Path] = None,
+        cache: Optional[SnapshotCache] = None,
+        keyring: Optional[Keyring] = None,
+    ) -> None:
+        """Build a reader without touching the disk or the client.
+
+        *cache* and *keyring* exist so callers can supply an already-scanned
+        key ring instead of paying for a second heap scan, and so tests can
+        drive the query logic against fixtures.
+        """
+        self._user_directory = user_directory
+        self._cache = cache if cache is not None else SnapshotCache()
+        self._keyring: Optional[Keyring] = keyring
+        self._names: Optional[dict[int, str]] = None
+        self._own_id: Optional[int] = None
+        self._own_id_resolved = False
+
+    @property
+    def user_directory(self) -> Path:
+        if self._user_directory is None:
+            self._user_directory = paths.user_directory()
+        return self._user_directory
+
+    @property
+    def keyring(self) -> Keyring:
+        """Scan the running client once, on first use."""
+        if self._keyring is None:
+            self._keyring = Keyring.discover(self.user_directory)
+        return self._keyring
+
+    def close(self) -> None:
+        self._cache.close()
+
+    def __enter__(self) -> "Reader":
+        return self
+
+    def __exit__(self, *_exception: object) -> None:
+        self.close()
+
+    # -- diagnostics ---------------------------------------------------------
+
+    def status(self) -> dict[str, object]:
+        """Describe access without requiring any of it to be working."""
+        try:
+            directory = self.user_directory
+            profile: Optional[str] = str(directory)
+        except KakaoReadError:
+            return {
+                "running": False,
+                "profile": None,
+                "decryptableDatabases": 0,
+                "readableRooms": 0,
+                "detail": "no signed-in KakaoTalk profile exists on this computer",
+            }
+
+        ring = self.keyring
+        readable = len(ring.chat_ids())
+        if not ring.running:
+            detail = "KakaoTalk is not running, so no keys are in memory"
+        elif not ring.keys:
+            detail = "KakaoTalk is running but has not opened any database yet"
+        else:
+            detail = "ready"
+        return {
+            "running": ring.running,
+            "profile": profile,
+            "decryptableDatabases": len(ring),
+            "readableRooms": readable,
+            "detail": detail,
+        }
+
+    def verify(self) -> dict[str, object]:
+        """Prove decryption works by opening the catalog and counting its rooms."""
+        connection = self._catalog()
+        rooms = connection.execute("SELECT COUNT(*) FROM chatRoomList").fetchone()[0]
+        return {"verified": True, "rooms": int(rooms), "readableRooms": len(self.keyring.chat_ids())}
+
+    # -- catalog -------------------------------------------------------------
+
+    def _catalog(self) -> sqlite3.Connection:
+        name = paths.CATALOG_DATABASE
+        return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
+
+    def _users(self) -> sqlite3.Connection:
+        name = paths.USER_DATABASE
+        return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
+
+    def names(self) -> dict[int, str]:
+        """Map every known user id to the best available display name.
+
+        A name the signed-in user assigned wins over the name the contact
+        chose for themselves, matching what the client shows.
+        """
+        if self._names is None:
+            users = self._users()
+            # talkUser holds contacts and never the signed-in account itself,
+            # so without Profile every message the user sent would be
+            # attributed to a bare numeric id.
+            found: dict[int, str] = {
+                int(user_id): str(nickname)
+                for user_id, nickname in users.execute(
+                    "SELECT userId, nickname FROM Profile WHERE nickname IS NOT NULL"
+                )
+            }
+            found.update(
+                {
+                    int(user_id): str(friend or nick)
+                    for user_id, friend, nick in users.execute(
+                        "SELECT userId, friendNickName, nickName FROM talkUser"
+                    )
+                    if friend or nick
+                }
+            )
+            self._names = found
+        return self._names
+
+    def own_user_id(self) -> Optional[int]:
+        """Identify the signed-in account, or None when it cannot be proven."""
+        if self._own_id_resolved:
+            return self._own_id
+        self._own_id_resolved = True
+        catalog = self._catalog()
+
+        self_rooms = [
+            int(row[0])
+            for row in catalog.execute(
+                "SELECT chatId FROM chatRoomList WHERE type = ?", (model.SELF_CHAT,)
+            )
+        ]
+        for room_id in self_rooms:
+            members = [
+                int(row[0])
+                for row in catalog.execute(
+                    "SELECT userId FROM chatMembers WHERE chatId = ?", (room_id,)
+                )
+            ]
+            if len(members) == 1:
+                self._own_id = members[0]
+                return self._own_id
+
+        # Without a self-chat, the account is whoever is in a direct room
+        # besides the recorded counterpart.
+        for room_id, peer in catalog.execute(
+            "SELECT chatId, directChatMemberId FROM chatRoomList "
+            "WHERE type = ? AND directChatMemberId > 0 LIMIT 50",
+            (model.DIRECT_CHAT,),
+        ):
+            members = {
+                int(row[0])
+                for row in catalog.execute(
+                    "SELECT userId FROM chatMembers WHERE chatId = ?", (int(room_id),)
+                )
+            }
+            remainder = members - {int(peer)}
+            if len(remainder) == 1:
+                self._own_id = remainder.pop()
+                return self._own_id
+        return None
+
+    def _title(
+        self,
+        room_id: int,
+        room_type: str,
+        stored_title: Optional[str],
+        custom: int,
+        peer_id: Optional[int],
+    ) -> str:
+        title = (stored_title or "").strip()
+        if title and (custom or room_type in (model.CHANNEL_CHAT, model.OPEN_GROUP_CHAT)):
+            return title
+        if room_type == model.SELF_CHAT:
+            return _SELF_CHAT_TITLE
+        if room_type in (model.DIRECT_CHAT, model.OPEN_DIRECT_CHAT) and peer_id:
+            return self.names().get(int(peer_id), title or f"User {peer_id}")
+        if title:
+            return title
+
+        own = self.own_user_id()
+        members = [
+            int(row[0])
+            for row in self._catalog().execute(
+                "SELECT userId FROM chatMembers WHERE chatId = ? AND isActive = 1", (room_id,)
+            )
+            if int(row[0]) != own
+        ]
+        if members:
+            names = self.names()
+            shown = [names.get(member, f"User {member}") for member in members[:_GROUP_TITLE_MEMBERS]]
+            if len(members) > _GROUP_TITLE_MEMBERS:
+                shown.append(f"외 {len(members) - _GROUP_TITLE_MEMBERS}명")
+            return ", ".join(shown)
+        return f"Room {room_id}"
+
+    def rooms(self, limit: Optional[int] = None) -> list[Room]:
+        """Return conversations, most recently active first."""
+        sql = (
+            "SELECT chatId, type, chatRoomTitle, useCustomChatRoomTitle, activeMembersCount, "
+            "newMessageCount, lastLogId, lastUpdatedAt, directChatMemberId "
+            "FROM chatRoomList ORDER BY lastUpdatedAt IS NULL, lastUpdatedAt DESC"
+        )
+        parameters: tuple[object, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters = (limit,)
+
+        readable = set(self.keyring.chat_ids())
+        found: list[Room] = []
+        for row in self._catalog().execute(sql, parameters):
+            room_id, room_type, title, custom, members, unread, last_log, updated, peer = row
+            room_id = int(room_id)
+            found.append(
+                Room(
+                    id=room_id,
+                    type=str(room_type or ""),
+                    title=self._title(room_id, str(room_type or ""), title, int(custom or 0), peer),
+                    member_count=int(members or 0),
+                    unread=int(unread or 0),
+                    last_log_id=None if last_log is None else int(last_log),
+                    last_updated_at=None if updated is None else int(updated),
+                    readable=room_id in readable,
+                )
+            )
+        return found
+
+    def room(self, room_id: int) -> Optional[Room]:
+        """Return one conversation by id."""
+        return next((found for found in self.rooms() if found.id == room_id), None)
+
+    def resolve(self, name: str) -> list[Room]:
+        """Return rooms matching *name*, preferring an exact title match.
+
+        Returning every match rather than the first one is what lets a caller
+        refuse an ambiguous request instead of reading an arbitrary room.
+        """
+        needle = name.casefold().strip()
+        rooms = self.rooms()
+        exact = [found for found in rooms if found.title.casefold() == needle]
+        return exact or [found for found in rooms if needle in found.title.casefold()]
+
+    # -- messages ------------------------------------------------------------
+
+    def _logs(self, room_id: int) -> sqlite3.Connection:
+        name = paths.chat_log_name(room_id)
+        return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
+
+    def messages(
+        self,
+        room_id: int,
+        limit: int = 40,
+        before_id: Optional[int] = None,
+        after_id: Optional[int] = None,
+    ) -> list[Message]:
+        """Return up to *limit* messages ending at the newest, oldest first.
+
+        *before_id* pages backwards through history; *after_id* collects what
+        has arrived since a known message, which is how following works.
+        """
+        sql = "SELECT logId, authorId, type, message, attachement, sendAt FROM chatLogs"
+        parameters: list[object] = []
+        conditions = ["COALESCE(deleted, 0) = 0"]
+        if before_id is not None:
+            conditions.append("logId < ?")
+            parameters.append(before_id)
+        if after_id is not None:
+            conditions.append("logId > ?")
+            parameters.append(after_id)
+        sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY logId DESC LIMIT ?"
+        parameters.append(limit)
+
+        rows = self._logs(room_id).execute(sql, parameters).fetchall()
+        return [self._message(room_id, row) for row in reversed(rows)]
+
+    def count_messages(self, room_id: int) -> int:
+        """Return how many undeleted messages are stored locally for a room."""
+        row = self._logs(room_id).execute(
+            "SELECT COUNT(*) FROM chatLogs WHERE COALESCE(deleted, 0) = 0"
+        ).fetchone()
+        return int(row[0])
+
+    def newest_log_id(self, room_id: int) -> Optional[int]:
+        """Return the newest locally stored message id, without reading bodies."""
+        row = self._logs(room_id).execute("SELECT MAX(logId) FROM chatLogs").fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
+        log_id, author, type_code, text, attachment, sent_at = tuple(row)
+        sender_id = int(author or 0)
+        body = text if isinstance(text, str) and text else ""
+        if not body and isinstance(attachment, str) and attachment:
+            body = ""  # Attachment metadata is not message text and is not invented here.
+        return Message(
+            id=int(log_id),
+            room_id=room_id,
+            sender_id=sender_id,
+            sender=self.names().get(sender_id, f"User {sender_id}"),
+            text=body,
+            type=int(type_code or 0),
+            sent_at=None if sent_at is None else int(sent_at),
+            from_me=self.own_user_id() is not None and sender_id == self.own_user_id(),
+        )
+
+    def search(self, keyword: str, limit: int = 20) -> Iterator[Message]:
+        """Search readable rooms, newest first, stopping once *limit* is reached.
+
+        Rooms whose key is absent are skipped rather than failing the search,
+        because a partial local cache is the normal state; the caller is told
+        how many rooms were unreadable so a miss is never reported as proof.
+        """
+        if limit <= 0:
+            return
+        pattern = f"%{keyword}%"
+        remaining = limit
+        for room in self.rooms():
+            if not room.readable or remaining <= 0:
+                continue
+            try:
+                connection = self._logs(room.id)
+            except KakaoReadError:
+                continue
+            rows = connection.execute(
+                "SELECT logId, authorId, type, message, attachement, sendAt FROM chatLogs "
+                "WHERE COALESCE(deleted, 0) = 0 AND message LIKE ? "
+                "ORDER BY logId DESC LIMIT ?",
+                (pattern, remaining),
+            ).fetchall()
+            for row in rows:
+                yield self._message(room.id, row)
+                remaining -= 1
+
+    def query(self, sql: str, room_id: Optional[int] = None) -> list[dict[str, object]]:
+        """Run one read-only statement against the catalog or a room's log."""
+        connection = self._catalog() if room_id is None else self._logs(room_id)
+        connection.execute("PRAGMA query_only = ON")
+        try:
+            cursor = connection.execute(sql)
+        except sqlite3.Error as error:
+            raise KakaoReadError(ErrorCode.INVALID_REQUEST, str(error)) from error
+        columns = [description[0] for description in (cursor.description or ())]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]

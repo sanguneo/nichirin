@@ -1,0 +1,23 @@
+[project]
+name = "kakaoread"
+version = "0.1.0"
+description = "Read-only KakaoTalk conversation reader for AI agents on Windows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.scripts]
+kakaoread = "kakaoread.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kakaoread*"]
+
+[tool.pyright]
+include = ["kakaoread", "tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"

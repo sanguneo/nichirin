@@ -1,0 +1,77 @@
+"""Locate the signed-in KakaoTalk profile and its databases on this computer.
+
+Everything is resolved from the running machine's environment, so an installed
+copy works for whoever runs it rather than for whoever built it.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Final, Iterator
+
+from .errors import ErrorCode, KakaoReadError
+
+CHAT_DATA_DIRECTORY: Final = "chat_data"
+USER_DATABASE: Final = "TalkUserDB.edb"
+CATALOG_DATABASE: Final = f"{CHAT_DATA_DIRECTORY}/chatListInfo.edb"
+DATABASE_SUFFIX: Final = ".edb"
+
+_STATE_FILE: Final = "appstate.dat"
+
+
+def user_directory(environment: os._Environ[str] | dict[str, str] | None = None) -> Path:
+    """Return the active profile directory under ``%LOCALAPPDATA%``.
+
+    A profile counts as usable only when it has both ``appstate.dat`` and a
+    ``chat_data`` directory.  When a machine carries leftover profiles from
+    previous sign-ins, the most recently touched one is the active account.
+    """
+    env = os.environ if environment is None else environment
+    local_app_data = env.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise KakaoReadError(
+            ErrorCode.NO_USER_DATA,
+            "LOCALAPPDATA is not set, so the KakaoTalk profile directory cannot be located",
+        )
+
+    profiles_root = Path(local_app_data) / "Kakao" / "KakaoTalk" / "users"
+    if not profiles_root.is_dir():
+        raise KakaoReadError(
+            ErrorCode.NO_USER_DATA,
+            f"No KakaoTalk profile directory exists at {profiles_root}",
+        )
+
+    candidates = [
+        profile
+        for profile in profiles_root.iterdir()
+        if profile.is_dir()
+        and (profile / _STATE_FILE).is_file()
+        and (profile / CHAT_DATA_DIRECTORY).is_dir()
+    ]
+    if not candidates:
+        raise KakaoReadError(
+            ErrorCode.NO_USER_DATA,
+            f"No signed-in KakaoTalk profile was found under {profiles_root}; "
+            "sign in to the KakaoTalk desktop client first",
+        )
+    return max(candidates, key=lambda profile: (profile / _STATE_FILE).stat().st_mtime_ns)
+
+
+def database_paths(user_directory: Path) -> Iterator[Path]:
+    """Yield every encrypted database below a profile, in a stable order."""
+    yield from sorted(
+        path
+        for path in user_directory.rglob("*")
+        if path.is_file() and path.suffix.casefold() == DATABASE_SUFFIX
+    )
+
+
+def chat_log_name(chat_id: int) -> str:
+    """Return the profile-relative path of one room's message database."""
+    return f"{CHAT_DATA_DIRECTORY}/chatLogs_{chat_id}.edb"
+
+
+def wal_path(database: Path) -> Path:
+    """Return the write-ahead log that belongs to *database*."""
+    return database.with_name(database.name + "-wal")
