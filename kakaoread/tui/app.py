@@ -19,7 +19,7 @@ from typing import Optional, Sequence
 
 from .. import __version__
 from ..errors import KakaoReadError
-from ..model import Message, Room, message_kind
+from ..model import Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
 from .console import Console, Key, force_size
@@ -77,11 +77,30 @@ class App:
         self.status = ""
         self.running = True
         self.zone = KST
+        self.friends: list[Friend] = []
+        self.friend_selected = 0
+        self.friend_scroll = 0
+        self.show_friends = False
 
     # -- data ---------------------------------------------------------------
 
     def load_rooms(self) -> None:
         self.rooms = [room for room in self.reader.rooms() if room.readable]
+
+    def load_friends(self) -> None:
+        self.friends = self.reader.friends()
+
+    def open_friend(self, friend: Friend) -> None:
+        """Open a friend's 1:1 room, if the client has cached its key."""
+        if friend.direct_chat_id is None:
+            self.status = f"{friend.name}: 1:1 대화방이 로컬에 없습니다"
+            return
+        room = next((r for r in self.rooms if r.id == friend.direct_chat_id), None)
+        if room is None:
+            self.status = f"{friend.name}: 카카오톡에서 대화방을 먼저 열어주세요"
+            return
+        self.show_friends = False
+        self.open_room(room)
 
     def open_room(self, room: Room) -> None:
         messages = self.reader.messages(room.id, limit=HISTORY_WINDOW)
@@ -163,9 +182,11 @@ class App:
     # -- rendering ----------------------------------------------------------
 
     def render(self, width: int, height: int) -> list[str]:
-        if self.chat is None:
-            return self._render_rooms(width, height)
-        return self._render_chat(width, height)
+        if self.chat is not None:
+            return self._render_chat(width, height)
+        if self.show_friends:
+            return self._render_friends(width, height)
+        return self._render_rooms(width, height)
 
     def _title_row(self, left: str, right: str, width: int) -> str:
         right_text = truncate_to_width(right, width, "")
@@ -191,7 +212,8 @@ class App:
         lines = [
             self._title_row("KakaoTalk Rooms", right, width),
             self._hints(
-                [("↑↓", "move"), ("enter", "open"), ("r", "reload"), ("q", "quit")], width
+                [("↑↓", "move"), ("enter", "open"), ("f", "친구"), ("r", "reload"), ("q", "quit")],
+                width,
             ),
             "",
         ]
@@ -230,6 +252,68 @@ class App:
         lines.append(self._status_line(width))
         lines.append(self._footer_rooms(width))
         return lines[:height]
+
+    def _render_friends(self, width: int, height: int) -> list[str]:
+        if not self.friends:
+            self.load_friends()
+        total = len(self.friends)
+        favourites = sum(1 for friend in self.friends if friend.favorite)
+        right = self.theme.fg("accent", "친구") + self.theme.fg("muted", f"  {total}명 · ★{favourites}")
+        lines = [
+            self._title_row("KakaoTalk Friends", right, width),
+            self._hints(
+                [("↑↓", "move"), ("enter", "1:1 열기"), ("esc", "back"), ("q", "quit")], width
+            ),
+            "",
+        ]
+
+        body_height = max(1, height - len(lines) - 2)
+        self.friend_scroll = _clamp_scroll(
+            self.friend_selected, self.friend_scroll, body_height, total
+        )
+        visible = self.friends[self.friend_scroll : self.friend_scroll + body_height]
+
+        for index, friend in enumerate(visible, start=self.friend_scroll):
+            selected = index == self.friend_selected
+            cursor = self.theme.fg("accent", "› ") if selected else "  "
+            star = self.theme.fg("warning", "★ ") if friend.favorite else ""
+            chat_mark = "" if friend.direct_chat_id else "  (방 없음)"
+            right_part = (friend.status_message or "").replace("\n", " ")
+
+            name_width = max(8, width // 3)
+            name = truncate_to_width(star + friend.name, name_width, ELLIPSIS)
+            styled = self.theme.bold(name) if selected else name
+
+            left = cursor + styled + self.theme.fg("dim", chat_mark)
+            room_right = truncate_to_width(
+                self.theme.fg("dim", right_part), max(0, width - display_width(left) - 2), ELLIPSIS
+            )
+            gap = max(1, width - display_width(left) - display_width(room_right))
+            line = left + " " * gap + room_right
+            if selected:
+                line = self.theme.bg("selectedBg", pad_to_width(line, width))
+            lines.append(truncate_to_width(line, width))
+
+        while len(lines) < height - 2:
+            lines.append("")
+        if total > body_height:
+            lines[height - 3] = self.theme.fg("muted", f"  ({self.friend_selected + 1}/{total})")
+
+        lines.append(self._status_line(width))
+        lines.append(self._footer_friends(width))
+        return lines[:height]
+
+    def _footer_friends(self, width: int) -> str:
+        total = len(self.friends)
+        favourites = sum(1 for friend in self.friends if friend.favorite)
+        anchor = [Segment("friends", self.theme.fg("accent", "friends"))]
+        middle = [
+            Segment(f"{total}명", self.theme.fg("muted", f"{total}명")),
+            Segment(f"★{favourites}", self.theme.fg("dim", f"★{favourites}")),
+        ]
+        tail = Segment("local", self.theme.fg("dim", "local"))
+        right = Segment(f"v{__version__}", self.theme.fg("muted", f"v{__version__}"))
+        return self._compose_footer(anchor, middle, tail, right, width)
 
     def _render_chat(self, width: int, height: int) -> list[str]:
         chat = self.chat
@@ -431,10 +515,12 @@ class App:
     # -- input --------------------------------------------------------------
 
     def handle(self, kind: str, text: str) -> None:
-        if self.chat is None:
-            self._handle_rooms(kind, text)
-        else:
+        if self.chat is not None:
             self._handle_chat(kind, text)
+        elif self.show_friends:
+            self._handle_friends(kind, text)
+        else:
+            self._handle_rooms(kind, text)
 
     def _handle_rooms(self, kind: str, text: str) -> None:
         if kind == "char" and text in ("q", "Q"):
@@ -458,6 +544,30 @@ class App:
         elif kind == "char" and text in ("r", "R"):
             self.load_rooms()
             self.status = "목록 새로고침"
+        elif kind == "char" and text in ("f", "F"):
+            self.show_friends = True
+            self.status = ""
+
+    def _handle_friends(self, kind: str, text: str) -> None:
+        if kind == "char" and text in ("q", "Q"):
+            self.running = False
+        elif kind == Key.INTERRUPT:
+            self.running = False
+        elif kind in (Key.ESCAPE,) or (kind == "char" and text in ("f", "F")):
+            self.show_friends = False
+        elif kind == Key.UP:
+            self.friend_selected = max(0, self.friend_selected - 1)
+        elif kind == Key.DOWN:
+            self.friend_selected = min(len(self.friends) - 1, self.friend_selected + 1)
+        elif kind == Key.HOME:
+            self.friend_selected = 0
+        elif kind == Key.END:
+            self.friend_selected = max(0, len(self.friends) - 1)
+        elif kind == Key.ENTER and self.friends:
+            try:
+                self.open_friend(self.friends[self.friend_selected])
+            except KakaoReadError as error:
+                self.status = error.message
 
     def _handle_chat(self, kind: str, text: str) -> None:
         chat = self.chat

@@ -72,6 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
     messages.add_argument("--limit", type=_positive, default=DEFAULT_LIMIT)
     messages.add_argument("--before-id", type=int, help="Page backwards from this id")
 
+    friends = commands.add_parser("friends", help="List the signed-in user's friends")
+    friends.add_argument("--favorites", action="store_true", help="Only 즐겨찾기")
+    friends.add_argument(
+        "--with-phone",
+        action="store_true",
+        help="Include phone numbers (withheld by default)",
+    )
+
     search = commands.add_parser("search", help="Search readable conversations")
     search.add_argument("keyword")
     search.add_argument("--limit", type=_positive, default=20)
@@ -136,6 +144,18 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
                     "room": room.as_json(),
                     "messages": [message.as_json() for message in found],
                     "count": len(found),
+                }
+            )
+        )
+        return 0
+
+    if arguments.command == "friends":
+        friends = reader.friends(favorites_only=arguments.favorites)
+        _emit(
+            success(
+                {
+                    "friends": [friend.as_json(include_phone=arguments.with_phone) for friend in friends],
+                    "count": len(friends),
                 }
             )
         )

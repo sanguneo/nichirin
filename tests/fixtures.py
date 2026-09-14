@@ -35,11 +35,14 @@ HUGE_ROOM = HUGE_ID
 
 USER_SCHEMA = """
 CREATE TABLE talkUser (
-    userId INTEGER, nickName TEXT, friendNickName TEXT,
-    profileImageUrl TEXT, statusMessage TEXT
+    userId INTEGER, type INTEGER, nickName TEXT, friendNickName TEXT,
+    phoneNumber TEXT, statusMessage TEXT, directChatId INTEGER, favorite INTEGER
 );
 CREATE TABLE Profile (userId INTEGER, nickname TEXT, hasMeBadge INTEGER);
 """
+
+FRIEND_TYPE = 1
+NON_FRIEND_TYPE = 1000
 
 CATALOG_SCHEMA = """
 CREATE TABLE chatRoomList (
@@ -102,10 +105,11 @@ def build_profile(
         USER_SCHEMA,
         {
             "talkUser": [
-                (PEER_ID, "peer-nickname", "Peer Renamed", None, None),
-                (FRIEND_ID, "Friend Nick", None, None, None),
-                (STRANGER_ID, None, None, None, None),
-                (HUGE_ID, "Huge Id User", None, None, None),
+                # userId, type, nickName, friendNickName, phone, status, directChatId, favorite
+                (PEER_ID, FRIEND_TYPE, "peer-nickname", "Peer Renamed", "01011112222", "hi", DIRECT_ROOM, 1),
+                (FRIEND_ID, FRIEND_TYPE, "Friend Nick", None, None, None, None, 0),
+                (STRANGER_ID, NON_FRIEND_TYPE, None, None, None, None, None, 0),
+                (HUGE_ID, NON_FRIEND_TYPE, "Huge Id User", None, None, None, None, 0),
             ],
             # The signed-in account appears only here, never in talkUser.
             "Profile": [

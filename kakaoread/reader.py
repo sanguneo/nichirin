@@ -26,7 +26,7 @@ from typing import Any, Iterator, Optional
 from . import model, paths
 from .errors import ErrorCode, KakaoReadError
 from .keyring import Keyring
-from .model import Message, Room
+from .model import Friend, Message, Room
 from .snapshot import SnapshotCache
 
 _SELF_CHAT_TITLE = "나와의 채팅"
@@ -153,6 +153,41 @@ class Reader:
             )
             self._names = found
         return self._names
+
+    def friends(self, favorites_only: bool = False) -> list["Friend"]:
+        """Return the signed-in user's friend list from the local database.
+
+        A friend is a ``talkUser`` row of type 1; the other types are known
+        non-friends (group co-members) or special relationships. Favourites are
+        listed first, then names, so the order matches what the client shows.
+        """
+        from .model import FRIEND_TYPE, Friend
+
+        sql = (
+            "SELECT userId, friendNickName, nickName, phoneNumber, statusMessage, "
+            "directChatId, favorite FROM talkUser WHERE type = ?"
+        )
+        parameters: list[object] = [FRIEND_TYPE]
+        if favorites_only:
+            sql += " AND favorite = 1"
+
+        friends: list[Friend] = []
+        for row in self._users().execute(sql, parameters):
+            user_id, friend_nick, nick, phone, status, direct_chat, favorite = row
+            name = (friend_nick or nick or "").strip() or f"User {user_id}"
+            friends.append(
+                Friend(
+                    id=int(user_id),
+                    name=name,
+                    nickname=str(nick) if nick else None,
+                    phone=str(phone) if phone else None,
+                    status_message=str(status) if status else None,
+                    direct_chat_id=int(direct_chat) if direct_chat else None,
+                    favorite=bool(favorite),
+                )
+            )
+        friends.sort(key=lambda friend: (not friend.favorite, friend.name.casefold()))
+        return friends
 
     def own_user_id(self) -> Optional[int]:
         """Identify the signed-in account, or None when it cannot be proven."""

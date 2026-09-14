@@ -120,3 +120,46 @@ class Message:
             "sentAt": to_iso(self.sent_at),
             "fromMe": self.from_me,
         }
+
+
+FRIEND_TYPE: Final = 1
+"""The talkUser.type value for an added friend, confirmed against a live client.
+
+Other values seen: 1000 is a known non-friend (a group co-member), and the
+negatives (-3, -4, -10) plus 9 are special relationships. Only 1 is the list
+the client shows as 친구.
+"""
+
+
+@dataclass(frozen=True)
+class Friend:
+    """One entry from the signed-in user's friend list."""
+
+    id: int
+    name: str
+    """Best display name: the name the user set wins over the friend's own."""
+    nickname: Optional[str]
+    """The name the friend chose for themselves."""
+    phone: Optional[str]
+    status_message: Optional[str]
+    direct_chat_id: Optional[int]
+    """The 1:1 room with this friend, when one exists — the send target."""
+    favorite: bool
+
+    def as_json(self, include_phone: bool = False) -> dict[str, Any]:
+        """Render a friend.
+
+        The phone number is withheld unless explicitly requested, because it is
+        the most sensitive field and most callers only need a name and an id.
+        """
+        payload: dict[str, Any] = {
+            "id": str(self.id),
+            "name": self.name,
+            "nickname": self.nickname,
+            "statusMessage": self.status_message,
+            "directChatId": None if self.direct_chat_id is None else str(self.direct_chat_id),
+            "favorite": self.favorite,
+        }
+        if include_phone:
+            payload["phone"] = self.phone
+        return payload
