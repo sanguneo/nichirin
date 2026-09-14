@@ -8,14 +8,70 @@ filename: a key either provably belongs to a file or is not used at all.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from . import paths
 from .errors import ErrorCode, KakaoReadError
 from .page import SALT_SIZE
-from .process import CodecContext, find_pid, scan_process
+from .process import CodecContext, find_pid, resolve_addresses, scan_process
+
+
+def _cache_path() -> Path:
+    """Where the addresses of a previous scan are remembered, outside the repo."""
+    root = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+    return Path(root) / "kakaoread" / "contexts.json"
+
+
+def _remembered(pid: int) -> tuple[list[int], int]:
+    """Return the addresses last seen in *pid*, and how many keys they paired.
+
+    Only addresses are kept. A key never reaches the disk, which is why the
+    count is stored beside them: it is what tells a stale cache apart from a
+    good one without having anything to compare a key against.
+    """
+    try:
+        stored = json.loads(_cache_path().read_text("utf-8"))
+    except (OSError, ValueError):
+        return [], 0
+    if not isinstance(stored, dict) or stored.get("pid") != pid:
+        return [], 0
+    addresses = stored.get("addresses")
+    expected = stored.get("keys")
+    if not isinstance(addresses, list) or not isinstance(expected, int):
+        return [], 0
+    return [int(address) for address in addresses if isinstance(address, int)], expected
+
+
+def _remember(pid: int, addresses: Iterable[int], keys: int) -> None:
+    """Record where the contexts were. Failing to write only costs a rescan."""
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"pid": pid, "addresses": list(addresses), "keys": keys}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _pair(
+    contexts: Iterable[CodecContext],
+    databases: dict[bytes, list[Path]],
+    user_directory: Path,
+) -> dict[str, bytes]:
+    """Map every database to the key whose salt it carries."""
+    keys: dict[str, bytes] = {}
+    for context in contexts:
+        for database in databases.get(context.salt, ()):
+            relative = database.relative_to(user_directory).as_posix()
+            keys[relative] = context.key
+            keys[database.name] = context.key
+    return keys
 
 
 def _read_salt(database: Path) -> Optional[bytes]:
@@ -61,12 +117,18 @@ class Keyring:
         except OSError:
             return cls(user_directory=user_directory, pid=pid, keys={})
 
-        keys: dict[str, bytes] = {}
-        for context in scan_process(pid):
-            for database in databases.get(context.salt, ()):
-                relative = database.relative_to(user_directory).as_posix()
-                keys[relative] = context.key
-                keys[database.name] = context.key
+        # Searching the whole heap measured 2.8 s, and every command paid it
+        # again. Addresses from the last scan are re-read first; they are not
+        # trusted, only tried, and a short answer sends us back to the scan.
+        remembered, expected = _remembered(pid)
+        if remembered and expected > 0:
+            keys = _pair(resolve_addresses(pid, remembered), databases, user_directory)
+            if len(keys) >= expected:
+                return cls(user_directory=user_directory, pid=pid, keys=keys)
+
+        contexts = scan_process(pid)
+        keys = _pair(contexts, databases, user_directory)
+        _remember(pid, [context.address for context in contexts], len(keys))
         return cls(user_directory=user_directory, pid=pid, keys=keys)
 
     def has(self, name: str) -> bool:

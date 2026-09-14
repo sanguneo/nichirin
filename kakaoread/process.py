@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Callable, Final, Iterable, Iterator, Optional
@@ -123,6 +124,26 @@ def resolve_context(
     if key is None or len(key) != KEY_SIZE:
         return None
     return CodecContext(address=address, salt=salt, key=key)
+
+
+def resolve_many(
+    addresses: Iterable[int], read_memory: ReadMemory
+) -> list[CodecContext]:
+    """Re-read contexts at addresses a previous scan found.
+
+    Nothing here trusts an address: each one is decoded and followed exactly
+    as a fresh candidate would be, so a heap that has moved on yields fewer
+    contexts rather than a wrong key.
+    """
+    found: list[CodecContext] = []
+    for address in addresses:
+        blob = read_memory(address, CONTEXT_SIZE)
+        if blob is None:
+            continue
+        context = resolve_context(address, blob, read_memory)
+        if context is not None:
+            found.append(context)
+    return found
 
 
 def scan_blocks(
@@ -266,23 +287,23 @@ def _is_candidate_region(region: _MemoryRegion) -> bool:
     )
 
 
-def scan_process(pid: int) -> list[CodecContext]:
-    """Return every SQLCipher context found in a process's private heaps.
-
-    An inaccessible or exited process yields an empty list rather than raising,
-    because "cannot read" and "nothing to read" lead to the same next step.
-    """
+@contextmanager
+def _opened(pid: int) -> Iterator[Optional[tuple[ctypes.CDLL, int, ReadMemory]]]:
+    """Open a process for query and read access, and always close it again."""
     if pid <= 0:
-        return []
+        yield None
+        return
     try:
         library = _library()
         handle = library.OpenProcess(
             _PROCESS_VM_READ | _PROCESS_QUERY_INFORMATION, False, pid
         )
     except (AttributeError, OSError):
-        return []
+        yield None
+        return
     if not handle:
-        return []
+        yield None
+        return
 
     def read_memory(address: int, size: int) -> Optional[bytes]:
         if size <= 0:
@@ -294,6 +315,40 @@ def scan_process(pid: int) -> list[CodecContext]:
         )
         return buffer.raw if ok and read.value == size else None
 
+    try:
+        yield library, handle, read_memory
+    finally:
+        library.CloseHandle(handle)
+
+
+def resolve_addresses(pid: int, addresses: Iterable[int]) -> list[CodecContext]:
+    """Resolve remembered context addresses inside a running process."""
+    with _opened(pid) as opened:
+        if opened is None:
+            return []
+        _library_, _handle, read_memory = opened
+        try:
+            return resolve_many(addresses, read_memory)
+        except OSError:
+            return []
+
+
+def scan_process(pid: int) -> list[CodecContext]:
+    """Return every SQLCipher context found in a process's private heaps.
+
+    An inaccessible or exited process yields an empty list rather than raising,
+    because "cannot read" and "nothing to read" lead to the same next step.
+    """
+    with _opened(pid) as opened:
+        if opened is None:
+            return []
+        library, handle, read_memory = opened
+        return _scan_opened(library, handle, read_memory)
+
+
+def _scan_opened(
+    library: ctypes.CDLL, handle: int, read_memory: ReadMemory
+) -> list[CodecContext]:
     def blocks() -> Iterator[tuple[int, bytes]]:
         address = 0
         limit = 0x7FFF_FFFF_FFFF if ctypes.sizeof(ctypes.c_void_p) == 8 else 0x7FFF_FFFF
@@ -319,5 +374,3 @@ def scan_process(pid: int) -> list[CodecContext]:
     except OSError:
         # The client may exit or revoke access part-way through a scan.
         return []
-    finally:
-        library.CloseHandle(handle)
