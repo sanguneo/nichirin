@@ -182,7 +182,7 @@ Taken from a live client, not guessed.
   cursor in the wrong place. Whatever sits left of the text is part of that
   caret's column: adding a mark slot there once left `caret` two columns
   behind, which is exactly how it looked.
-- **The message line is open on the left and marked on the right.** The send
+- **The message box is closed on both sides and marked on the right.** The send
   mark — `*` queued, `✓` delivered — sits against the right border, where it
   cannot push the prompt or the text sideways. `✓` is width-neutral rather
   than ambiguous. Emoji were tried and removed: the console advances the two
