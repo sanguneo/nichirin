@@ -8,7 +8,9 @@ when the wrong room opens.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from kakaoread.errors import ErrorCode, KakaoReadError
 from kakaoread.winauto import ChatWindow, RoomOpener, Sender
@@ -93,9 +95,15 @@ class FakeDesktop:
         self.actions.append("submit")
 
 
-def opener(desktop: FakeDesktop, rows: int = 6) -> RoomOpener:
-    # The settle is injected so the suite never waits on a clock.
-    return RoomOpener(desktop, settle=lambda: None, rows=rows)
+def opener(desktop: FakeDesktop, rows: int = 6, remembered: Path | None = None) -> RoomOpener:
+    """Build an opener that waits on nothing and remembers nowhere shared.
+
+    The remembered rows live under %LOCALAPPDATA% in production, which two
+    tests would otherwise hand to each other.
+    """
+    if remembered is None:
+        remembered = Path(tempfile.mkdtemp()) / "rows.json"
+    return RoomOpener(desktop, settle=lambda: None, rows=rows, remembered=remembered)
 
 
 class OpeningTests(unittest.TestCase):
@@ -274,6 +282,53 @@ class TidinessTests(unittest.TestCase):
         desktop = FakeDesktop(["받는 방"])
         opener(desktop).open("받는 방")
         self.assertNotIn("main:visible", desktop.log)
+
+
+class AimTests(unittest.TestCase):
+    """Every row tried opens a real room and marks it read, so aim first."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.remembered = Path(directory.name) / "rows.json"
+
+    def test_the_hinted_row_is_tried_before_anything_else(self) -> None:
+        desktop = FakeDesktop(["하나", "둘", "셋", "받는 방"])
+        opener(desktop).open("받는 방", hint=3)
+        self.assertEqual(desktop.clicks, [3], "rooms were opened on the way to a known row")
+
+    def test_a_hint_that_misses_looks_at_the_top_next(self) -> None:
+        # A pinned room sits at the top however recent the catalog says it is.
+        desktop = FakeDesktop(["받는 방", "둘", "셋", "넷"])
+        opener(desktop).open("받는 방", hint=3)
+        self.assertEqual(desktop.clicks, [3, 0], "the top was reached too late")
+
+    def test_a_hint_that_is_merely_off_by_one_costs_one_room(self) -> None:
+        desktop = FakeDesktop(["하나", "둘", "셋", "받는 방"])
+        opener(desktop).open("받는 방", hint=2)
+        self.assertEqual(desktop.clicks, [2, 0, 3])
+
+    def test_a_row_that_worked_is_remembered(self) -> None:
+        desktop = FakeDesktop(["하나", "받는 방"])
+        opener(desktop, remembered=self.remembered).open("받는 방")
+        self.assertTrue(self.remembered.exists())
+
+        again = FakeDesktop(["하나", "받는 방"])
+        opener(again, remembered=self.remembered).open("받는 방")
+        self.assertEqual(again.clicks, [1], "the remembered row was not used")
+
+    def test_a_remembered_row_that_moved_still_finds_the_room(self) -> None:
+        desktop = FakeDesktop(["하나", "받는 방"])
+        opener(desktop, remembered=self.remembered).open("받는 방")
+        moved = FakeDesktop(["받는 방", "하나"])
+        window = opener(moved, remembered=self.remembered).open("받는 방")
+        self.assertEqual(window.title, "받는 방")
+
+    def test_the_remembered_file_does_not_hold_room_names(self) -> None:
+        desktop = FakeDesktop(["하나", "받는 방"])
+        opener(desktop, remembered=self.remembered).open("받는 방")
+        raw = self.remembered.read_bytes()
+        self.assertNotIn("받는 방".encode(), raw)
 
 
 if __name__ == "__main__":

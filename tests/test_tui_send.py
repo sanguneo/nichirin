@@ -50,9 +50,15 @@ class FakeSender:
         dry_run: bool = False,
         open_if_needed: bool = False,
         aliases=(),
+        hint=None,
     ) -> SendResult:
         self.calls.append(
-            {"room": room, "open_if_needed": open_if_needed, "aliases": list(aliases)}
+            {
+                "room": room,
+                "open_if_needed": open_if_needed,
+                "aliases": list(aliases),
+                "hint": hint,
+            }
         )
         if self.failure is not None:
             raise self.failure
@@ -347,6 +353,14 @@ class BrowserOpensTheRoomTests(ComposerCase):
         self.type("안녕")
         self.app.handle(Key.ENTER, "")
         self.assertEqual(self.sender.calls[0]["aliases"], [SELF_STORED_TITLE])
+
+    def test_the_rooms_place_in_the_list_is_offered_as_a_hint(self) -> None:
+        # Every wrong row opens someone's conversation and marks it read.
+        self.type("안녕")
+        self.app.handle(Key.ENTER, "")
+        self.assertEqual(
+            self.sender.calls[0]["hint"], self.app.titles.index(self.chat.room.title)
+        )
 
     def test_a_room_whose_titles_agree_needs_no_alias(self) -> None:
         self.type("안녕")

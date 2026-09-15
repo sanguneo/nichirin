@@ -231,9 +231,10 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     if arguments.room is not None and not arguments.room.strip():
         raise KakaoReadError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
     room = _selected_room(reader, arguments)
+    catalogued = reader.rooms()
     # A window title cannot distinguish two catalog rooms with the same name,
     # even if the caller supplied an id and only one window is currently open.
-    duplicates = [r for r in reader.rooms() if r.title.casefold() == room.title.casefold()]
+    duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
     if len(duplicates) != 1:
         raise KakaoReadError(
             ErrorCode.AMBIGUOUS_CHAT,
@@ -244,6 +245,9 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     # resolved here for the self-chat and for groups with no custom name.
     stored = reader.stored_title(room.id)
     aliases = [stored] if stored and stored != room.title else []
+    # The client lists rooms by recency too, so this is close before it is
+    # right — close enough that opening one usually costs a single click.
+    hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
     try:
         result = make_sender().send(
             room.title,
@@ -251,6 +255,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             dry_run=arguments.dry_run,
             open_if_needed=arguments.open_room,
             aliases=aliases,
+            hint=hint,
         )
     except OSError as error:
         raise KakaoReadError(ErrorCode.SEND_FAILED, str(error)) from error

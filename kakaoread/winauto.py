@@ -20,8 +20,12 @@ guardrail logic is testable without a live desktop.
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterable, Optional, Protocol, TypedDict
 
 from .errors import ErrorCode, KakaoReadError
@@ -129,6 +133,43 @@ class WindowBackend(Protocol):
         ...
 
 
+def _remembered_rows() -> Path:
+    root = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+    return Path(root) / "kakaoread" / "rows.json"
+
+
+def _row_key(room: str) -> str:
+    """Hash the title: where a room sits is worth keeping, its name is not."""
+    return hashlib.sha256(room.encode("utf-8")).hexdigest()[:16]
+
+
+def _recall_row(path: Path, room: str) -> int:
+    try:
+        stored = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return -1
+    if not isinstance(stored, dict):
+        return -1
+    row = stored.get(_row_key(room))
+    return row if isinstance(row, int) else -1
+
+
+def _learn_row(path: Path, room: str, row: int) -> None:
+    """Remember where a room was. Failing to write only costs a guess."""
+    try:
+        stored = json.loads(path.read_text("utf-8"))
+        if not isinstance(stored, dict):
+            stored = {}
+    except (OSError, ValueError):
+        stored = {}
+    stored[_row_key(room)] = row
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stored), encoding="utf-8")
+    except OSError:
+        pass
+
+
 class RoomOpener:
     """Open a room by posting a double-click at a row, and verify what opened.
 
@@ -143,12 +184,43 @@ class RoomOpener:
         backend: "RoomListBackend",
         settle: Callable[[], None],
         rows: int = SEARCHED_ROWS,
+        remembered: Optional[Path] = None,
     ) -> None:
         self._backend = backend
         self._settle = settle
         self._rows = rows
+        self._remembered = remembered if remembered is not None else _remembered_rows()
 
-    def open(self, room: str, aliases: Iterable[str] = ()) -> ChatWindow:
+    def _order(self, room: str, hint: Optional[int]) -> list[int]:
+        """Rows to try, nearest guess first.
+
+        Every row tried opens a real conversation and marks it read, so the
+        order matters more than the fallback. Two things can be true of a
+        room: it sits where the catalog's own recency order puts it, or it is
+        pinned and therefore near the top. The guesses alternate between those
+        hypotheses instead of exhausting one first — a pinned room measured
+        four wrong rooms opened before the top was reached.
+        """
+        tried: list[int] = []
+
+        def add(row: int) -> None:
+            if 0 <= row < self._rows and row not in tried:
+                tried.append(row)
+
+        add(_recall_row(self._remembered, room))
+        if hint is not None:
+            for step in range(self._rows):
+                add(hint + step)
+                add(step)
+            for step in range(1, self._rows):
+                add(hint - step)
+        for row in range(self._rows):
+            add(row)
+        return tried
+
+    def open(
+        self, room: str, aliases: Iterable[str] = (), hint: Optional[int] = None
+    ) -> ChatWindow:
         """Open *room*, accepting any of *aliases* as its window title.
 
         The titles differ more often than it looks: the self-chat is stored
@@ -173,7 +245,7 @@ class RoomOpener:
             )
 
         known = {window.title for window in self._backend.chat_windows()}
-        for row in range(self._rows):
+        for row in self._order(room, hint):
             # Opening a room moves the list, so a row number only means
             # something after the list is put back at its first row.
             self._backend.scroll_to_top(control)
@@ -183,6 +255,7 @@ class RoomOpener:
                 if window.title in known:
                     continue
                 if window.title in wanted:
+                    _learn_row(self._remembered, room, row)
                     # Parked rather than left in front: a room this opened was
                     # not asked for by the person looking at the screen.
                     self._backend.minimize_window(window.handle)
@@ -218,6 +291,7 @@ class Sender:
         room: str,
         open_if_needed: bool = False,
         aliases: Iterable[str] = (),
+        hint: Optional[int] = None,
     ) -> ChatWindow:
         """Find the one open chat window for *room*, refusing to guess.
 
@@ -237,7 +311,7 @@ class Sender:
 
         if not matches:
             if open_if_needed and self._opener is not None:
-                return self._opener.open(room, aliases)
+                return self._opener.open(room, aliases, hint)
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
@@ -258,6 +332,7 @@ class Sender:
         dry_run: bool = False,
         open_if_needed: bool = False,
         aliases: Iterable[str] = (),
+        hint: Optional[int] = None,
     ) -> SendResult:
         """Type *text* into *room*'s window and send it, or preview when dry.
 
@@ -269,7 +344,9 @@ class Sender:
         if "\x00" in text:
             raise KakaoReadError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
-        window = self.resolve(room, open_if_needed=open_if_needed, aliases=aliases)
+        window = self.resolve(
+            room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
+        )
         control = self._backend.input_handle(window.handle)
         if control is None:
             raise KakaoReadError(

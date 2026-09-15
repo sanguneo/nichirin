@@ -770,6 +770,9 @@ class App:
                 text,
                 open_if_needed=True,
                 aliases=[chat.window_alias] if chat.window_alias else [],
+                hint=self.titles.index(chat.room.title)
+                if chat.room.title in self.titles
+                else None,
             )
         except KakaoReadError as error:
             chat.notice = f"전송 실패: {error.message}"

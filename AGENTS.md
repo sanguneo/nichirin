@@ -265,6 +265,16 @@ Taken from a live client, not guessed.
   deliberately sees only visible ones, so hiding is not a supported parking
   spot — minimising is.
 - **Scanning rows opens real rooms, and opening a room marks it read.** That
+  is the true cost of a miss, not the flicker, so the rows are aimed at
+  rather than swept. A row that worked is remembered per room in
+  `%LOCALAPPDATA%\kakaoread\rows.json` under a hash of the title, never the
+  title itself. Before that memory exists the guesses alternate between two
+  truths — a room sits where the catalog's recency order puts it, or it is
+  pinned and near the top — because exhausting the first hypothesis measured
+  four wrong rooms opened for a pinned room. Alternating brought that to one,
+  and the remembered row brings it to zero: measured 10.0 s and four rooms,
+  then 5.3 s and one, then 2.9 s and none.
+- **The old note, kept for the shape of the cost:** That
   is the true cost of a miss, not the flicker. Keep `SEARCHED_ROWS` small and
   prefer rooms near the top of the list.
 - **A main window in the tray is hidden, not destroyed.** It fails every
