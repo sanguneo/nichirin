@@ -84,6 +84,9 @@ python "<skill-dir>/scripts/kakaoread.py" friends --favorites
 python "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --limit 100
 python "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --before-id 9876
 python "<skill-dir>/scripts/kakaoread.py" search "meeting time" --limit 20
+python "<skill-dir>/scripts/kakaoread.py" names --room-id 12345
+python "<skill-dir>/scripts/kakaoread.py" names --room-id 12345 "Sample Nickname"
+python "<skill-dir>/scripts/kakaoread.py" names --room-id 12345 --user-id 98765
 python "<skill-dir>/scripts/kakaoread.py" status
 python "<skill-dir>/scripts/kakaoread.py" verify
 python "<skill-dir>/scripts/kakaoread.py" schema
@@ -94,6 +97,17 @@ python "<skill-dir>/scripts/kakaoread.py" query "SELECT COUNT(*) FROM chatLogs" 
 opened — its key is not loaded. `search` reports `unsearchableRooms`: if that is
 non-zero, an empty result is **not** evidence a conversation never happened.
 SQL is read-only; check `schema` before assuming column names.
+
+`names` answers who has gone by what. **The `sender` on every message is the
+name that account carries right now, not the one it used when the message was
+sent**, so in a room where people rename themselves the sender column will
+attribute a conversation to the wrong person. `senderId` never changes and is
+the only safe way to say two messages came from one person. Given a nickname,
+`names` returns every account that has ever carried it — more than one is the
+answer, not an ambiguity, because that is what impersonation looks like. Given
+no argument it lists the room's renamers. The history is honest about its
+gaps: the client records a name only when someone joins, leaves or is invited,
+so a plain rename appears only from the first read after it happened.
 
 ## Sending explicitly authorized text
 

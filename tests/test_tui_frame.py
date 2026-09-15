@@ -27,7 +27,7 @@ from kakaoread.tui.console import (
 from kakaoread.tui.layout import display_width, strip_ansi
 from kakaoread.tui.theme import Theme
 
-from tests.fixtures import DIRECT_ROOM, build_reader
+from tests.fixtures import DIRECT_ROOM, PEER_ID, build_reader
 
 COLUMNS = 40
 ROWS = 8
@@ -126,6 +126,33 @@ class EveryViewFitsTests(unittest.TestCase):
         self.assert_fits(40, 12)
 
     def test_a_narrow_screen_still_fits(self) -> None:
+        self.assert_fits(24, 10)
+
+    def test_a_long_name_history_fits(self) -> None:
+        """A `/real` answer is user data: any length, and emoji in it.
+
+        Nicknames in an open chat routinely carry emoji, and a chain of five
+        of them is far wider than a narrow screen. The notice has to be cut by
+        the frame like anything else rather than pushing the border off.
+        """
+        from tests.test_names import feed
+
+        self.reader.close()
+        self.reader = build_reader(
+            messages=[
+                feed(10, 1_700_000_000, (PEER_ID, "🦞 아주아주긴합성닉네임을가진사람")),
+                feed(11, 1_700_000_100, (PEER_ID, "🦞합성닉🐱")),
+                feed(12, 1_700_000_200, (PEER_ID, "합성 닉네임")),
+            ]
+        )
+        self.addCleanup(self.reader.close)
+        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
+        self.app.load_rooms()
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.app._run_command("/real Peer Renamed")
+        assert self.app.chat is not None
+        self.assertIn("🦞", self.app.chat.notice)
+        self.assert_fits(40, 12)
         self.assert_fits(24, 10)
 
 

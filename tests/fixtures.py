@@ -182,10 +182,14 @@ def build_profile(
     return StubCache(databases), keyring
 
 
-def build_reader(**kwargs) -> Reader:
-    """Return a Reader wired to a synthetic profile."""
+def build_reader(ledger=None, **kwargs) -> Reader:
+    """Return a Reader wired to a synthetic profile.
+
+    *ledger* stays None unless a test asks for one, so no test can append a
+    synthetic name to the real history under ``%LOCALAPPDATA%``.
+    """
     cache, keyring = build_profile(**kwargs)
-    return Reader(user_directory=PROFILE, cache=cache, keyring=keyring)
+    return Reader(user_directory=PROFILE, cache=cache, keyring=keyring, ledger=ledger)
 
 
 def build_reader_on_disk(root: Path, **kwargs) -> tuple[Reader, StubCache]:

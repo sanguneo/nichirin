@@ -27,6 +27,7 @@ unittest discover tests` breaks the fixture imports.
 | `paths.py` | Signed-in profile discovery |
 | `keyring.py` | Pair each key with the database sharing its salt |
 | `snapshot.py` | Decrypt, verify, cache, retry |
+| `names.py` | Nickname history: membership feeds plus an observed ledger |
 | `reader.py` | Queries and name resolution |
 | `context.py` | The single call an agent makes |
 | `watch.py` | Stat-gated follow loop |
@@ -114,6 +115,39 @@ Taken from a live client, not guessed.
 - Local history is substantial: one observed room held 445,714 messages. Do not
   assume only a handful of messages are cached.
 
+### Names, and why they cannot be trusted retroactively
+
+- **Every name this tool shows is the name that user carries *now*.**
+  `Profile` and `talkUser` are overwritten in place, so a message sent under an
+  old nickname is displayed under the new one. In an open chat where people
+  rename themselves to imitate each other, reading the sender column is how you
+  attribute a conversation to the wrong person — which happened, and reached a
+  summary that was sent to the room before it was caught.
+- **`userId` never changes, so it is the only safe way to say "same person".**
+  Two accounts can share a display name down to the character; they cannot
+  share an id.
+- **A rename writes nothing anywhere.** The client records a nickname only in a
+  membership feed: `chatLogs` rows with `type = 0`, whose `message` is JSON like
+  `{"feedType": 4, "members": [{"userId": …, "nickName": …}]}`. Only feed types
+  4, 6, 2 and 11 carry names. Measured on one live open chat: 6,037 feed rows,
+  156 of which named someone, covering 72 users and 18 distinct renames.
+  Types 21 (4,756) and 14 (1,024) are the bulk and carry nothing.
+- **No per-message column holds a sender name.** `supplement`, `attachement`
+  and `referer` were all checked against 234,061 text rows: the string
+  `nickName` appears **zero** times outside `type = 0`. There is no way to
+  recover who a message was signed as when it was sent.
+- Because of that, `names.py` keeps its own append-only ledger at
+  `%LOCALAPPDATA%\kakaoread\names.jsonl`. Unlike `contexts.json`, which stores
+  no key, and `rows.json`, which stores a hash rather than a title, **this file
+  holds real nicknames** — a name history cannot exist without them. It is
+  opt-in at the constructor: `Reader(ledger=...)` is set only by `cli.main`, so
+  no test can append fixture names to a real person's history.
+- **The ledger is account-wide and the feeds are room-scoped**, so
+  `name_history` narrows the ledger to `chatMembers` plus whoever the feeds
+  name. Skipping that made "who else answers to this name" return strangers
+  from other chats, which is indistinguishable from the impersonation the
+  question is asking about: six answers where three were real.
+
 ## Terminal interface
 
 - The palette is OmO's `dark` theme, duplicated rather than imported, because
@@ -175,6 +209,11 @@ Taken from a live client, not guessed.
   never claims to summarise.
 - The client writes placeholder words such as `사진` into the text column for
   attachments; they are filtered out of keywords or they dominate every slice.
+- **`/real` answers in one line, and its useful answer is the plural one.** A
+  single chain says what somebody used to be called; two chains say which of
+  two identical names is the impostor, and that is the question a reader
+  actually has when they type it. The arguments are re-joined with a space
+  because `Some Name (handle)` is one nickname, not two words.
 - **The key loop must never block on input.** `Console.read_key` takes a
   timeout so `App.run` can call `App.refresh` between keystrokes; blocking on
   `getwch` was why the first version showed a frozen conversation until a key

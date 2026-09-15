@@ -23,10 +23,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from . import model, paths
+from . import model, names as names_module, paths
 from .errors import ErrorCode, KakaoReadError
 from .keyring import Keyring
 from .model import Friend, Message, Room
+from .names import NameLedger, NameRecord
 from .snapshot import SnapshotCache
 
 _SELF_CHAT_TITLE = "나와의 채팅"
@@ -41,16 +42,22 @@ class Reader:
         user_directory: Optional[Path] = None,
         cache: Optional[SnapshotCache] = None,
         keyring: Optional[Keyring] = None,
+        ledger: Optional[NameLedger] = None,
     ) -> None:
         """Build a reader without touching the disk or the client.
 
         *cache* and *keyring* exist so callers can supply an already-scanned
         key ring instead of paying for a second heap scan, and so tests can
         drive the query logic against fixtures.
+
+        *ledger* is opt-in on purpose.  Recording names is the only thing here
+        that writes real conversation data to disk, so a reader built without
+        one — every reader in the test suite — cannot touch the user's history.
         """
         self._user_directory = user_directory
         self._cache = cache if cache is not None else SnapshotCache()
         self._keyring: Optional[Keyring] = keyring
+        self._ledger = ledger
         self._names: Optional[dict[int, str]] = None
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
@@ -152,7 +159,61 @@ class Reader:
                 }
             )
             self._names = found
+            if self._ledger is not None:
+                # Once per process: the map is memoised above, and only a name
+                # that differs from its last sighting is appended.
+                self._ledger.observe(found)
         return self._names
+
+    def name_history(self, room_id: int) -> dict[int, list[NameRecord]]:
+        """Return every name each user has been seen under in one room.
+
+        Two sources, and they answer different questions.  The room's own feed
+        rows reach back to whenever the client first logged a join, but record
+        a name only at a join, leave or invite.  The ledger covers only what
+        this tool has read since it was enabled, but catches a plain rename,
+        which the client never writes down at all.
+        """
+        records = list(names_module.from_feeds(self._logs(room_id)))
+        if self._ledger is not None:
+            # The ledger is account-wide while the feeds belong to one room, so
+            # it is narrowed to this room's people. Without that, asking who
+            # else answers to a name returned strangers from other chats, which
+            # reads exactly like the impersonation the question is about.
+            known = {record.user_id for record in records} | self.member_ids(room_id)
+            records.extend(
+                record for record in self._ledger.records() if record.user_id in known
+            )
+        return names_module.timeline(records)
+
+    def users_named(
+        self, room_id: int, name: str, history: Optional[dict[int, list[NameRecord]]] = None
+    ) -> list[int]:
+        """Return everyone in one room who has ever answered to *name*.
+
+        The recorded history is searched together with the names the databases
+        show right now, because the client logs a name at a join and not at a
+        rename: the name somebody goes by today is routinely the one no feed
+        ever captured.  Both halves stay inside this room's membership, so the
+        answer is about the people in the conversation being read.
+        """
+        history = self.name_history(room_id) if history is None else history
+        current = self.names()
+        needle = name.casefold().strip()
+        universe = set(history) | self.member_ids(room_id)
+        return sorted(
+            set(names_module.carriers(history, name))
+            | {user for user in universe if (current.get(user) or "").casefold() == needle}
+        )
+
+    def member_ids(self, room_id: int) -> set[int]:
+        """Return the users the catalog currently lists in a room."""
+        return {
+            int(row[0])
+            for row in self._catalog().execute(
+                "SELECT userId FROM chatMembers WHERE chatId = ?", (room_id,)
+            )
+        }
 
     def friends(self, favorites_only: bool = False) -> list["Friend"]:
         """Return the signed-in user's friend list from the local database.

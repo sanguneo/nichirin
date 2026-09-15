@@ -38,6 +38,7 @@ from ..watch import Watcher
 from .theme import SpeakerPalette, Theme
 
 if TYPE_CHECKING:
+    from ..names import NameRecord
     from ..winauto import MessageSender
 
 NEWLINE_MARK = "↵"
@@ -496,6 +497,7 @@ class App:
                     ("↑↓", "scroll"),
                     ("/sum 30m", "요약"),
                     ("/older", "이전"),
+                    ("/real", "이름"),
                     ("esc", "back"),
                 ],
                 width,
@@ -998,6 +1000,10 @@ class App:
                 chat.notice = "내보낼 다이제스트가 없습니다 (/sum 30m 먼저)"
                 return
             self._export(chat)
+        elif name == "real":
+            # Joined rather than indexed: a nickname routinely holds spaces,
+            # and "Some Name (handle)" is one name, not two arguments.
+            self._real(chat, " ".join(arguments))
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name == "back":
@@ -1005,8 +1011,46 @@ class App:
         else:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
-                "(사용 가능: /sum 30m · /older · /export · /back · /quit)"
+                "(사용 가능: /sum 30m · /older · /real 닉 · /export · /back · /quit)"
             )
+
+    def _real(self, chat: ChatState, who: str) -> None:
+        """Show what a name's owner used to be called, and who else wore it.
+
+        Both halves matter.  One chain answers "what was this person before";
+        two chains answer "which of these two is the impostor", and that second
+        question is the one a reader has when they type this at all.
+        """
+        from ..names import steps_with_current
+
+        if not who:
+            chat.notice = "이름이 필요합니다 (예: /real 진짜유성진)"
+            return
+        try:
+            history = self.reader.name_history(chat.room.id)
+            found = self.reader.users_named(chat.room.id, who, history)
+        except KakaoReadError as error:
+            chat.notice = f"이름 이력을 읽지 못했습니다: {error.message}"
+            return
+        current = self.reader.names()
+        if not found:
+            chat.notice = f"'{who}' 을(를) 쓴 사람이 기록에 없습니다"
+            return
+        chains = []
+        for user_id in found:
+            steps = steps_with_current(user_id, history.get(user_id, ()), current.get(user_id))
+            chains.append(" → ".join(self._name_step(step) for step in steps))
+        prefix = "" if len(found) == 1 else f"이 이름을 쓴 계정 {len(found)}개 · "
+        chat.notice = prefix + "  |  ".join(chains)
+
+    def _name_step(self, record: "NameRecord") -> str:
+        """Render one step as name and when it was seen, never as a bare name."""
+        from ..names import CURRENT
+
+        if record.source == CURRENT:
+            return f"{record.name}(지금)"
+        stamp = _stamp(record.at, self.zone)
+        return f"{record.name}({stamp})" if stamp else record.name
 
     def _export(self, chat: ChatState) -> None:
         """Write the sliced text beside the user's other files, never into the repo."""

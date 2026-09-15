@@ -22,6 +22,7 @@ from typing import Any, Optional, Sequence
 from . import __version__
 from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KakaoReadError, as_envelope, success
+from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
@@ -90,6 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="open_room",
         help="Open the room from the list first when its window is closed",
     )
+
+    names = commands.add_parser(
+        "names", help="Show what names a member of a room has gone by"
+    )
+    _add_room_selector(names, required=True)
+    names.add_argument(
+        "who",
+        nargs="?",
+        help="A nickname; every user who has ever carried it is returned",
+    )
+    names.add_argument("--user-id", type=int, help="Look one user up by identifier")
 
     search = commands.add_parser("search", help="Search readable conversations")
     search.add_argument("keyword")
@@ -172,6 +184,9 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         )
         return 0
 
+    if arguments.command == "names":
+        return _names(reader, arguments)
+
     if arguments.command == "send":
         return _send(reader, arguments)
 
@@ -222,6 +237,57 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return 0
 
     raise KakaoReadError(ErrorCode.INVALID_REQUEST, f"unsupported command {arguments.command}")
+
+
+def _names(reader: Reader, arguments: argparse.Namespace) -> int:
+    """Answer who has gone by what, for one user or for a whole room.
+
+    Three questions, one command.  An identifier asks for one member's history.
+    A nickname asks the reverse question — which accounts have worn this name —
+    and more than one answer is the point rather than an ambiguity to refuse,
+    because that is what one account imitating another looks like from here.
+    With neither, the room's renamers are listed, which is the only view that
+    is useful without already knowing who to suspect.
+    """
+    from .names import steps_with_current
+
+    room = _selected_room(reader, arguments)
+    history = reader.name_history(room.id)
+    current = reader.names()
+
+    if arguments.user_id is not None:
+        selected = [int(arguments.user_id)]
+    elif arguments.who:
+        selected = reader.users_named(room.id, arguments.who, history)
+    else:
+        selected = sorted(user_id for user_id, steps in history.items() if len(steps) > 1)
+
+    found = [
+        {
+            "userId": str(user_id),
+            "current": current.get(user_id),
+            "history": [
+                record.as_json()
+                for record in steps_with_current(
+                    user_id, history.get(user_id, ()), current.get(user_id)
+                )
+            ],
+        }
+        for user_id in selected
+    ]
+    _emit(
+        success(
+            {
+                "room": room.as_json(),
+                "users": found,
+                "count": len(found),
+                "note": "The client records a name only when someone joins, leaves or is "
+                "invited; a plain rename is recorded here only from the first read after "
+                "it happened.",
+            }
+        )
+    )
+    return 0
 
 
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
@@ -317,7 +383,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     arguments = build_parser().parse_args(argv)
     try:
-        with Reader() as reader:
+        # The real entry point is where the name ledger is switched on: a
+        # rename is invisible unless something writes down what it saw, and
+        # this is the one place that is certainly reading the live databases.
+        with Reader(ledger=NameLedger()) as reader:
             return run(arguments, reader)
     except KeyboardInterrupt:
         return 130
