@@ -526,20 +526,21 @@ class App:
         return rows
 
     def _composer_lines(self, width: int) -> tuple[list[str], int]:
-        """Draw the message line: open on the left, closed on the right.
+        """Draw the message box: closed on both sides, marked on the right.
 
         Nothing is drawn to stand in for the cursor. The terminal's own caret
-        is parked at the end of the draft, and drawing a block beside it was
-        what made the line look like it had two cursors in the wrong place.
-        The mark for the last message sits at the far right, away from the
-        text being typed, so it cannot push anything sideways.
+        is parked at the end of the draft, and a block drawn beside it read as
+        a second cursor in the wrong place. The mark for the last message sits
+        against the right border, where it cannot push the prompt or the text
+        sideways — and the caret's column counts everything left of the text,
+        which is what it failed to do when the mark first appeared.
         """
         chat = self.chat
         assert chat is not None
-        content = max(8, width - 1)
-        rule = self.theme.fg("borderMuted", "─" * content)
-        top = rule + self.theme.fg("borderMuted", "╮")
-        bottom = rule + self.theme.fg("borderMuted", "╯")
+        inner = max(8, width - 2)
+        edge = self.theme.fg("borderMuted", "│")
+        top = self.theme.fg("borderMuted", "╭" + "─" * inner + "╮")
+        bottom = self.theme.fg("borderMuted", "╰" + "─" * inner + "╯")
 
         if chat.delivered:
             mark = self.theme.fg("success", "✓")
@@ -550,13 +551,13 @@ class App:
 
         prompt = self.theme.fg("accent", "❯ ")
         # The tail is what is being typed, so a long draft loses its head.
-        written = elide_head(chat.draft, max(1, content - 4))
-        left = prompt + written
+        written = elide_head(chat.draft, max(1, inner - 6))
+        body = " " + prompt + written
         if not chat.draft:
-            left += self.theme.fg("dim", "메시지 입력 후 enter")
-        left = pad_to_width(truncate_to_width(left, content - 2), content - 2)
-        middle = left + " " + mark + self.theme.fg("borderMuted", "│")
-        caret = min(width - 1, 2 + display_width(written))
+            body += self.theme.fg("dim", "메시지 입력 후 enter")
+        body = pad_to_width(truncate_to_width(body, inner - 2), inner - 2)
+        middle = edge + body + " " + mark + edge
+        caret = min(width - 1, 4 + display_width(written))
         return [top, middle, bottom], caret
 
     def _status_line(self, width: int) -> str:

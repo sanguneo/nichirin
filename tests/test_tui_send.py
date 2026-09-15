@@ -89,21 +89,16 @@ class ComposerCase(unittest.TestCase):
             self.app.handle("char", character)
 
 class ComposerTests(ComposerCase):
-    def test_an_open_room_shows_a_message_line(self) -> None:
+    def test_an_open_room_shows_a_bordered_message_box(self) -> None:
         box = self.composer()
         self.assertIn("❯", box)
-        self.assertIn("╮", box)
-        self.assertIn("╯", box)
+        for corner in ("╭", "╮", "╰", "╯"):
+            self.assertIn(corner, box)
 
-    def test_the_line_is_open_on_the_left(self) -> None:
-        for line in self.composer().split("\n"):
-            self.assertNotIn("╭", line)
-            self.assertNotIn("╰", line)
-            self.assertFalse(line.startswith("│"), "the left border is back")
-
-    def test_the_prompt_starts_at_the_first_column(self) -> None:
+    def test_the_box_is_closed_on_both_sides(self) -> None:
         middle = self.composer().split("\n")[1]
-        self.assertTrue(middle.startswith("❯"), middle[:12])
+        self.assertTrue(middle.startswith("│"), middle[:12])
+        self.assertTrue(middle.endswith("│"), middle[-12:])
 
     def test_the_room_list_has_no_message_box(self) -> None:
         self.app.chat = None
