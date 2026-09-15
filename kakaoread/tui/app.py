@@ -22,7 +22,7 @@ from ..errors import ErrorCode, KakaoReadError
 from ..model import Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
-from .console import Console, Key, force_size
+from .console import CLEAR_BOX, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
     Segment,
@@ -31,6 +31,7 @@ from .layout import (
     pad_to_width,
     plan_footer,
     truncate_to_width,
+    window_around,
     wrap_to_width,
 )
 from ..watch import Watcher
@@ -39,11 +40,16 @@ from .theme import SpeakerPalette, Theme
 if TYPE_CHECKING:
     from ..winauto import MessageSender
 
+NEWLINE_MARK = "↵"
+"""How a line break inside a draft is shown in a one-line composer."""
+
 KST = timezone(timedelta(hours=9))
 HISTORY_WINDOW = 400
 LOAD_MORE_STEP = 400
 KEY_WAIT_SECONDS = 0.12
 """How long a frame waits for input before checking for new messages."""
+UNCERTAIN_AFTER_SECONDS = 30.0
+"""How long a send may go unseen before the mark stops claiming to be sure."""
 REFRESH_SECONDS = 0.35
 """How often to look for arrivals. A poll that finds nothing costs one stat."""
 TYPING_GRACE_SECONDS = 0.4
@@ -60,6 +66,8 @@ class ChatState:
     """Lines scrolled up from the newest message."""
     draft: str = ""
     """What the composer holds; a leading slash makes it a command."""
+    caret: int = 0
+    """Where the next character goes, counted in characters, not columns."""
     slices: list[digest.Slice] = field(default_factory=list)
     slice_label: str = ""
     notice: str = ""
@@ -71,6 +79,8 @@ class ChatState:
     """Show the body from its first line once, when its height is known."""
     outbox: Optional[str] = None
     """Text handed to the client and not yet seen coming back."""
+    outbox_at: float = 0.0
+    """When that text was handed over, so waiting too long can be admitted."""
     delivered: bool = False
     """Whether the last thing sent has since appeared in the conversation."""
     window_alias: Optional[str] = None
@@ -104,12 +114,27 @@ class App:
         self.status = ""
         self.running = True
         self.zone = KST
+        self.drafts: dict[int, str] = {}
+        """Unsent text per room, so leaving a conversation does not lose it."""
         self.titles: list[str] = []
         """Every catalogued title, so a send never has to re-read the catalog."""
         self.friends: list[Friend] = []
         self.friend_selected = 0
         self.friend_scroll = 0
         self.show_friends = False
+        self.filter = ""
+        """What the list is narrowed by; empty means the whole list."""
+        self.filtering = False
+        """Whether typing goes to the filter instead of the shortcuts."""
+        self.pending_send: Optional[str] = None
+        self._clock = time.monotonic
+        """Read rather than called directly, so a test can hold time still."""
+        """Text the last keystroke asked to send, not sent yet.
+
+        Sending can open a window, which took 1.7 s with the screen frozen on
+        the frame before the keystroke. Holding it here lets the loop paint
+        once, so the wait is visible rather than mistaken for a hang.
+        """
         self.cursor: Optional[tuple[int, int]] = None
         """Where the terminal caret belongs, so an IME composes in the box."""
 
@@ -119,6 +144,59 @@ class App:
         catalogued = self.reader.rooms()
         self.titles = [room.title for room in catalogued]
         self.rooms = [room for room in catalogued if room.readable]
+
+    def visible_rooms(self) -> list[Room]:
+        """The rooms the filter leaves, or all of them."""
+        if not self.filter:
+            return self.rooms
+        needle = self.filter.casefold()
+        return [room for room in self.rooms if needle in room.title.casefold()]
+
+    def visible_friends(self) -> list[Friend]:
+        """The friends the filter leaves, or all of them.
+
+        229 of them were reachable only by holding down an arrow key.
+        """
+        if not self.filter:
+            return self.friends
+        needle = self.filter.casefold()
+        return [friend for friend in self.friends if needle in friend.name.casefold()]
+
+    def _narrow(self, text: str) -> None:
+        self.filter = text
+        # A narrower list can no longer hold the old selection.
+        self.selected = max(0, min(self.selected, len(self.visible_rooms()) - 1))
+        self.friend_selected = max(
+            0, min(self.friend_selected, len(self.visible_friends()) - 1)
+        )
+
+    def _forget_filter(self) -> None:
+        self.filtering = False
+        self._narrow("")
+
+    def _filter_key(self, kind: str, text: str) -> bool:
+        """Take the keystroke when it belongs to the filter.
+
+        A letter has to stay a shortcut in a list, so the filter is asked for
+        with a slash rather than taking every key the moment a list is shown.
+        """
+        if not self.filtering:
+            return kind == "char" and text == "/" and self._start_filter()
+        if kind == "char":
+            self._narrow(self.filter + text)
+            return True
+        if kind == Key.BACKSPACE:
+            self._narrow(self.filter[:-1])
+            return True
+        if kind == Key.ESCAPE:
+            self._forget_filter()
+            return True
+        return False
+
+    def _start_filter(self) -> bool:
+        self.filtering = True
+        self._narrow("")
+        return True
 
     def load_friends(self) -> None:
         self.friends = self.reader.friends()
@@ -143,12 +221,15 @@ class App:
         watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)
         watcher.prime()
         stored = self.reader.stored_title(room.id)
+        kept = self.drafts.get(room.id, "")
         # A conversation opens at its newest line, not at its oldest.
         self.chat = ChatState(
             room=room,
             messages=messages,
             watcher=watcher,
             anchor_top=False,
+            draft=kept,
+            caret=len(kept),
             window_alias=stored if stored and stored != room.title else None,
         )
 
@@ -192,7 +273,11 @@ class App:
         chat = self.chat
         if chat is None or chat.outbox is None:
             return
-        if any(message.from_me and message.text == chat.outbox for message in arrived):
+        # Compared by its words: the client is free to tidy the spacing of
+        # what it stores, and a tick that never arrives is worse than one
+        # that arrives for a message wearing slightly different whitespace.
+        wanted = _same_words(chat.outbox)
+        if any(message.from_me and _same_words(message.text) == wanted for message in arrived):
             chat.outbox = None
             chat.delivered = True
 
@@ -257,16 +342,36 @@ class App:
         ]
         return truncate_to_width(separator.join(parts), width, ELLIPSIS)
 
+    def _filter_row(self, width: int) -> str:
+        """Show what the list is being narrowed by, where the hints were."""
+        return truncate_to_width(
+            self.theme.fg("accent", "/ ")
+            + self.filter
+            + self.theme.fg("accent", "▏")
+            + self.theme.fg("muted", "   esc 취소"),
+            width,
+            ELLIPSIS,
+        )
+
     def _render_rooms(self, width: int, height: int) -> list[str]:
-        total = len(self.rooms)
+        shown = self.visible_rooms()
+        total = len(shown)
         right = (
             self.theme.fg("accent", "◉ Readable")
             + self.theme.fg("muted", f"  {total} rooms")
         )
         lines = [
             self._title_row("KakaoTalk Rooms", right, width),
-            self._hints(
-                [("↑↓", "move"), ("enter", "open"), ("f", "친구"), ("r", "reload"), ("q", "quit")],
+            self._filter_row(width)
+            if self.filtering
+            else self._hints(
+                [
+                    ("↑↓", "move"),
+                    ("enter", "open"),
+                    ("/", "찾기"),
+                    ("f", "친구"),
+                    ("q", "quit"),
+                ],
                 width,
             ),
             "",
@@ -274,7 +379,7 @@ class App:
 
         body_height = max(1, height - len(lines) - 2)
         self.scroll = _clamp_scroll(self.selected, self.scroll, body_height, total)
-        visible = self.rooms[self.scroll : self.scroll + body_height]
+        visible = shown[self.scroll : self.scroll + body_height]
 
         for index, room in enumerate(visible, start=self.scroll):
             selected = index == self.selected
@@ -310,13 +415,22 @@ class App:
     def _render_friends(self, width: int, height: int) -> list[str]:
         if not self.friends:
             self.load_friends()
-        total = len(self.friends)
-        favourites = sum(1 for friend in self.friends if friend.favorite)
+        shown = self.visible_friends()
+        total = len(shown)
+        favourites = sum(1 for friend in shown if friend.favorite)
         right = self.theme.fg("accent", "친구") + self.theme.fg("muted", f"  {total}명 · ★{favourites}")
         lines = [
             self._title_row("KakaoTalk Friends", right, width),
-            self._hints(
-                [("↑↓", "move"), ("enter", "1:1 열기"), ("esc", "back"), ("q", "quit")], width
+            self._filter_row(width)
+            if self.filtering
+            else self._hints(
+                [
+                    ("↑↓", "move"),
+                    ("enter", "1:1 열기"),
+                    ("/", "찾기"),
+                    ("esc", "back"),
+                ],
+                width,
             ),
             "",
         ]
@@ -325,7 +439,7 @@ class App:
         self.friend_scroll = _clamp_scroll(
             self.friend_selected, self.friend_scroll, body_height, total
         )
-        visible = self.friends[self.friend_scroll : self.friend_scroll + body_height]
+        visible = shown[self.friend_scroll : self.friend_scroll + body_height]
 
         for index, friend in enumerate(visible, start=self.friend_scroll):
             selected = index == self.friend_selected
@@ -544,20 +658,25 @@ class App:
 
         if chat.delivered:
             mark = self.theme.fg("success", "✓")
-        elif chat.outbox is not None:
+        elif chat.outbox is None:
+            mark = " "
+        elif self._clock() - chat.outbox_at < UNCERTAIN_AFTER_SECONDS:
             mark = self.theme.fg("muted", "*")
         else:
-            mark = " "
+            # Long enough that "queued" would be a claim rather than a fact.
+            mark = self.theme.fg("warning", "?")
 
         prompt = self.theme.fg("accent", "❯ ")
-        # The tail is what is being typed, so a long draft loses its head.
-        written = elide_head(chat.draft, max(1, inner - 6))
+        # A line break has no room of its own here, so it is shown as a mark
+        # and sent as the newline it really is.
+        shown = chat.draft.replace("\n", NEWLINE_MARK)
+        written, column = window_around(shown, chat.caret, max(1, inner - 6))
         body = " " + prompt + written
         if not chat.draft:
             body += self.theme.fg("dim", "메시지 입력 후 enter")
         body = pad_to_width(truncate_to_width(body, inner - 2), inner - 2)
         middle = edge + body + " " + mark + edge
-        caret = min(width - 1, 4 + display_width(written))
+        caret = min(width - 1, 4 + column)
         return [top, middle, bottom], caret
 
     def _status_line(self, width: int) -> str:
@@ -636,6 +755,9 @@ class App:
             self._handle_rooms(kind, text)
 
     def _handle_rooms(self, kind: str, text: str) -> None:
+        if self._filter_key(kind, text):
+            return
+        shown = self.visible_rooms()
         if kind == "char" and text in ("q", "Q"):
             self.running = False
         elif kind == Key.INTERRUPT or kind == Key.ESCAPE:
@@ -643,14 +765,15 @@ class App:
         elif kind == Key.UP:
             self.selected = max(0, self.selected - 1)
         elif kind == Key.DOWN:
-            self.selected = min(len(self.rooms) - 1, self.selected + 1)
+            self.selected = min(len(shown) - 1, self.selected + 1)
         elif kind == Key.HOME:
             self.selected = 0
         elif kind == Key.END:
-            self.selected = max(0, len(self.rooms) - 1)
-        elif kind == Key.ENTER and self.rooms:
+            self.selected = max(0, len(shown) - 1)
+        elif kind == Key.ENTER and shown:
             try:
-                self.open_room(self.rooms[self.selected])
+                self.open_room(shown[min(self.selected, len(shown) - 1)])
+                self._forget_filter()
                 self.status = ""
             except KakaoReadError as error:
                 self.status = error.message
@@ -659,26 +782,32 @@ class App:
             self.status = "목록 새로고침"
         elif kind == "char" and text in ("f", "F"):
             self.show_friends = True
+            self._forget_filter()
             self.status = ""
 
     def _handle_friends(self, kind: str, text: str) -> None:
+        if self._filter_key(kind, text):
+            return
+        shown = self.visible_friends()
         if kind == "char" and text in ("q", "Q"):
             self.running = False
         elif kind == Key.INTERRUPT:
             self.running = False
         elif kind in (Key.ESCAPE,) or (kind == "char" and text in ("f", "F")):
             self.show_friends = False
+            self._forget_filter()
         elif kind == Key.UP:
             self.friend_selected = max(0, self.friend_selected - 1)
         elif kind == Key.DOWN:
-            self.friend_selected = min(len(self.friends) - 1, self.friend_selected + 1)
+            self.friend_selected = min(len(shown) - 1, self.friend_selected + 1)
         elif kind == Key.HOME:
             self.friend_selected = 0
         elif kind == Key.END:
-            self.friend_selected = max(0, len(self.friends) - 1)
-        elif kind == Key.ENTER and self.friends:
+            self.friend_selected = max(0, len(shown) - 1)
+        elif kind == Key.ENTER and shown:
             try:
-                self.open_friend(self.friends[self.friend_selected])
+                self.open_friend(shown[min(self.friend_selected, len(shown) - 1)])
+                self._forget_filter()
             except KakaoReadError as error:
                 self.status = error.message
 
@@ -689,20 +818,33 @@ class App:
         if kind == Key.INTERRUPT:
             self.running = False
         elif kind == "char":
-            chat.delivered = False
-            chat.draft += text
+            if text == CLEAR_BOX:
+                chat.draft = ""
+                chat.caret = 0
+            else:
+                chat.delivered = False
+                chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
+                chat.caret += len(text)
         elif kind == Key.BACKSPACE:
-            chat.draft = chat.draft[:-1]
+            if chat.caret:
+                chat.draft = chat.draft[: chat.caret - 1] + chat.draft[chat.caret :]
+                chat.caret -= 1
+        elif kind == Key.DELETE:
+            chat.draft = chat.draft[: chat.caret] + chat.draft[chat.caret + 1 :]
+        elif kind == Key.LEFT:
+            chat.caret = max(0, chat.caret - 1)
+        elif kind == Key.RIGHT:
+            chat.caret = min(len(chat.draft), chat.caret + 1)
         elif kind == Key.ENTER:
             self._submit(chat)
         elif kind == Key.ESCAPE:
-            if chat.draft:
-                chat.draft = ""
-            elif chat.slices:
+            # The draft is never thrown away here. It goes back to the room it
+            # was being written in, and leaving is just leaving.
+            if chat.slices:
                 chat.slices = []
                 chat.offset = 0
             else:
-                self.chat = None
+                self._leave_room(chat)
         elif kind == Key.UP:
             chat.offset += 1
         elif kind == Key.DOWN:
@@ -712,22 +854,52 @@ class App:
         elif kind == Key.PAGE_DOWN:
             chat.offset = max(0, chat.offset - 10)
         elif kind == Key.HOME:
-            chat.anchor_top = True
+            # While something is being written these belong to the line; the
+            # conversation only gets them back when the box is empty.
+            if chat.draft:
+                chat.caret = 0
+            else:
+                chat.anchor_top = True
         elif kind == Key.END:
-            chat.offset = 0
+            if chat.draft:
+                chat.caret = len(chat.draft)
+            else:
+                chat.offset = 0
         if chat.offset == 0:
             chat.unseen = 0
+
+    def _leave_room(self, chat: ChatState) -> None:
+        """Close the conversation, keeping whatever was half-written in it."""
+        if chat.draft:
+            self.drafts[chat.room.id] = chat.draft
+        else:
+            self.drafts.pop(chat.room.id, None)
+        self.chat = None
 
     def _submit(self, chat: ChatState) -> None:
         """Send what is written, or run it when it starts with a slash."""
         written = chat.draft.strip()
         chat.draft = ""
+        chat.caret = 0
+        self.drafts.pop(chat.room.id, None)
         if not written:
             return
         if written.startswith("/"):
             self._run_command(written)
             return
-        self.send_message(written)
+        # Held for one frame: opening a window takes over a second, and doing
+        # it inside the keystroke left the screen on the frame before it.
+        self.pending_send = written
+        chat.notice = "보내는 중…"
+
+    def flush_pending(self) -> None:
+        """Send what the last keystroke asked for, once a frame has been drawn."""
+        text = self.pending_send
+        self.pending_send = None
+        if text is None or self.chat is None:
+            return
+        self.chat.notice = ""
+        self.send_message(text)
 
     def _require_sender(self) -> "MessageSender":
         if self._sender is None:
@@ -783,6 +955,7 @@ class App:
         # Marked beside the prompt rather than announced: the composer is
         # where the message was, so that is where its fate belongs.
         chat.outbox = text
+        chat.outbox_at = self._clock()
         chat.delivered = False
         chat.notice = ""
 
@@ -865,6 +1038,9 @@ class App:
             if kind or text:
                 last_key_at = time.monotonic()
                 self.handle(kind, text)
+                if self.pending_send is not None:
+                    console.draw(self.render(width, height), self.cursor)
+                    self.flush_pending()
                 continue
 
             now = time.monotonic()
@@ -895,6 +1071,11 @@ def _next_poll_at(now: float, work_seconds: float) -> float:
     one stat.
     """
     return now + max(REFRESH_SECONDS, work_seconds)
+
+
+def _same_words(text: str) -> str:
+    """Reduce a message to its words, so spacing cannot hide a match."""
+    return " ".join(text.split())
 
 
 def _clamp_scroll(selected: int, scroll: int, height: int, total: int) -> int:

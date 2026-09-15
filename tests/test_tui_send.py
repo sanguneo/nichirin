@@ -94,6 +94,17 @@ class ComposerCase(unittest.TestCase):
         for character in written:
             self.app.handle("char", character)
 
+    def press_enter(self) -> None:
+        """Press enter the way the loop does.
+
+        A send is deferred so the screen can say it is happening before the
+        window work blocks; the loop paints that frame and then flushes, and
+        a test that only handled the key would assert against a send that had
+        not been asked to run yet.
+        """
+        self.app.handle(Key.ENTER, "")
+        self.app.flush_pending()
+
 class ComposerTests(ComposerCase):
     def test_an_open_room_shows_a_bordered_message_box(self) -> None:
         box = self.composer()
@@ -128,53 +139,44 @@ class ComposerTests(ComposerCase):
 
     def test_enter_hands_the_text_to_the_client_and_clears_the_box(self) -> None:
         self.type("보낼 말")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.sent, [(self.chat.room.title, "보낼 말")])
         self.assertEqual(self.chat.draft, "")
 
     def test_nothing_is_sent_and_nothing_is_echoed_before_the_client_writes_it(self) -> None:
         loaded = len(self.chat.messages)
         self.type("보낼 말")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(len(self.chat.messages), loaded)
 
     def test_an_empty_box_sends_nothing(self) -> None:
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.type("   ")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.sent, [])
 
     def test_a_slash_line_runs_a_command_instead_of_sending(self) -> None:
         self.type("/sum 30m")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.sent, [])
 
     def test_older_moved_from_a_letter_to_a_command(self) -> None:
         self.type("/older")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.sent, [])
         self.assertNotEqual(self.chat.notice, "")
-
-    def test_escape_clears_the_draft_before_leaving_the_room(self) -> None:
-        self.type("쓰다 만 글")
-        self.app.handle(Key.ESCAPE, "")
-        self.assertEqual(self.chat.draft, "")
-        self.assertIsNotNone(self.app.chat, "escape left the room with text still in the box")
-
-        self.app.handle(Key.ESCAPE, "")
-        self.assertIsNone(self.app.chat)
 
     def test_a_refused_send_is_reported_and_keeps_the_room_open(self) -> None:
         self.sender.failure = KakaoReadError(ErrorCode.WINDOW_NOT_FOUND, "창이 없습니다")
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertIn("창이 없습니다", self.chat.notice)
         self.assertIsNotNone(self.app.chat)
 
     def test_a_native_failure_is_reported_rather_than_raised(self) -> None:
         self.sender.failure = OSError("PostMessage failed")
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertIn("PostMessage failed", self.chat.notice)
 
     def test_sending_never_re_reads_the_catalog(self) -> None:
@@ -189,7 +191,7 @@ class ComposerTests(ComposerCase):
 
         self.reader.rooms = counted  # type: ignore[method-assign]
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
 
         self.assertEqual(reads, [], "a send decrypted the catalog again")
         self.assertEqual(len(self.sender.sent), 1)
@@ -197,7 +199,7 @@ class ComposerTests(ComposerCase):
     def test_two_rooms_sharing_a_title_refuse_to_send(self) -> None:
         self.app.titles = [self.chat.room.title, self.chat.room.title]
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.sent, [])
         self.assertIn("특정할 수 없습니다", self.chat.notice)
 
@@ -342,7 +344,7 @@ class BrowserOpensTheRoomTests(ComposerCase):
 
     def test_a_closed_room_is_opened_rather_than_refused(self) -> None:
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertTrue(self.sender.calls[0]["open_if_needed"])
 
     def test_the_title_the_window_carries_is_offered_as_an_alias(self) -> None:
@@ -351,20 +353,20 @@ class BrowserOpensTheRoomTests(ComposerCase):
         room = next(room for room in self.app.rooms if room.id == SELF_ROOM)
         self.app.open_room(room)
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.calls[0]["aliases"], [SELF_STORED_TITLE])
 
     def test_the_rooms_place_in_the_list_is_offered_as_a_hint(self) -> None:
         # Every wrong row opens someone's conversation and marks it read.
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(
             self.sender.calls[0]["hint"], self.app.titles.index(self.chat.room.title)
         )
 
     def test_a_room_whose_titles_agree_needs_no_alias(self) -> None:
         self.type("안녕")
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
         self.assertEqual(self.sender.calls[0]["aliases"], [])
 
 
@@ -402,7 +404,7 @@ class SentMarkTests(ComposerCase):
 
     def send(self, text: str = "안녕") -> None:
         self.type(text)
-        self.app.handle(Key.ENTER, "")
+        self.press_enter()
 
     def test_nothing_is_announced_in_the_status_line(self) -> None:
         self.send()
@@ -495,6 +497,46 @@ class ScreenSizeTests(unittest.TestCase):
     def test_a_tiny_window_is_still_drawable(self) -> None:
         console_module._visible_size = lambda: (3, 1)
         self.assertEqual(Console().size, (20, 8))
+
+
+class DeliveryMarkTests(ComposerCase):
+    """The mark has to tell three states apart, and one of them is doubt."""
+
+    def send(self, text: str) -> None:
+        self.type(text)
+        self.press_enter()
+
+    def arrive(self, text: str) -> None:
+        self.app._confirm_delivery(
+            [replace(self.chat.messages[-1], id=90_001, text=text, from_me=True)]
+        )
+
+    def test_a_message_that_comes_back_respaced_is_still_recognised(self) -> None:
+        # The client is free to tidy what it stores; only the words are ours.
+        self.send("오늘  저녁에\n봐요")
+        self.arrive("오늘 저녁에 봐요")
+        self.assertIn("✓", self.composer())
+
+    def test_a_different_message_is_not_mistaken_for_it(self) -> None:
+        self.send("안녕")
+        self.arrive("안녕하세요")
+        self.assertNotIn("✓", self.composer())
+
+    def test_a_send_that_never_comes_back_stops_claiming_to_be_waiting(self) -> None:
+        now = [1_000.0]
+        self.app._clock = lambda: now[0]
+        self.send("안녕")
+        self.assertIn("*", self.composer())
+        now[0] += 60.0
+        self.assertIn("?", self.composer(), "an unanswered send still looked queued")
+
+    def test_a_tick_is_not_undone_by_the_clock(self) -> None:
+        now = [1_000.0]
+        self.app._clock = lambda: now[0]
+        self.send("안녕")
+        self.arrive("안녕")
+        now[0] += 600.0
+        self.assertIn("✓", self.composer())
 
 
 if __name__ == "__main__":

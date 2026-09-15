@@ -126,6 +126,46 @@ Taken from a live client, not guessed.
   literally. Both are restored on exit along with the alternate screen.
 - Frames are rebuilt whole and written once. Partial redraws flicker and strand
   stale cells.
+- **The frame is cut and filled to the screen by `Console.draw`, not by its
+  callers.** One line wider than the console wraps, and every row after it lands
+  a row late and at the wrong column: driving a real console left 23 rows
+  holding the previous frame where two were expected, which is exactly the chat
+  remnants that showed under the room list. Narrow lines are padded, so no cell
+  survives a frame it does not belong to.
+- **Wrapping is turned off through the console mode, not the escape.**
+  `\x1b[?7l` is accepted and ignored here — a 140-column line still wrapped on a
+  120-column screen — so `_wrap_free_mode` clears `ENABLE_WRAP_AT_EOL_OUTPUT` while
+  keeping the escape-processing flags.
+- **Measure glyphs in the console, not in a capture.** `ReadConsoleOutputCharacterW`
+  over a whole screen returns characters, not cells, so one wide character
+  shifts every row after it and a correct frame looks smeared. Read one row at a
+  time. Every glyph the interface draws was checked against the cursor's own
+  advance: box characters, `❯`, `•`, `◉`, `↑↓`, `✓` one column, Hangul two.
+- **The composer is an editor, not an append-only line.** `ChatState.caret` is an
+  index into the draft, and anything drawn left of the text belongs to the
+  caret's column too. Home and End move the caret while something is written and
+  scroll the conversation when the box is empty.
+- **Escape must not destroy a draft.** It leaves the room, and the draft is kept
+  per room in `App.drafts` so reopening restores it with the caret at its end.
+  `Ctrl+U` is the key that clears, and sending forgets the draft.
+- **A newline reaches the box two ways.** Shift+Enter carries
+  `dwControlKeyState`, and a paste arrives as ordinary keystrokes — so an enter
+  with more character events already queued is a newline rather than a send.
+  `PeekConsoleInputW` answers that without consuming the queue; counting any
+  pending record would call a key release a paste.
+- **Letters filter the lists only after `/`.** Typing must not take the letter
+  shortcuts away from the room and friends views, so filtering is entered
+  deliberately and left with escape.
+- **A send is deferred by one frame.** `_submit` parks the text on
+  `App.pending_send` and the loop paints before `flush_pending` runs: a send that
+  has to open a room takes 1.7 s, and the screen would otherwise freeze with no
+  explanation.
+- **Row geometry scales with the screen.** The pitch, first centre and column
+  were measured at 100%; `row_geometry(dpi)` scales them, because on a 150%
+  laptop every row would otherwise land on someone else's conversation.
+- **Delivery is matched by words, and doubt is admitted.** The client may tidy
+  whitespace, so the comparison is word-wise; after 30 s unseen the mark becomes
+  `?` rather than going on claiming to be queued.
 - Speaker tints share one base grey and differ only slightly. Hue alone stops
   separating past roughly twenty speakers, so a three-step lightness cycle is
   applied as well; `test_tui_layout.py` pins both the subtlety and the

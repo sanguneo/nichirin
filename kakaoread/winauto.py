@@ -41,12 +41,32 @@ ROOM_LIST_PREFIX = "ChatRoomListCtrl"
 ROW_PITCH = 68
 FIRST_ROW_CENTER = 29
 ROW_X = 134
+MEASURED_DPI = 96
+"""The scaling the geometry above was measured at."""
 SEARCHED_ROWS = 8
 """How far down the list a room is looked for before giving up."""
 POLL_SECONDS = 0.05
 """How often to look for the window a posted double-click produces."""
 POLL_ATTEMPTS = 40
 """How long to keep looking before treating the row as the wrong one."""
+
+
+def row_geometry(dpi: int) -> tuple[int, int, int]:
+    """Return the row pitch, first centre and column for a screen's scaling.
+
+    The measured numbers hold at 100% only. A laptop at 150% draws the list
+    half again as tall, so a row computed from them lands on somebody else's
+    conversation — and opening one marks it read, which is the cost worth
+    avoiding here.
+    """
+    if dpi <= 0:
+        dpi = MEASURED_DPI
+    scale = dpi / MEASURED_DPI
+    return (
+        round(ROW_PITCH * scale),
+        round(FIRST_ROW_CENTER * scale),
+        round(ROW_X * scale),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +87,15 @@ class SendResult(TypedDict):
 class MessageSender(Protocol):
     """The one call an interface needs; :class:`Sender` satisfies it."""
 
-    def send(self, room: str, text: str, dry_run: bool = False) -> SendResult:
+    def send(
+        self,
+        room: str,
+        text: str,
+        dry_run: bool = False,
+        open_if_needed: bool = False,
+        aliases: Iterable[str] = (),
+        hint: Optional[int] = None,
+    ) -> SendResult:
         ...
 
 
@@ -518,6 +546,14 @@ class Win32Backend:
                 return found[0]
         return None
 
+    def _dpi(self, handle: int) -> int:
+        """The scaling this window is drawn at, or the measured one."""
+        try:
+            dpi = int(self._user32.GetDpiForWindow(handle))
+        except (AttributeError, OSError, ValueError):
+            return MEASURED_DPI
+        return dpi if dpi > 0 else MEASURED_DPI
+
     def scroll_to_top(self, control: int) -> None:
         """Wheel the list back to its first row. No cursor is moved."""
         from ctypes import wintypes as _types
@@ -525,7 +561,8 @@ class Win32Backend:
         class _Point(ctypes.Structure):
             _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
-        point = _Point(ROW_X, FIRST_ROW_CENTER)
+        _pitch, first_centre, column = row_geometry(self._dpi(control))
+        point = _Point(column, first_centre)
         self._user32.ClientToScreen(control, ctypes.byref(point))
         position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
         for _notch in range(_WHEEL_NOTCHES):
@@ -536,7 +573,8 @@ class Win32Backend:
 
     def click_row(self, control: int, row: int) -> None:
         """Post a double-click at a row. The cursor is never moved or read."""
-        position = ((FIRST_ROW_CENTER + row * ROW_PITCH) << 16) | ROW_X
+        pitch, first_centre, column = row_geometry(self._dpi(control))
+        position = ((first_centre + row * pitch) << 16) | column
         for message, button in (
             (_WM_LBUTTONDOWN, _MK_LBUTTON),
             (_WM_LBUTTONUP, 0),

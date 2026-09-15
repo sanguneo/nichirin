@@ -21,11 +21,26 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Final, Iterator, Optional
 
+from .layout import pad_to_width, truncate_to_width
+
 _IDLE_TICK: Final = 0.01
 """How long to idle between keyboard checks; short enough to feel immediate."""
 
 _ENABLE_VIRTUAL_TERMINAL_PROCESSING: Final = 0x0004
 _ENABLE_PROCESSED_OUTPUT: Final = 0x0001
+_ENABLE_WRAP_AT_EOL_OUTPUT: Final = 0x0002
+
+
+def _wrap_free_mode(previous: int) -> int:
+    """Return *previous* with escape handling on and end-of-line wrapping off.
+
+    The escape for it is not enough: \x1b[?7l is accepted and ignored here,
+    and a 140-column line still wrapped onto a 120-column screen. Wrapping is
+    what turns one over-wide line into a frame that drifts a row at a time
+    and keeps fragments of the last screen until the interface restarts.
+    """
+    wanted = previous | _ENABLE_VIRTUAL_TERMINAL_PROCESSING | _ENABLE_PROCESSED_OUTPUT
+    return wanted & ~_ENABLE_WRAP_AT_EOL_OUTPUT
 _STD_OUTPUT: Final = -11
 _UTF8: Final = 65001
 
@@ -47,7 +62,12 @@ CLEAR_LINE: Final = "\x1b[K"
 
 _STD_INPUT: Final = -10
 _KEY_EVENT: Final = 0x0001
+_PEEK_DEPTH: Final = 16
 _WAIT_SIGNALLED: Final = 0x0000
+
+_SHIFT_PRESSED: Final = 0x0010
+CLEAR_BOX: Final = "\x15"
+"""Ctrl+U, which empties the composer; it is passed through as itself."""
 
 _HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
 _LOW_SURROGATE: Final = range(0xDC00, 0xE000)
@@ -60,6 +80,8 @@ class KeyEvent:
     key_down: bool
     virtual_key: int
     character: str
+    control_state: int = 0
+    """Which modifiers were down, so shift+enter is not a plain enter."""
 
 
 class Key:
@@ -76,6 +98,7 @@ class Key:
     ENTER: Final = "enter"
     ESCAPE: Final = "escape"
     BACKSPACE: Final = "backspace"
+    DELETE: Final = "delete"
     TAB: Final = "tab"
     INTERRUPT: Final = "interrupt"
 
@@ -93,6 +116,7 @@ _BY_VIRTUAL_KEY: Final = {
     0x26: Key.UP,
     0x27: Key.RIGHT,
     0x28: Key.DOWN,
+    0x2E: Key.DELETE,
 }
 
 _BY_CHARACTER: Final = {
@@ -118,7 +142,7 @@ def _enable_vt() -> Optional[int]:
     previous = wintypes.DWORD()
     if not kernel32.GetConsoleMode(handle, ctypes.byref(previous)):
         return None
-    wanted = previous.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING | _ENABLE_PROCESSED_OUTPUT
+    wanted = _wrap_free_mode(previous.value)
     if not kernel32.SetConsoleMode(handle, wanted):
         return None
     return previous.value
@@ -287,6 +311,11 @@ class Console:
         frame = [HOME]
         for row in range(rows):
             body = lines[row] if row < len(lines) else ""
+            # Cut to the screen and filled out to it. A line wider than the
+            # console wraps, and every row after it lands a row late and at
+            # the wrong column; a line narrower than it leaves whatever the
+            # last frame put there. Neither is the caller's to get right.
+            body = pad_to_width(truncate_to_width(body, columns), columns)
             frame.append(body + CLEAR_LINE)
             if row < rows - 1:
                 frame.append("\r\n")
@@ -339,7 +368,36 @@ class Console:
                 key_down=bool(key.bKeyDown),
                 virtual_key=int(key.wVirtualKeyCode),
                 character="" if character in ("", "\x00") else character,
+                control_state=int(key.dwControlKeyState),
             )
+
+    def _pending(self) -> bool:
+        """Whether another typed character is already waiting to be read.
+
+        Peeked rather than counted: a console queues the release of the key
+        just read, and treating that as "more is coming" would turn every
+        enter into a newline. Only a key *press* carrying a character counts.
+        """
+        if self._kernel32 is None:
+            return False
+        kernel32 = self._kernel32
+        handle = kernel32.GetStdHandle(_STD_INPUT)
+        if handle in (0, None) or handle == ctypes.c_void_p(-1).value:
+            return False
+        records = (_INPUT_RECORD * _PEEK_DEPTH)()
+        read = wintypes.DWORD()
+        if not kernel32.PeekConsoleInputW(
+            handle, ctypes.byref(records), _PEEK_DEPTH, ctypes.byref(read)
+        ):
+            return False
+        for index in range(read.value):
+            record = records[index]
+            if record.EventType != _KEY_EVENT:
+                continue
+            key = record.Event.KeyEvent
+            if key.bKeyDown and key.uChar.UnicodeChar not in ("", "\x00"):
+                return True
+        return False
 
     def read_key(self, timeout: float = 0.0) -> tuple[str, str]:
         """Wait up to *timeout* seconds for a key, returning ``(kind, text)``.
@@ -361,9 +419,14 @@ class Console:
         """Turn one key press into a keystroke, or nothing at all."""
         character = event.character
         if character:
+            if character == CLEAR_BOX:
+                self._pending_surrogate = ""
+                return "char", character
             named = _BY_CHARACTER.get(character)
             if named is not None:
                 self._pending_surrogate = ""
+                if named == Key.ENTER and self._is_newline(event):
+                    return "char", "\n"
                 return named, ""
             if ord(character) in _HIGH_SURROGATE:
                 self._pending_surrogate = character
@@ -383,7 +446,20 @@ class Console:
             return None
 
         named = _BY_VIRTUAL_KEY.get(event.virtual_key)
+        if named == Key.ENTER and self._is_newline(event):
+            return "char", "\n"
         return (named, "") if named is not None else None
+
+    def _is_newline(self, event: KeyEvent) -> bool:
+        """Whether an enter means a line break rather than "send this".
+
+        Two cases: the person held shift, or the enter is one character of a
+        paste. A paste reaches a console as ordinary keystrokes, so the run of
+        characters still queued behind it is the only thing that tells them
+        apart — and getting it wrong sent the first line of a pasted message
+        on its own.
+        """
+        return bool(event.control_state & _SHIFT_PRESSED) or self._pending()
 
 
 def supports_tui() -> bool:

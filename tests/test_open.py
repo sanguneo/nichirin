@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.winauto import ChatWindow, RoomOpener, Sender
+from kakaoread.winauto import ChatWindow, RoomOpener, Sender, row_geometry
 
 LIST_CONTROL = 900
 
@@ -360,6 +360,32 @@ class FlashTests(unittest.TestCase):
         with self.assertRaises(KakaoReadError):
             opener(desktop, rows=2).open("없는 방")
         self.assertLessEqual(desktop.waits, 2 * 40, "the give-up budget grew")
+
+
+class ScalingTests(unittest.TestCase):
+    """The row geometry was measured at 100%, and nobody else runs at 100%.
+
+    A laptop at 150% draws the list half again as tall, so a row number
+    computed from the measured pitch lands on the wrong room — and opening
+    the wrong room marks it read.
+    """
+
+    def test_a_hundred_percent_screen_keeps_the_measured_numbers(self) -> None:
+        pitch, first, column = row_geometry(96)
+        self.assertEqual((pitch, first, column), (68, 29, 134))
+
+    def test_a_scaled_screen_scales_the_rows(self) -> None:
+        pitch, first, column = row_geometry(144)
+        self.assertEqual(pitch, 102)
+        self.assertEqual(first, 44)
+        self.assertEqual(column, 201)
+
+    def test_a_quarter_step_is_rounded_rather_than_dropped(self) -> None:
+        pitch, _first, _column = row_geometry(120)
+        self.assertEqual(pitch, 85)
+
+    def test_an_unreadable_scale_falls_back_to_the_measured_one(self) -> None:
+        self.assertEqual(row_geometry(0), row_geometry(96))
 
 
 if __name__ == "__main__":

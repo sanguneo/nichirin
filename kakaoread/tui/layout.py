@@ -99,6 +99,34 @@ def elide_head(text: str, max_width: int) -> str:
     return ELLIPSIS + "".join(reversed(kept))
 
 
+def window_around(text: str, caret: int, width: int) -> tuple[str, int]:
+    """Return the part of *text* that fits *width*, and the caret's column.
+
+    A composer is narrower than the thing being written into it, so what is
+    on screen has to follow the caret rather than the end of the text. The
+    caret's own column is reserved at the right edge, or a caret at the very
+    end would sit one column past the box.
+    """
+    if width <= 0:
+        return "", 0
+    caret = max(0, min(caret, len(text)))
+    if display_width(text) <= width:
+        return text, display_width(text[:caret])
+
+    start = 0
+    while start < caret and display_width(text[start:caret]) > width - 1:
+        start += 1
+    end = start
+    used = 0
+    while end < len(text):
+        step = char_width(text[end])
+        if used + step > width:
+            break
+        used += step
+        end += 1
+    return text[start:end], display_width(text[start:caret])
+
+
 def wrap_to_width(text: str, width: int) -> list[str]:
     """Break *text* into lines of at most *width* columns, splitting words late.
 

@@ -45,13 +45,21 @@ class FakeConsole(Console):
         while self.queued:
             yield self.queued.pop(0)
 
+    def _pending(self) -> bool:
+        return bool(self.queued)
 
-def down(virtual_key: int = 0, character: str = "") -> KeyEvent:
-    return KeyEvent(key_down=True, virtual_key=virtual_key, character=character)
+
+def down(virtual_key: int = 0, character: str = "", control: int = 0) -> KeyEvent:
+    return KeyEvent(
+        key_down=True, virtual_key=virtual_key, character=character, control_state=control
+    )
 
 
 def up(virtual_key: int = 0, character: str = "") -> KeyEvent:
     return KeyEvent(key_down=False, virtual_key=virtual_key, character=character)
+
+
+SHIFT = 0x0010
 
 
 class DecodingTests(unittest.TestCase):
@@ -109,6 +117,37 @@ class DecodingTests(unittest.TestCase):
 
     def test_an_empty_queue_reports_nothing(self) -> None:
         self.assertEqual(self.read(), ("", ""))
+
+
+class NewlineDecodingTests(unittest.TestCase):
+    """Two ways a newline reaches a chat box, and one that must still send."""
+
+    def read(self, *events: KeyEvent) -> tuple[str, str]:
+        return FakeConsole(list(events)).read_key(0.0)
+
+    def test_shift_and_enter_is_a_newline(self) -> None:
+        self.assertEqual(self.read(down(VK_RETURN, "\r", SHIFT)), ("char", "\n"))
+
+    def test_enter_alone_still_sends(self) -> None:
+        self.assertEqual(self.read(down(VK_RETURN, "\r")), (Key.ENTER, ""))
+
+    def test_an_enter_inside_a_paste_is_a_newline(self) -> None:
+        # A paste arrives as ordinary keystrokes, so the run of characters
+        # still waiting is what tells one apart from a person pressing enter.
+        console = FakeConsole([down(VK_RETURN, "\r"), down(0, "b")])
+        self.assertEqual(console.read_key(0.0), ("char", "\n"))
+
+    def test_the_last_enter_of_a_paste_still_sends(self) -> None:
+        self.assertEqual(self.read(down(0, "a"), down(VK_RETURN, "\r")), ("char", "a"))
+        # nothing is left behind it, so the enter that follows submits
+        console = FakeConsole([down(VK_RETURN, "\r")])
+        self.assertEqual(console.read_key(0.0), (Key.ENTER, ""))
+
+    def test_the_delete_key_is_named(self) -> None:
+        self.assertEqual(self.read(down(0x2E, "")), (Key.DELETE, ""))
+
+    def test_control_u_asks_for_a_clear_box(self) -> None:
+        self.assertEqual(self.read(down(0, "\x15")), ("char", "\x15"))
 
 
 if __name__ == "__main__":
