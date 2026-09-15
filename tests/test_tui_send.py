@@ -86,11 +86,21 @@ class ComposerCase(unittest.TestCase):
             self.app.handle("char", character)
 
 class ComposerTests(ComposerCase):
-    def test_an_open_room_shows_a_bordered_message_box(self) -> None:
+    def test_an_open_room_shows_a_message_line(self) -> None:
         box = self.composer()
-        self.assertIn("╭", box)
-        self.assertIn("╰", box)
         self.assertIn("❯", box)
+        self.assertIn("╮", box)
+        self.assertIn("╯", box)
+
+    def test_the_line_is_open_on_the_left(self) -> None:
+        for line in self.composer().split("\n"):
+            self.assertNotIn("╭", line)
+            self.assertNotIn("╰", line)
+            self.assertFalse(line.startswith("│"), "the left border is back")
+
+    def test_the_prompt_starts_at_the_first_column(self) -> None:
+        middle = self.composer().split("\n")[1]
+        self.assertTrue(middle.startswith("❯"), middle[:12])
 
     def test_the_room_list_has_no_message_box(self) -> None:
         self.app.chat = None
@@ -386,11 +396,13 @@ class SentMarkTests(ComposerCase):
         self.send()
         self.assertEqual(self.chat.notice, "")
 
-    def test_a_queued_message_is_marked_beside_the_prompt(self) -> None:
+    def test_a_queued_message_is_marked_at_the_far_right(self) -> None:
         self.send()
-        box = self.composer()
-        self.assertIn("*", box)
-        self.assertLess(box.index("*"), box.index("❯"))
+        middle = self.composer().split("\n")[1]
+        self.assertIn("*", middle)
+        self.assertGreater(middle.index("*"), middle.index("❯"))
+        # Columns, not string indexes: the placeholder is Hangul.
+        self.assertEqual(display_width(middle[: middle.index("*")]), WIDTH - 2)
 
     def test_the_prompt_does_not_move_when_a_mark_appears(self) -> None:
         # The first attempt used emoji and shifted the prompt on every send.

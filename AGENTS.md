@@ -171,11 +171,17 @@ Taken from a live client, not guessed.
   exactly as wide as the screen, and writing its last cell makes the terminal
   wrap; the frame's own newline then lands a row late, so every box below
   drifts and its right border falls off.
-- **No emoji in the frame.** ✅/⌛ measure as the two columns the console
-  advances, but the glyph paints over the next cell and the smear survives
-  until something overwrites it. The send marks are plain text — `*` queued,
-  `✓` delivered — and `✓` is width-neutral rather than ambiguous. Their slot is
-  always two columns, so the prompt does not move when a mark appears.
+- **Nothing is drawn to stand in for the cursor.** The terminal's own caret is
+  parked at the end of the draft, and a block drawn beside it read as a second
+  cursor in the wrong place. Whatever sits left of the text is part of that
+  caret's column: adding a mark slot there once left `caret` two columns
+  behind, which is exactly how it looked.
+- **The message line is open on the left and marked on the right.** The send
+  mark — `*` queued, `✓` delivered — sits against the right border, where it
+  cannot push the prompt or the text sideways. `✓` is width-neutral rather
+  than ambiguous. Emoji were tried and removed: the console advances the two
+  columns they measure, but the glyph paints over the next cell and the smear
+  survives until something overwrites it.
 - **What was sent is marked, not announced.** Typing clears a stale tick but
   never an unresolved `*`: hiding that would hide the one fact worth knowing,
   since a queued Enter is not a delivered message.

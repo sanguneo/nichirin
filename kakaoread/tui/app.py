@@ -526,37 +526,37 @@ class App:
         return rows
 
     def _composer_lines(self, width: int) -> tuple[list[str], int]:
-        """Draw the message box, shaped like OmO's prompt.
+        """Draw the message line: open on the left, closed on the right.
 
-        It keeps focus the whole time a room is open, because this is a chat
-        window: a letter belongs to the message being written, not to a
-        shortcut. What the letter shortcuts used to do is a slash command now.
+        Nothing is drawn to stand in for the cursor. The terminal's own caret
+        is parked at the end of the draft, and drawing a block beside it was
+        what made the line look like it had two cursors in the wrong place.
+        The mark for the last message sits at the far right, away from the
+        text being typed, so it cannot push anything sideways.
         """
         chat = self.chat
         assert chat is not None
-        inner = max(8, width - 2)
-        edge = self.theme.fg("borderMuted", "│")
-        top = self.theme.fg("borderMuted", "╭" + "─" * inner + "╮")
-        bottom = self.theme.fg("borderMuted", "╰" + "─" * inner + "╯")
+        content = max(8, width - 1)
+        rule = self.theme.fg("borderMuted", "─" * content)
+        top = rule + self.theme.fg("borderMuted", "╮")
+        bottom = rule + self.theme.fg("borderMuted", "╯")
 
-        # The slot is always two columns wide, so the prompt never moves when
-        # a mark appears. Emoji were tried first and are not usable here: the
-        # console advances two cells but the glyph paints over the next one,
-        # leaving the mark smeared until something overwrote it. These are
-        # plain text, and "✓" is width-neutral rather than ambiguous.
         if chat.delivered:
-            mark = self.theme.fg("success", "✓") + " "
+            mark = self.theme.fg("success", "✓")
         elif chat.outbox is not None:
-            mark = self.theme.fg("muted", "*") + " "
+            mark = self.theme.fg("muted", "*")
         else:
-            mark = "  "
+            mark = " "
+
+        prompt = self.theme.fg("accent", "❯ ")
         # The tail is what is being typed, so a long draft loses its head.
-        written = elide_head(chat.draft, max(1, inner - 5 - display_width(mark)))
-        body = " " + mark + self.theme.fg("accent", "❯ ") + written + self.theme.fg("accent", "▌")
+        written = elide_head(chat.draft, max(1, content - 4))
+        left = prompt + written
         if not chat.draft:
-            body += self.theme.fg("dim", " 메시지 입력 후 enter")
-        middle = edge + pad_to_width(truncate_to_width(body, inner), inner) + edge
-        caret = min(width - 1, 4 + display_width(written))
+            left += self.theme.fg("dim", "메시지 입력 후 enter")
+        left = pad_to_width(truncate_to_width(left, content - 2), content - 2)
+        middle = left + " " + mark + self.theme.fg("borderMuted", "│")
+        caret = min(width - 1, 2 + display_width(written))
         return [top, middle, bottom], caret
 
     def _status_line(self, width: int) -> str:
