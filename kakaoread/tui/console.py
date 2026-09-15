@@ -193,12 +193,13 @@ class _ScreenInfo(ctypes.Structure):
 
 
 RIGHT_MARGIN_VARIABLE: Final = "KAKAOREAD_TUI_MARGIN"
-DEFAULT_RIGHT_MARGIN: Final = 2
+DEFAULT_RIGHT_MARGIN: Final = 1
 """Columns left unused at the right edge.
 
 Windows Terminal paints its scrollbar over the last cells rather than
 shrinking the area it reports, so a frame drawn to the full reported width
-disappears under it. Set the variable to 0 on a terminal that does not.
+disappears under it. One column was enough in practice; set the variable to 0
+on a terminal that needs none, or higher on one that hides more.
 """
 
 

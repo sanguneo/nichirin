@@ -171,7 +171,7 @@ Taken from a live client, not guessed.
   console buffer, which is wider than the window showing it, so the visible
   region (`srWindow`) is used instead. On top of that Windows Terminal paints
   its scrollbar over the last cells rather than shrinking what it reports, so
-  `right_margin()` leaves two columns unused; `KAKAOREAD_TUI_MARGIN` tunes it,
+  `right_margin()` leaves one column unused; `KAKAOREAD_TUI_MARGIN` tunes it,
   and 0 takes them back on a terminal that does not need it.
 - **Autowrap is off while the interface owns the screen.** A frame line is
   exactly as wide as the screen, and writing its last cell makes the terminal
