@@ -43,8 +43,10 @@ FIRST_ROW_CENTER = 29
 ROW_X = 134
 SEARCHED_ROWS = 8
 """How far down the list a room is looked for before giving up."""
-SETTLE_SECONDS = 1.2
-"""How long a posted double-click is given to produce its window."""
+POLL_SECONDS = 0.05
+"""How often to look for the window a posted double-click produces."""
+POLL_ATTEMPTS = 40
+"""How long to keep looking before treating the row as the wrong one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,10 +187,12 @@ class RoomOpener:
         settle: Callable[[], None],
         rows: int = SEARCHED_ROWS,
         remembered: Optional[Path] = None,
+        attempts: int = POLL_ATTEMPTS,
     ) -> None:
         self._backend = backend
         self._settle = settle
         self._rows = rows
+        self._attempts = attempts
         self._remembered = remembered if remembered is not None else _remembered_rows()
 
     def _order(self, room: str, hint: Optional[int]) -> list[int]:
@@ -250,10 +254,21 @@ class RoomOpener:
             # something after the list is put back at its first row.
             self._backend.scroll_to_top(control)
             self._backend.click_row(control, row)
-            self._settle()
-            for window in self._backend.chat_windows():
-                if window.title in known:
-                    continue
+            # Watched for rather than waited on: whatever opens is in front of
+            # whatever the person was doing until it is put away, so the flat
+            # wait that used to sit here was a second of someone else's
+            # conversation covering their screen.
+            opened: list[ChatWindow] = []
+            for _attempt in range(self._attempts):
+                opened = [
+                    window
+                    for window in self._backend.chat_windows()
+                    if window.title not in known
+                ]
+                if opened:
+                    break
+                self._settle()
+            for window in opened:
                 if window.title in wanted:
                     _learn_row(self._remembered, room, row)
                     # Parked rather than left in front: a room this opened was
@@ -390,6 +405,7 @@ _SW_SHOW = 5
 _SW_RESTORE = 9
 _SW_HIDE = 0
 _SW_MINIMIZE = 6
+_SW_SHOWMINNOACTIVE = 7
 _WM_MOUSEWHEEL = 0x020A
 _WHEEL_UP = 120
 _WHEEL_NOTCHES = 8
@@ -557,7 +573,9 @@ class Win32Backend:
             self._user32.ShowWindow(handle, _SW_MINIMIZE)
 
     def minimize_window(self, handle: int) -> None:
-        self._user32.ShowWindow(handle, _SW_MINIMIZE)
+        # Minimised without being activated first: the activate/deactivate
+        # dance is time the window spends in front of whatever was there.
+        self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
 
     def show_main_window(self) -> bool:
         """Bring the main window back, including from the tray.
@@ -628,5 +646,5 @@ def make_sender() -> Sender:
             "KakaoTalk is not running; start it and open the conversation first",
         )
     backend = Win32Backend(pid)
-    opener = RoomOpener(backend, settle=lambda: time.sleep(SETTLE_SECONDS))
+    opener = RoomOpener(backend, settle=lambda: time.sleep(POLL_SECONDS))
     return Sender(backend, running=lambda: find_pid() == pid, opener=opener)

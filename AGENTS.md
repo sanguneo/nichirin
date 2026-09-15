@@ -264,6 +264,12 @@ Taken from a live client, not guessed.
   hidden window also accepts text (written and read back), but `chat_windows`
   deliberately sees only visible ones, so hiding is not a supported parking
   spot — minimising is.
+- **A room that opens is in front until it is put away, so do not wait.** The
+  opener used to sleep a flat 1.2 s per row; it now watches for the window
+  and minimises it the moment it appears, without activating it. What is
+  left — measured 949 ms and 964 ms across two runs, unchanged by the
+  minimise style — is KakaoTalk showing its own window, and nothing on this
+  side preempts that. End to end: 2.8 s → 1.7 s.
 - **Scanning rows opens real rooms, and opening a room marks it read.** That
   is the true cost of a miss, not the flicker, so the rows are aimed at
   rather than swept. A row that worked is remembered per room in

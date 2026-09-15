@@ -33,6 +33,7 @@ class FakeDesktop:
         self.list_control: int | None = LIST_CONTROL
         self.restored = 0
         self.restorable = True
+        self.waits = 0
         self.main = "visible"
         self.minimized: list[int] = []
         self.draft = ""
@@ -103,7 +104,12 @@ def opener(desktop: FakeDesktop, rows: int = 6, remembered: Path | None = None) 
     """
     if remembered is None:
         remembered = Path(tempfile.mkdtemp()) / "rows.json"
-    return RoomOpener(desktop, settle=lambda: None, rows=rows, remembered=remembered)
+    desktop.waits = 0
+
+    def settle() -> None:
+        desktop.waits += 1
+
+    return RoomOpener(desktop, settle=settle, rows=rows, remembered=remembered)
 
 
 class OpeningTests(unittest.TestCase):
@@ -329,6 +335,31 @@ class AimTests(unittest.TestCase):
         opener(desktop, remembered=self.remembered).open("받는 방")
         raw = self.remembered.read_bytes()
         self.assertNotIn("받는 방".encode(), raw)
+
+
+class FlashTests(unittest.TestCase):
+    """A room that opens is in front until it is minimised, so do not dawdle.
+
+    The wait used to be a flat 1.2 s per row whether or not the window was
+    already there, which is how long someone's conversation sat over whatever
+    they were doing.
+    """
+
+    def test_a_window_that_is_already_there_is_not_waited_for(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        opener(desktop).open("받는 방")
+        self.assertEqual(desktop.waits, 0, "waited for a window that had already opened")
+
+    def test_the_window_is_minimised_before_anything_else_happens(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(desktop.minimized, [window.handle])
+
+    def test_a_row_that_opens_nothing_gives_up(self) -> None:
+        desktop = FakeDesktop([])
+        with self.assertRaises(KakaoReadError):
+            opener(desktop, rows=2).open("없는 방")
+        self.assertLessEqual(desktop.waits, 2 * 40, "the give-up budget grew")
 
 
 if __name__ == "__main__":
