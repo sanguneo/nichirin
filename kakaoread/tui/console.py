@@ -182,6 +182,59 @@ class _INPUT_RECORD(ctypes.Structure):
     _fields_ = [("EventType", wintypes.WORD), ("Event", _EVENT)]
 
 
+class _ScreenInfo(ctypes.Structure):
+    _fields_ = [
+        ("size", wintypes._COORD),
+        ("cursor", wintypes._COORD),
+        ("attributes", wintypes.WORD),
+        ("window", wintypes.SMALL_RECT),
+        ("maximum", wintypes._COORD),
+    ]
+
+
+RIGHT_MARGIN_VARIABLE: Final = "KAKAOREAD_TUI_MARGIN"
+DEFAULT_RIGHT_MARGIN: Final = 2
+"""Columns left unused at the right edge.
+
+Windows Terminal paints its scrollbar over the last cells rather than
+shrinking the area it reports, so a frame drawn to the full reported width
+disappears under it. Set the variable to 0 on a terminal that does not.
+"""
+
+
+def right_margin() -> int:
+    raw = os.environ.get(RIGHT_MARGIN_VARIABLE)
+    if raw is None:
+        return DEFAULT_RIGHT_MARGIN
+    try:
+        return max(0, min(10, int(raw)))
+    except ValueError:
+        return DEFAULT_RIGHT_MARGIN
+
+
+def _visible_size() -> Optional[tuple[int, int]]:
+    """Return the columns and rows actually on screen, if they can be read.
+
+    The buffer is usually wider than the window showing it — a scrollbar alone
+    takes a couple of columns — and :func:`shutil.get_terminal_size` reports the
+    buffer. Drawing to that width puts the right edge of every frame past the
+    edge of the screen.
+    """
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.GetStdHandle(_STD_OUTPUT)
+        info = _ScreenInfo()
+        if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+            return None
+    except (AttributeError, OSError, ValueError):
+        return None
+    columns = int(info.window.Right) - int(info.window.Left) + 1
+    rows = int(info.window.Bottom) - int(info.window.Top) + 1
+    if columns <= 0 or rows <= 0:
+        return None
+    return columns, rows
+
+
 class Console:
     """Owns the terminal while the interface is running."""
 
@@ -195,9 +248,12 @@ class Console:
 
     @property
     def size(self) -> tuple[int, int]:
-        """Current ``(columns, rows)``, with a usable fallback when unknown."""
-        size = shutil.get_terminal_size(fallback=(100, 30))
-        return max(20, size.columns), max(8, size.lines)
+        """Current visible ``(columns, rows)``, with a fallback when unknown."""
+        visible = _visible_size()
+        if visible is None:
+            fallback = shutil.get_terminal_size(fallback=(100, 30))
+            visible = (fallback.columns, fallback.lines)
+        return max(20, visible[0] - right_margin()), max(8, visible[1])
 
     def __enter__(self) -> "Console":
         self._codepage = _set_utf8()

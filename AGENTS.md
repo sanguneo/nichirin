@@ -167,6 +167,12 @@ Taken from a live client, not guessed.
   room's whole log — 0.62 s and 0.94 s measured on two live rooms — and this
   loop is single-threaded, so `_poll_due` defers while keys are still arriving
   and `_next_poll_at` waits behind an expensive room instead of in front of it.
+- **The screen is narrower than the buffer, twice over.** `shutil` reports the
+  console buffer, which is wider than the window showing it, so the visible
+  region (`srWindow`) is used instead. On top of that Windows Terminal paints
+  its scrollbar over the last cells rather than shrinking what it reports, so
+  `right_margin()` leaves two columns unused; `KAKAOREAD_TUI_MARGIN` tunes it,
+  and 0 takes them back on a terminal that does not need it.
 - **Autowrap is off while the interface owns the screen.** A frame line is
   exactly as wide as the screen, and writing its last cell makes the terminal
   wrap; the frame's own newline then lands a row late, so every box below

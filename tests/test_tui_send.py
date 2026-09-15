@@ -8,12 +8,15 @@ production never raises.
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from kakaoread.errors import ErrorCode, KakaoReadError
 from kakaoread.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
+from kakaoread.tui import console as console_module
 from kakaoread.tui.console import (
     AUTOWRAP_OFF,
     AUTOWRAP_ON,
@@ -440,6 +443,49 @@ class SentMarkTests(ComposerCase):
         self.send()
         self.type("다")
         self.assertIn("*", self.composer())
+
+
+class ScreenSizeTests(unittest.TestCase):
+    """What is visible, not what the buffer holds.
+
+    A console buffer is often wider than the window showing it — a scrollbar
+    alone takes a couple of columns — and shutil reports the buffer, so every
+    frame was drawn a few columns wider than the screen and lost its right
+    edge.
+    """
+
+    def setUp(self) -> None:
+        self.original = console_module._visible_size
+        self.addCleanup(setattr, console_module, "_visible_size", self.original)
+
+    def test_the_visible_window_wins_over_the_buffer(self) -> None:
+        console_module._visible_size = lambda: (117, 30)
+        self.assertEqual(Console().size, (117 - console_module.right_margin(), 30))
+
+    def test_the_right_edge_is_left_to_the_scrollbar(self) -> None:
+        console_module._visible_size = lambda: (100, 30)
+        with patch.dict(os.environ, {console_module.RIGHT_MARGIN_VARIABLE: "3"}):
+            self.assertEqual(Console().size, (97, 30))
+
+    def test_a_terminal_without_one_can_take_the_columns_back(self) -> None:
+        console_module._visible_size = lambda: (100, 30)
+        with patch.dict(os.environ, {console_module.RIGHT_MARGIN_VARIABLE: "0"}):
+            self.assertEqual(Console().size, (100, 30))
+
+    def test_nonsense_in_the_variable_is_ignored(self) -> None:
+        console_module._visible_size = lambda: (100, 30)
+        with patch.dict(os.environ, {console_module.RIGHT_MARGIN_VARIABLE: "wide"}):
+            self.assertEqual(Console().size, (100 - console_module.DEFAULT_RIGHT_MARGIN, 30))
+
+    def test_an_unknown_window_falls_back_to_the_library(self) -> None:
+        console_module._visible_size = lambda: None
+        columns, rows = Console().size
+        self.assertGreaterEqual(columns, 20)
+        self.assertGreaterEqual(rows, 8)
+
+    def test_a_tiny_window_is_still_drawable(self) -> None:
+        console_module._visible_size = lambda: (3, 1)
+        self.assertEqual(Console().size, (20, 8))
 
 
 if __name__ == "__main__":
