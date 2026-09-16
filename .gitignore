@@ -27,3 +27,4 @@ Thumbs.db
 
 # Agent session scratch, not project state
 .omo/senpi-task/
+.omo/issues/
