@@ -240,6 +240,22 @@ class StatusTests(unittest.TestCase):
         self.assertIsNone(status["account"])
         self.assertIsNone(status["database"])
 
+    def test_status_uses_cached_rooms_when_database_fingerprint_matches(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from tests.fixtures import build_reader_on_disk
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            reader, _stub = build_reader_on_disk(root)
+            first = reader.status()
+            self.assertEqual(first["rooms"], 6)
+
+            # Re-running status should hit cache without calling count_rooms
+            with unittest.mock.patch.object(reader, "count_rooms", side_effect=AssertionError("called count_rooms")):
+                second = reader.status()
+            self.assertEqual(second, first)
+
     def test_an_unresolved_account_names_the_reason_a_read_fails(self) -> None:
         with build_reader() as reader:
             reader._keyring = Keyring(CONTAINER, [DATABASE], None)
