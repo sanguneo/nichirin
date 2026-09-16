@@ -200,6 +200,21 @@ class CacheTests(_Fixture):
         self.cache = SnapshotCache()
         self.addCleanup(self.cache.close)
 
+    def test_a_wal_only_change_uses_incremental_update_without_full_rebuild(self) -> None:
+        first = self.cache.connect(self.database, geometry())
+        self.assertIsNotNone(first)
+        # Append or touch the WAL file while leaving the base database untouched
+        wal_path = self.database.with_name(self.database.name + "-wal")
+        content = wal_path.read_bytes() if wal_path.exists() else b""
+        wal_path.write_bytes(content)
+        before = wal_path.stat()
+        os.utime(wal_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+        # Re-connecting should call _update_wal_with_retry without invoking build_image
+        with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("called full build_image")):
+            second = self.cache.connect(self.database, geometry())
+        self.assertIsNotNone(second)
+
     def test_an_unchanged_database_is_not_decrypted_twice(self) -> None:
         first = self.cache.connect(self.database, geometry())
         with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):

@@ -133,6 +133,12 @@ def clone_snapshot(database: Path, into: Path) -> Path:
     return destination
 
 
+class DecryptedImage(bytes):
+    """A decrypted SQLite image that optionally remembers its uncommitted base pages."""
+
+    base_image: Optional[bytes] = None
+
+
 def build_image(database: Path, geometry: Geometry) -> bytes:
     """Decrypt one database plus its committed log into a standalone SQLite image.
 
@@ -168,13 +174,19 @@ def build_image(database: Path, geometry: Geometry) -> bytes:
             f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
         )
 
-    image = bytearray(total_pages * page_size)
+    base_image = bytearray(len(encrypted))
     with geometry.prepared() as prepared:
-        for number in range(1, min(base_pages, total_pages) + 1):
+        for number in range(1, base_pages + 1):
             start = (number - 1) * page_size
-            image[start : start + page_size] = pages.reconstruct_page(
+            base_image[start : start + page_size] = pages.reconstruct_page(
                 prepared, number, encrypted[start : start + page_size], page_size, reserve
             )
+
+    image = bytearray(base_image)
+    if total_pages > base_pages:
+        image.extend(b"\x00" * ((total_pages - base_pages) * page_size))
+
+    with geometry.prepared() as prepared:
         for number, raw in committed.pages.items():
             if number > total_pages:
                 continue  # A later commit truncated the database past this page.
@@ -183,12 +195,41 @@ def build_image(database: Path, geometry: Geometry) -> bytes:
                 prepared, number, raw, page_size, reserve
             )
 
-    # The image is a standalone file with no log beside it, so it must not
-    # claim write-ahead logging mode.
     image[_JOURNAL_MODE_OFFSET : _JOURNAL_MODE_OFFSET + 2] = _ROLLBACK_JOURNAL
 
     if not _matches(database, encrypted) or not _read_log(database).startswith(log):
         raise ConsistencyError(f"{database.name} changed while it was being read")
+    result = DecryptedImage(image)
+    result.base_image = bytes(base_image)
+    return result
+
+
+def update_image_with_wal(
+    base_image: bytes, database: Path, geometry: Geometry
+) -> bytes:
+    """Apply committed WAL frames onto a pre-decrypted base image in ~10ms."""
+    page_size, reserve = geometry.page_size, geometry.reserve
+    log = _read_log(database)
+    base_pages = len(base_image) // page_size
+    committed = wal_format.parse(log, page_size, base_pages)
+    total_pages = committed.database_pages
+
+    image = bytearray(base_image)
+    if total_pages > base_pages:
+        image.extend(b"\x00" * ((total_pages - base_pages) * page_size))
+
+    with geometry.prepared() as prepared:
+        for number, raw in committed.pages.items():
+            if number > total_pages:
+                continue
+            start = (number - 1) * page_size
+            image[start : start + page_size] = pages.reconstruct_page(
+                prepared, number, raw, page_size, reserve
+            )
+
+    image[_JOURNAL_MODE_OFFSET : _JOURNAL_MODE_OFFSET + 2] = _ROLLBACK_JOURNAL
+    if not _read_log(database).startswith(log):
+        raise ConsistencyError(f"{database.name} log changed while it was being read")
     return bytes(image)
 
 
@@ -248,6 +289,14 @@ def open_image(image: bytes, label: str) -> sqlite3.Connection:
     return connection
 
 
+@dataclass
+class _CachedSnapshot:
+    fingerprint: Fingerprint
+    connection: sqlite3.Connection
+    size: int
+    base_image: Optional[bytes]
+
+
 class SnapshotCache:
     """Decrypted databases, reused until their files change.
 
@@ -257,9 +306,7 @@ class SnapshotCache:
 
     def __init__(self, budget_bytes: int = _DEFAULT_BUDGET_BYTES) -> None:
         self._budget = budget_bytes
-        self._entries: OrderedDict[Path, tuple[Fingerprint, sqlite3.Connection, int]] = (
-            OrderedDict()
-        )
+        self._entries: OrderedDict[Path, _CachedSnapshot] = OrderedDict()
         self._bytes = 0
 
     def fingerprint(self, database: Path) -> Fingerprint:
@@ -271,29 +318,57 @@ class SnapshotCache:
         return Fingerprint.of(database) == since
 
     def connect(self, database: Path, geometry: Geometry) -> sqlite3.Connection:
-        """Return a queryable snapshot, decrypting only when the source moved."""
+        """Return a queryable snapshot, decrypting only when the source moved.
+
+        When the base database file is unchanged and only the write-ahead log
+        moved (the usual case for new messages), an incremental WAL-only update
+        overlays new frames on top of the cached base image in ~10ms rather than
+        re-decrypting the whole multi-hundred-megabyte database.
+        """
         current = Fingerprint.of(database)
         cached = self._entries.get(database)
-        if cached is not None and cached[0] == current:
+        if cached is not None and cached.fingerprint == current:
             self._entries.move_to_end(database)
-            return cached[1]
+            return cached.connection
+
+        if (
+            cached is not None
+            and cached.base_image is not None
+            and cached.fingerprint.database == current.database
+        ):
+            try:
+                image = self._update_wal_with_retry(
+                    cached.base_image, database, geometry
+                )
+                connection = open_image(image, database.name)
+                self._store(
+                    database,
+                    Fingerprint.of(database),
+                    connection,
+                    len(image),
+                    cached.base_image,
+                )
+                return connection
+            except (ConsistencyError, KakaoReadError, wal_format.WalFormatError):
+                pass  # Fall back to full decryption if incremental update fails.
 
         image = self._decrypt_with_retry(database, geometry)
         connection = open_image(image, database.name)
-        self._store(database, Fingerprint.of(database), connection, len(image))
+        base = getattr(image, "base_image", None)
+        self._store(database, Fingerprint.of(database), connection, len(image), base)
         return connection
 
     def invalidate(self, database: Path) -> None:
         """Drop one cached snapshot, closing it."""
         entry = self._entries.pop(database, None)
         if entry is not None:
-            self._bytes -= entry[2]
-            entry[1].close()
+            self._bytes -= entry.size
+            entry.connection.close()
 
     def close(self) -> None:
         """Close every cached snapshot."""
-        for _fingerprint, connection, _size in self._entries.values():
-            connection.close()
+        for entry in self._entries.values():
+            entry.connection.close()
         self._entries.clear()
         self._bytes = 0
 
@@ -302,6 +377,25 @@ class SnapshotCache:
 
     def __exit__(self, *_exception: object) -> None:
         self.close()
+
+    def _update_wal_with_retry(
+        self, base_image: bytes, database: Path, geometry: Geometry
+    ) -> bytes:
+        last: Optional[ConsistencyError] = None
+        for attempt in range(_READ_ATTEMPTS):
+            staging = Path(tempfile.mkdtemp(prefix="kakaoread-wal-"))
+            try:
+                frozen = clone_snapshot(database, staging)
+                return update_image_with_wal(base_image, frozen, geometry)
+            except ConsistencyError as error:
+                last = error
+                if attempt < len(_BACKOFF_SECONDS):
+                    time.sleep(_BACKOFF_SECONDS[attempt])
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        raise ConsistencyError(
+            f"KakaoTalk kept writing {database.name} log; incremental update retried"
+        ) from last
 
     def _decrypt_with_retry(self, database: Path, geometry: Geometry) -> bytes:
         last: Optional[ConsistencyError] = None
@@ -336,15 +430,22 @@ class SnapshotCache:
         ) from last
 
     def _store(
-        self, database: Path, fingerprint: Fingerprint, connection: sqlite3.Connection, size: int
+        self,
+        database: Path,
+        fingerprint: Fingerprint,
+        connection: sqlite3.Connection,
+        size: int,
+        base_image: Optional[bytes],
     ) -> None:
         previous = self._entries.pop(database, None)
         if previous is not None:
-            self._bytes -= previous[2]
-            previous[1].close()
-        self._entries[database] = (fingerprint, connection, size)
+            self._bytes -= previous.size
+            previous.connection.close()
+        self._entries[database] = _CachedSnapshot(
+            fingerprint, connection, size, base_image
+        )
         self._bytes += size
         while self._bytes > self._budget and len(self._entries) > 1:
-            _evicted, (_fingerprint, stale, stale_size) = self._entries.popitem(last=False)
-            self._bytes -= stale_size
-            stale.close()
+            _evicted, stale = self._entries.popitem(last=False)
+            self._bytes -= stale.size
+            stale.connection.close()
