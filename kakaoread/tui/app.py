@@ -92,6 +92,14 @@ class ChatState:
     """
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
+    members: list[str] = field(default_factory=list)
+    """Display names of room participants available for @mention autocomplete."""
+    mention_candidates: list[str] = field(default_factory=list)
+    """Filtered member candidates matching the typed prefix."""
+    mention_index: int = 0
+    """Selected candidate index in the mention list."""
+    mention_start: int = -1
+    """Caret offset where the active @mention token started."""
 
 
 class App:
@@ -223,6 +231,20 @@ class App:
         watcher.prime()
         stored = self.reader.stored_title(room.id)
         kept = self.drafts.get(room.id, "")
+        try:
+            m_ids = self.reader.member_ids(room.id)
+            names_map = self.reader.names()
+            own_id = self.reader.own_user_id()
+            members = sorted(
+                {
+                    names_map.get(uid, f"User {uid}")
+                    for uid in m_ids
+                    if own_id is None or uid != own_id
+                }
+            )
+        except Exception:
+            members = []
+
         # A conversation opens at its newest line, not at its oldest.
         self.chat = ChatState(
             room=room,
@@ -232,6 +254,7 @@ class App:
             draft=kept,
             caret=len(kept),
             window_alias=stored if stored and stored != room.title else None,
+            members=members,
         )
 
     def refresh(self, width: int) -> bool:
@@ -506,7 +529,8 @@ class App:
         ]
 
         composer, caret = self._composer_lines(width)
-        body_height = max(1, height - len(lines) - len(composer) - 2)
+        mention_box = self._mention_popup_lines(width)
+        body_height = max(1, height - len(lines) - len(composer) - len(mention_box) - 2)
         body = (
             self._digest_lines(width)
             if chat.slices
@@ -519,14 +543,41 @@ class App:
             chat.anchor_top = False
         window = _window(body, chat.offset, body_height)
         lines.extend(window)
-        while len(lines) < height - len(composer) - 2:
+        while len(lines) < height - len(composer) - len(mention_box) - 2:
             lines.append("")
 
+        lines.extend(mention_box)
         self.cursor = (len(lines) + 1, caret)
         lines.extend(composer)
         lines.append(self._status_line(width))
         lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
+
+    def _mention_popup_lines(self, width: int) -> list[str]:
+        chat = self.chat
+        if not chat or not chat.mention_candidates:
+            return []
+        candidates = chat.mention_candidates
+        selected = chat.mention_index
+        max_show = min(5, len(candidates))
+        start = max(0, min(selected - max_show // 2, len(candidates) - max_show))
+        visible = candidates[start : start + max_show]
+        inner = max(16, min(42, width - 8))
+        header_title = " 멘션 (Tab/Enter, ↑↓ 선택, Esc 닫기) "
+        fill = max(0, inner - display_width(header_title))
+        top = "  " + self.theme.fg("accent", "┌" + header_title + "─" * fill + "┐")
+        rows: list[str] = []
+        for idx, name in enumerate(visible):
+            actual_idx = start + idx
+            is_sel = actual_idx == selected
+            prefix = "❯ @" if is_sel else "  @"
+            text = prefix + name
+            color = "accent" if is_sel else "muted"
+            formatted = self.theme.fg(color, pad_to_width(truncate_to_width(text, inner), inner))
+            edge = self.theme.fg("accent" if is_sel else "dim", "│")
+            rows.append("  " + edge + formatted + edge)
+        bottom = "  " + self.theme.fg("dim", "└" + "─" * inner + "┘")
+        return [top, *rows, bottom]
 
     def _transcript_lines(self, width: int) -> list[str]:
         """Return the transcript, rebuilding it only when it could have changed.
@@ -852,13 +903,68 @@ class App:
             except KakaoReadError as error:
                 self.status = error.message
 
+    def _update_mentions(self, chat: ChatState) -> None:
+        """Track active @mention typing prefix and update candidates."""
+        before = chat.draft[: chat.caret]
+        last_at = before.rfind("@")
+        if last_at != -1 and (last_at == 0 or before[last_at - 1].isspace()):
+            prefix = before[last_at + 1 :]
+            if " " not in prefix and "\n" not in prefix:
+                needle = prefix.casefold()
+                matches = [m for m in chat.members if needle in m.casefold()]
+                chat.mention_candidates = matches
+                chat.mention_start = last_at
+                chat.mention_index = min(chat.mention_index, max(0, len(matches) - 1))
+                return
+        chat.mention_candidates = []
+        chat.mention_start = -1
+        chat.mention_index = 0
+
+    def _complete_mention(self, chat: ChatState) -> bool:
+        """Insert the selected mention candidate into draft."""
+        if (
+            chat.mention_candidates
+            and 0 <= chat.mention_index < len(chat.mention_candidates)
+            and chat.mention_start >= 0
+        ):
+            name = chat.mention_candidates[chat.mention_index]
+            token = f"@{name} "
+            chat.draft = chat.draft[: chat.mention_start] + token + chat.draft[chat.caret :]
+            chat.caret = chat.mention_start + len(token)
+            chat.mention_candidates = []
+            chat.mention_start = -1
+            chat.mention_index = 0
+            return True
+        return False
+
     def _handle_chat(self, kind: str, text: str) -> None:
         chat = self.chat
         assert chat is not None
 
         if kind == Key.INTERRUPT:
             self.running = False
-        elif kind == "char":
+            return
+
+        # Navigation inside active mention candidates popup
+        if chat.mention_candidates:
+            if kind == Key.UP:
+                chat.mention_index = max(0, chat.mention_index - 1)
+                return
+            if kind == Key.DOWN:
+                chat.mention_index = min(
+                    len(chat.mention_candidates) - 1, chat.mention_index + 1
+                )
+                return
+            if kind in (Key.TAB, Key.ENTER):
+                if self._complete_mention(chat):
+                    return
+            if kind == Key.ESCAPE:
+                chat.mention_candidates = []
+                chat.mention_start = -1
+                chat.mention_index = 0
+                return
+
+        if kind == "char":
             if text == CLEAR_BOX:
                 chat.draft = ""
                 chat.caret = 0
@@ -866,16 +972,21 @@ class App:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
                 chat.caret += len(text)
+            self._update_mentions(chat)
         elif kind == Key.BACKSPACE:
             if chat.caret:
                 chat.draft = chat.draft[: chat.caret - 1] + chat.draft[chat.caret :]
                 chat.caret -= 1
+            self._update_mentions(chat)
         elif kind == Key.DELETE:
             chat.draft = chat.draft[: chat.caret] + chat.draft[chat.caret + 1 :]
+            self._update_mentions(chat)
         elif kind == Key.LEFT:
             chat.caret = max(0, chat.caret - 1)
+            self._update_mentions(chat)
         elif kind == Key.RIGHT:
             chat.caret = min(len(chat.draft), chat.caret + 1)
+            self._update_mentions(chat)
         elif kind == Key.ENTER:
             self._submit(chat)
         elif kind == Key.ESCAPE:
