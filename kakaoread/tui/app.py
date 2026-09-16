@@ -1108,9 +1108,12 @@ class App:
     # -- loop ---------------------------------------------------------------
 
     def run(self, console: Console) -> None:
+        width, height = force_size() or console.size
+        self.status = "카카오톡 로컬 데이터베이스를 불러오는 중..."
+        console.draw(self.render(width, height), self.cursor)
+
         self.load_rooms()
-        if not self.rooms:
-            self.status = "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
+        self.status = "" if self.rooms else "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
         due_at = 0.0
         last_key_at = 0.0
         while self.running:
