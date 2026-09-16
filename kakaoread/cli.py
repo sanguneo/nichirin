@@ -118,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     schema = commands.add_parser("schema", help="List tables and columns")
     schema.add_argument("--room-id", type=int)
 
+    daemon = commands.add_parser("daemon", help="Manage resident background query daemon")
+    daemon_sub = daemon.add_subparsers(dest="daemon_action", required=True)
+    daemon_start = daemon_sub.add_parser("start", help="Start background daemon")
+    daemon_start.add_argument("--foreground", action="store_true", help="Run in foreground")
+    daemon_sub.add_parser("stop", help="Stop background daemon")
+    daemon_sub.add_parser("status", help="Check daemon status")
+
     commands.add_parser("tui", help="Browse conversations in a terminal interface")
 
     return parser
@@ -236,6 +243,17 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             ]
         _emit(success({"tables": described}))
         return 0
+
+    if arguments.command == "daemon":
+        from .daemon import DaemonServer
+
+        server = DaemonServer()
+        if arguments.daemon_action == "start":
+            return server.start(foreground=arguments.foreground)
+        if arguments.daemon_action == "stop":
+            return server.stop()
+        if arguments.daemon_action == "status":
+            return server.status()
 
     raise KakaoReadError(ErrorCode.INVALID_REQUEST, f"unsupported command {arguments.command}")
 
@@ -383,6 +401,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             stream.reconfigure(encoding="utf-8")
 
     arguments = build_parser().parse_args(argv)
+
+    # If the background daemon is running and this is a query command, forward it!
+    if arguments.command not in ("tui", "follow", "daemon", "send"):
+        from .daemon import is_daemon_running, send_to_daemon
+
+        if is_daemon_running():
+            res = send_to_daemon(arguments.command, vars(arguments))
+            if res is not None:
+                _emit(res)
+                return 0 if res.get("ok") else 1
+
     try:
         # The real entry point is where the name ledger is switched on: a
         # rename is invisible unless something writes down what it saw, and

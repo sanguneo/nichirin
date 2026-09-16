@@ -134,6 +134,7 @@ PBKDF2-HMAC-SHA256을 100,000회 적용해 유도합니다. 힙 스캔도, 실�
 | `follow` | `[--room-id ID ...] [--interval SECONDS]` — 방마다 `--room-id` 반복, 기본 1초 |
 | `query` | `SQL [--room-id ID]` — 읽기 전용 SQL |
 | `schema` | `[--room-id ID]` — 테이블과 열 |
+| `daemon` | `(start [--foreground] \| stop \| status)` — 백그라운드 상주 데몬 (쿼리 즉각 응답) |
 | `tui` | 대화형 POSIX 터미널에서 실행 |
 
 macOS에서는 한 열쇠로 모든 저장된 방을 엽니다. `readable`은 모두 참이고,

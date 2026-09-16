@@ -198,7 +198,7 @@ class ConsistencyError(RuntimeError):
 
 def _connect(image: bytes) -> sqlite3.Connection:
     """Open an image as an in-memory database, avoiding disk where possible."""
-    connection = sqlite3.connect(":memory:")
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
     deserialize = getattr(connection, "deserialize", None)
     if deserialize is not None:
         try:
@@ -216,7 +216,7 @@ def _connect(image: bytes) -> sqlite3.Connection:
             plaintext.write(image)
         on_disk = sqlite3.connect(f"{Path(name).as_uri()}?mode=ro&immutable=1", uri=True)
         try:
-            memory = sqlite3.connect(":memory:")
+            memory = sqlite3.connect(":memory:", check_same_thread=False)
             on_disk.backup(memory)
             return memory
         finally:
