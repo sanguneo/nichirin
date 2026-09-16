@@ -77,11 +77,26 @@ class ChatWindow:
     title: str
 
 
-class SendResult(TypedDict):
+class _Submission(TypedDict):
     submitted: bool
     dryRun: bool
     room: str
     length: int
+
+
+class SendResult(_Submission, total=False):
+    """What a send reports back, and what it only reports when it applies.
+
+    ``clearedDraft`` and ``wouldClearDraft`` are the two halves of one fact —
+    the box already held a line nobody finished — told by a real send and by a
+    dry run respectively. Only one of them can be true of a given call, so
+    each is optional rather than rendered as a false the caller has to read
+    past. Losing somebody's half-typed line silently is the part that would be
+    indefensible, so the key is present whenever it happened.
+    """
+
+    clearedDraft: bool
+    wouldClearDraft: bool
 
 
 class MessageSender(Protocol):

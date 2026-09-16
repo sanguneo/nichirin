@@ -371,6 +371,30 @@ class CacheTests(_Fixture):
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
 
+    def test_base_pages_are_shed_before_a_live_snapshot_is_closed(self) -> None:
+        """Keeping base pages must not cost a caller its connection.
+
+        Base pages are a cache of a cache: losing them costs the next read one
+        decryption, where closing a snapshot can cost a caller the connection
+        it is holding. A budget that fits two snapshots but not their base
+        pages as well must therefore give up the pages, not the snapshots.
+        """
+        other = self.root / "other.edb"
+        other.write_bytes(encrypt_pages(self.pages_b))
+        held = len(self.database.read_bytes())
+        cache = SnapshotCache(budget_bytes=int(held * 2.5))
+        self.addCleanup(cache.close)
+
+        first = cache.connect(self.database, KEY)
+        second = cache.connect(other, KEY)
+
+        self.assertEqual(
+            first.execute("SELECT COUNT(*) FROM note").fetchone()[0], len(ROWS_A)
+        )
+        self.assertEqual(
+            second.execute("SELECT COUNT(*) FROM note").fetchone()[0], len(ROWS_B)
+        )
+
     def test_a_small_budget_evicts_the_least_recently_used_snapshot(self) -> None:
         other = self.root / "other.edb"
         other.write_bytes(encrypt_pages(self.pages_b))

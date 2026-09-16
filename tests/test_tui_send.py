@@ -204,6 +204,41 @@ class ComposerTests(ComposerCase):
         self.assertIn("특정할 수 없습니다", self.chat.notice)
 
 
+class LeavingTests(ComposerCase):
+    """Leaving a room keeps a draft; clearing one must stay cleared."""
+
+    def reopen(self) -> None:
+        room = next(room for room in self.app.rooms if room.id == DIRECT_ROOM)
+        self.app.open_room(room)
+
+    def test_escape_keeps_a_half_written_line(self) -> None:
+        self.type("쓰다 만 줄")
+        self.app.handle(Key.ESCAPE, "")
+        self.reopen()
+        self.assertEqual(self.chat.draft, "쓰다 만 줄")
+
+    def test_back_does_not_bring_a_cleared_draft_back(self) -> None:
+        """`/back` leaves the same way escape does, or it lies about the box.
+
+        Typing the command over a draft is how the box gets emptied, so a
+        room reopened afterwards must show an empty one. Leaving without
+        going through the same door left the old text in the store, and it
+        reappeared the next time the room was opened.
+        """
+        self.type("지울 초안")
+        self.app.handle(Key.ESCAPE, "")
+        self.reopen()
+
+        self.chat.draft = ""
+        self.chat.caret = 0
+        self.type("/back")
+        self.press_enter()
+        self.assertIsNone(self.app.chat, "/back leaves the room")
+
+        self.reopen()
+        self.assertEqual(self.chat.draft, "")
+
+
 class CostTests(ComposerCase):
     """Typing must not pay for the conversation it is typed into."""
 

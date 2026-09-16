@@ -529,6 +529,26 @@ class SnapshotCache:
             previous.connection.close()
         self._entries[database] = _CachedSnapshot(fingerprint, connection, held, base)
         self._bytes += held
+        self._make_room()
+
+    def _make_room(self) -> None:
+        """Get back under budget, giving up the cheapest thing first.
+
+        Base pages are a cache of a cache.  Dropping a set costs the next read
+        of that database one decryption; closing a snapshot can cost a caller
+        the connection it is holding.  So the pages go first, least recently
+        used first, and a snapshot is only evicted once giving up every set of
+        them was still not enough — which keeps the number of live connections
+        exactly where it was before any pages were kept at all.
+        """
+        for entry in self._entries.values():
+            if self._bytes <= self._budget:
+                return
+            if entry.base is not None:
+                self._bytes -= len(entry.base)
+                entry.size -= len(entry.base)
+                entry.base = None
+
         while self._bytes > self._budget and len(self._entries) > 1:
             _evicted, stale = self._entries.popitem(last=False)
             self._bytes -= stale.size
