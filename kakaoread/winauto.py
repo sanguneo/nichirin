@@ -399,14 +399,20 @@ class Sender:
                 room=window.title,
             )
 
-        if self._backend.get_text(control):
-            raise KakaoReadError(
-                ErrorCode.BUSY, "the message input contains a draft; leave it untouched",
-                room=window.title,
-            )
+        # An unfinished draft is cleared rather than refused. Whoever is
+        # sending has already named the room and the words, and a refusal that
+        # can only be resolved by walking to the client is worse than losing a
+        # line nobody finished. It is reported rather than done quietly.
+        existing = bool(self._backend.get_text(control))
 
         if dry_run:
-            return {"submitted": False, "dryRun": True, "room": window.title, "length": len(text)}
+            return {
+                "submitted": False,
+                "dryRun": True,
+                "room": window.title,
+                "length": len(text),
+                "wouldClearDraft": existing,
+            }
 
         try:
             self._backend.set_text(control, text)
@@ -416,7 +422,13 @@ class Sender:
                 ErrorCode.SEND_FAILED, f"could not send to {window.title!r}: {error}",
                 room=window.title,
             ) from error
-        return {"submitted": True, "dryRun": False, "room": window.title, "length": len(text)}
+        return {
+            "submitted": True,
+            "dryRun": False,
+            "room": window.title,
+            "length": len(text),
+            "clearedDraft": existing,
+        }
 
 
 # -- Win32 backend -----------------------------------------------------------
@@ -645,10 +657,10 @@ class Win32Backend:
         return result[0] if result else None
 
     def set_text(self, control: int, text: str) -> None:
-        if self.get_text(control):
-            raise KakaoReadError(ErrorCode.BUSY, "the input changed; leave the draft untouched")
-        # The Korean client stores its empty-input hint as actual control text.
-        # Selection replacement removes it and emits the normal change event.
+        # Selecting everything and replacing it clears whatever was in the box
+        # — the Korean client's empty-input hint, which it stores as real
+        # control text, and an unfinished draft alike — and emits the ordinary
+        # change event that WM_SETTEXT would skip.
         buffer = ctypes.create_unicode_buffer(text)
         self._message(control, 0x00B1, 0, -1)  # EM_SETSEL
         self._message(control, 0x00C2, 1, ctypes.addressof(buffer))  # EM_REPLACESEL

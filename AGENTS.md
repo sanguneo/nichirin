@@ -32,7 +32,7 @@ unittest discover tests` breaks the fixture imports.
 | `context.py` | The single call an agent makes |
 | `watch.py` | Stat-gated follow loop |
 | `cli.py` | Argument parsing and the JSON envelope |
-| `winauto.py` | Exact window targeting, draft protection, background text sending |
+| `winauto.py` | Exact window targeting, draft replacement, background text sending |
 | `tui/theme.py` | OmO dark-theme tokens, 256-colour fallback, speaker tints |
 | `tui/layout.py` | Column-accurate width, truncation, wrapping, footer plan |
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |
@@ -361,8 +361,17 @@ on a live client, newest 4,000 rows of each readable room.
   and direct-chat ids are serialized as strings. TUI `f` opens the friend list.
 - Send requires a uniquely resolved catalog room and an exact matching open
   window. Duplicate catalog titles remain ambiguous even with `--room-id`.
+- **An unfinished draft is cleared, not refused.** It used to be `BUSY`, which
+  could only be resolved by walking to the client, and the caller had already
+  named the room and the words. The clearing is reported — `clearedDraft` on a
+  send, `wouldClearDraft` on a dry run — because losing somebody's half-typed
+  line silently is the part that would be indefensible. `EM_SETSEL(0, -1)`
+  already covered the whole box, so nothing about the write changed; the two
+  guards around it went away, and the box is now read **once**, after the
+  write, to verify what landed.
 - The Korean client's empty `RICHEDIT50W` returns `메시지 입력`, not `""`.
-  This literal is reserved as the empty hint. Other drafts must be preserved.
+  This literal is reserved as the empty hint, and is what an empty box reads
+  as rather than as a draft.
 - **A room can be opened without the mouse.** The room list is
   `ChatRoomListCtrl` inside the main window, an `EVA_VH_ListControl_Dblclk` that
   handles double-click in its own WndProc, so posting

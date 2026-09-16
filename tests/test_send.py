@@ -46,18 +46,31 @@ class SendTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, [])
 
-    def test_existing_draft_is_not_overwritten(self) -> None:
+    def test_an_unfinished_draft_is_cleared_and_the_message_goes(self) -> None:
         self.backend.draft = "an unfinished synthetic draft"
-        with self.assertRaises(KakaoReadError) as caught:
-            self.sender.send("Synthetic room", "replacement")
-        self.assertEqual(caught.exception.code, ErrorCode.BUSY)
-        self.assertEqual(self.backend.draft, "an unfinished synthetic draft")
-        self.assertEqual(self.backend.actions, [])
+        result = self.sender.send("Synthetic room", "replacement")
+        self.assertTrue(result["submitted"])
+        self.assertEqual(self.backend.draft, "replacement")
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_clearing_a_draft_is_reported_rather_than_done_quietly(self) -> None:
+        self.backend.draft = "an unfinished synthetic draft"
+        self.assertIs(self.sender.send("Synthetic room", "replacement")["clearedDraft"], True)
+
+    def test_an_empty_box_reports_that_nothing_was_cleared(self) -> None:
+        self.assertIs(self.sender.send("Synthetic room", "synthetic text")["clearedDraft"], False)
 
     def test_dry_run_never_types_or_submits(self) -> None:
         result = self.sender.send("Synthetic room", "synthetic text", dry_run=True)
         self.assertTrue(result["dryRun"])
         self.assertEqual(self.backend.actions, [])
+
+    def test_dry_run_warns_that_a_draft_would_be_lost(self) -> None:
+        """The one call that changes nothing is where the warning is worth having."""
+        self.backend.draft = "an unfinished synthetic draft"
+        result = self.sender.send("Synthetic room", "replacement", dry_run=True)
+        self.assertIs(result["wouldClearDraft"], True)
+        self.assertEqual(self.backend.draft, "an unfinished synthetic draft")
 
     def test_queue_acceptance_is_not_reported_as_delivery(self) -> None:
         result = self.sender.send("Synthetic room", "synthetic text")
@@ -124,7 +137,7 @@ class Win32MessageTests(unittest.TestCase):
 
     def test_edit_uses_selection_replacement_not_settext(self) -> None:
         message = Mock(return_value=0)
-        reads = iter(["", "synthetic \uac00\U0001f642\nnext"])
+        reads = iter(["synthetic \uac00\U0001f642\nnext"])
         with patch.object(self.backend, "_message", message, create=True), patch.object(
             self.backend, "get_text", side_effect=lambda _: next(reads)
         ):
@@ -133,16 +146,25 @@ class Win32MessageTests(unittest.TestCase):
         self.assertEqual(codes, [0x00B1, 0x00C2])
         self.user32.SendMessageW.assert_not_called()
 
-    def test_changed_draft_at_write_time_is_preserved(self) -> None:
-        with patch.object(self.backend, "get_text", return_value="new user draft"):
-            with self.assertRaises(KakaoReadError) as caught:
-                self.backend.set_text(84, "synthetic")
-        self.assertEqual(caught.exception.code, ErrorCode.BUSY)
-        self.user32.SendMessageW.assert_not_called()
+    def test_the_box_is_never_read_before_it_is_written(self) -> None:
+        """A draft typed a moment ago loses: the selection covers the whole box.
+
+        The only read is the one that verifies what landed, so nothing the user
+        types between the check and the write can stop the send.
+        """
+        message = Mock(return_value=0)
+        reader = Mock(return_value="synthetic")
+        with patch.object(self.backend, "_message", message, create=True), patch.object(
+            self.backend, "get_text", reader
+        ):
+            self.backend.set_text(84, "synthetic")
+        codes = [call.args[1] for call in message.call_args_list]
+        self.assertEqual(codes, [0x00B1, 0x00C2], "the box was not selected and replaced")
+        self.assertEqual(reader.call_count, 1, "the box was read before being written")
 
     def test_incorrect_insert_never_reports_success(self) -> None:
         with patch.object(self.backend, "_message", return_value=0, create=True), patch.object(
-            self.backend, "get_text", side_effect=["", "truncated"]
+            self.backend, "get_text", side_effect=["truncated"]
         ):
             with self.assertRaises(OSError):
                 self.backend.set_text(84, "synthetic")

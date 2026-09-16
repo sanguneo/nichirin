@@ -40,7 +40,7 @@ Read the answer in this order:
 | `CHAT_NOT_FOUND` | Ask for the title as saved in KakaoTalk. Never guess that a contact is "mom". |
 | `KEY_UNAVAILABLE` | KakaoTalk has never opened that room this session. Ask the user to open it, then retry. |
 | `KAKAO_NOT_RUNNING` | Ask the user to start and sign in to KakaoTalk. |
-| `BUSY` | During reads, a concurrent database write: retry once. During sends, an existing draft: preserve it and ask the user to clear or finish it. |
+| `BUSY` | A concurrent database write while reading: retry once. |
 | `coverage.reachesLatestKnown: true` | The messages reach the newest record the catalog knows of — not necessarily the server's. |
 | `coverage.reachesLatestKnown: false` | Newer records exist that were not read. Say so; do not draft as if complete. |
 | `coverage.hasEarlier` | Older local messages exist outside this window. Raise `--limit` if context is thin. |
@@ -177,9 +177,12 @@ python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --open "Appr
   `SEND_FAILED`: native input/submission failed; inspect before retrying.
 - `AMBIGUOUS_CHAT`: show candidates. If two rooms share the same title, ask
   for a unique window title; `--room-id` alone cannot solve window ambiguity.
-- Preserve existing drafts. Do not type in the target window during a send.
-  The current Korean client stores `메시지 입력` as its empty hint; that exact
-  literal is reserved and cannot itself be sent by this adapter.
+- **An unfinished draft in the target window is cleared, not preserved.** The
+  answer says so: `clearedDraft: true` on a send, `wouldClearDraft` on a
+  `--dry-run`. When the user may have been mid-sentence there, dry-run first
+  and tell them what would be lost. Do not type in the target window during a
+  send. The current Korean client stores `메시지 입력` as its empty hint; that
+  exact literal is reserved and cannot itself be sent by this adapter.
 - If an earlier WM_SETTEXT-based tool left the send button disabled, ask the
   user to close and reopen that chat window. Do not keep injecting into it.
 - Real tests belong only in self-chat or a room explicitly authorized for tests.

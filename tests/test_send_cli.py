@@ -97,10 +97,23 @@ class SendCommandTests(unittest.TestCase):
 
     def test_main_emits_handled_error_json(self) -> None:
         output = io.StringIO()
-        self.backend.draft = "unfinished synthetic draft"
+        # A window whose message box cannot be found: a handled failure that
+        # the envelope has to carry, now that a draft is simply overwritten.
+        self.backend.control = 0
         with patch("kakaoread.cli.Reader", return_value=self.reader), redirect_stdout(output):
             result = cli.main(["send", "--room", "Peer Renamed", "synthetic"])
         body = json.loads(output.getvalue())
         self.assertEqual(result, 1)
         self.assertFalse(body["ok"])
-        self.assertEqual(body["error"]["code"], "BUSY")
+        self.assertEqual(body["error"]["code"], "INPUT_NOT_FOUND")
+
+    def test_a_draft_in_the_way_is_cleared_and_reported(self) -> None:
+        output = io.StringIO()
+        self.backend.draft = "unfinished synthetic draft"
+        with patch("kakaoread.cli.Reader", return_value=self.reader), redirect_stdout(output):
+            result = cli.main(["send", "--room", "Peer Renamed", "synthetic"])
+        body = json.loads(output.getvalue())
+        self.assertEqual(result, 0)
+        self.assertTrue(body["ok"])
+        self.assertIs(body["clearedDraft"], True)
+        self.assertEqual(self.backend.draft, "synthetic")
