@@ -28,12 +28,13 @@ that has been renamed fails the whole conversation instead of the one field.
 
 from __future__ import annotations
 
+import json
 import plistlib
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
-from . import model, names as names_module
+from . import model, names as names_module, paths
 from .errors import ErrorCode, KakaoReadError
 from .keyring import Account, Keyring
 from .model import Friend, Message, Room
@@ -198,8 +199,19 @@ class Reader:
                 "detail": detail,
             }
 
+        cached_rooms = self._cached_status_rooms(ring.account.database)
+        if cached_rooms is not None:
+            return {
+                "ready": True,
+                "account": ring.account.user,
+                "database": ring.account.database.name,
+                "rooms": cached_rooms,
+                "detail": "ready",
+            }
+
         try:
             rooms = self.count_rooms()
+            self._save_status_rooms(ring.account.database, rooms)
         except KakaoReadError as error:
             return {
                 "ready": False,
@@ -215,6 +227,38 @@ class Reader:
             "rooms": rooms,
             "detail": "ready",
         }
+
+    def _status_cache_file(self) -> Path:
+        return paths.state_directory() / "status.json"
+
+    def _cached_status_rooms(self, database: Path) -> Optional[int]:
+        path = self._status_cache_file()
+        try:
+            stored = json.loads(path.read_text("utf-8"))
+            if not isinstance(stored, dict):
+                return None
+            fp = stored.get("fingerprint")
+            current = (
+                database.stat().st_mtime_ns,
+                database.stat().st_size,
+            )
+            if fp == list(current) or fp == tuple(current):
+                return int(stored["rooms"])
+        except (OSError, ValueError, KeyError):
+            return None
+        return None
+
+    def _save_status_rooms(self, database: Path, rooms: int) -> None:
+        path = self._status_cache_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            current = (database.stat().st_mtime_ns, database.stat().st_size)
+            path.write_text(
+                json.dumps({"fingerprint": current, "rooms": rooms}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     def count_rooms(self) -> int:
         self._require_table(ROOM_TABLE)
