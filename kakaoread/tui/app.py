@@ -51,8 +51,13 @@ KEY_WAIT_SECONDS = 0.12
 """How long a frame waits for input before checking for new messages."""
 UNCERTAIN_AFTER_SECONDS = 30.0
 """How long a send may go unseen before the mark stops claiming to be sure."""
-REFRESH_SECONDS = 0.35
-"""How often to look for arrivals. A poll that finds nothing costs one stat."""
+REFRESH_SECONDS = 0.15
+"""How often to look for arrivals. A poll that finds nothing costs one stat.
+
+This was 0.35 while a poll that *did* find something re-decrypted the whole
+database. Now that an arrival only lays the log over pages already decrypted,
+the room can be asked more often without the screen paying for it.
+"""
 TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
 
@@ -1105,9 +1110,18 @@ class App:
     # -- loop ---------------------------------------------------------------
 
     def run(self, console: Console) -> None:
+        # The first decryption is the slowest thing this program does, and it
+        # used to happen before anything was drawn, so the terminal sat blank
+        # for as long as it took and gave no reason. One frame first costs
+        # nothing and says what is being waited on.
+        width, height = force_size() or console.size
+        self.status = "카카오톡 로컬 데이터베이스를 여는 중…"
+        console.draw(self.render(width, height), self.cursor)
+
         self.load_rooms()
-        if not self.rooms:
-            self.status = "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
+        self.status = (
+            "" if self.rooms else "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
+        )
         due_at = 0.0
         last_key_at = 0.0
         while self.running:

@@ -15,6 +15,7 @@ from kakaoread.snapshot import (
     SnapshotCache,
     build_image,
     open_image,
+    update_image_with_wal,
 )
 
 from tests.support import KEY, PAGE_SIZE, build_database, encrypt_pages, make_wal
@@ -186,6 +187,69 @@ class BuildImageTests(_Fixture):
         return wrapper
 
 
+class OverlayTests(_Fixture):
+    """The log-only path, which reuses base pages instead of decrypting them."""
+
+    def settled(self) -> tuple[int, int, bytes]:
+        """One committed frame that changes nothing, so a log already exists."""
+        return (2, 2, self.encrypted(self.pages_a, 2))
+
+    def base(self, frames=()):
+        """Decrypt the file against whatever log is beside it, and keep its pages."""
+        self.log.write_bytes(make_wal(list(frames)))
+        base = build_image(self.database, KEY).base
+        assert base is not None
+        return base
+
+    def test_lays_a_committed_log_over_pages_decrypted_earlier(self) -> None:
+        base = self.base([self.settled()])
+        self.log.write_bytes(
+            make_wal(
+                [
+                    self.settled(),
+                    (1, 0, self.encrypted(self.pages_b, 1)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ]
+            )
+        )
+        connection = open_image(update_image_with_wal(base, self.database, KEY), "fixture")
+        self.addCleanup(connection.close)
+        self.assertEqual(
+            [row[0] for row in connection.execute("SELECT body FROM note ORDER BY id")],
+            [body for _id, body in ROWS_B],
+        )
+
+    def test_refuses_to_reuse_pages_once_the_log_starts_a_new_generation(self) -> None:
+        """A checkpoint that restarts the log is what strands the base pages.
+
+        Until then a checkpoint is harmless: it copies pages the log still
+        carries, so they are overlaid anyway.  A new salt pair says the log
+        was restarted, and from that point the database file may hold pages
+        this image no longer has any record of.
+        """
+        base = self.base([self.settled()])
+        self.log.write_bytes(
+            make_wal([(2, 2, self.encrypted(self.pages_b, 2))], salt=(99, 98))
+        )
+
+        with self.assertRaises(ConsistencyError):
+            update_image_with_wal(base, self.database, KEY)
+
+    def test_refuses_to_reuse_pages_once_a_log_appears_where_there_was_none(self) -> None:
+        base = build_image(self.database, KEY).base
+        assert base is not None
+        self.log.write_bytes(make_wal([(2, 2, self.encrypted(self.pages_b, 2))]))
+        with self.assertRaises(ConsistencyError):
+            update_image_with_wal(base, self.database, KEY)
+
+    def test_gives_up_when_the_log_leaves_a_page_undefined(self) -> None:
+        base = self.base([self.settled()])
+        body = self.encrypted(self.pages_b, 2)
+        self.log.write_bytes(make_wal([self.settled(), (2, 0, body), (4, 4, body)]))
+        with self.assertRaises(ConsistencyError):
+            update_image_with_wal(base, self.database, KEY)
+
+
 class OpenImageTests(_Fixture):
     def test_refuses_an_image_that_is_not_a_valid_database(self) -> None:
         with self.assertRaises(Exception):
@@ -208,6 +272,45 @@ class CacheTests(_Fixture):
         with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):
             second = self.cache.connect(self.database, KEY)
         self.assertIs(first, second)
+
+    def settled(self) -> tuple[int, int, bytes]:
+        return (2, 2, self.encrypted(self.pages_a, 2))
+
+    def test_a_new_log_is_laid_over_the_cached_pages_rather_than_decrypted(self) -> None:
+        """The arrival path: the database file stood still, so only the log is read."""
+        self.log.write_bytes(make_wal([self.settled()]))
+        self.cache.connect(self.database, KEY)
+        self.log.write_bytes(
+            make_wal(
+                [
+                    self.settled(),
+                    (1, 0, self.encrypted(self.pages_b, 1)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ]
+            )
+        )
+        with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):
+            second = self.cache.connect(self.database, KEY)
+        self.assertEqual(
+            [row[0] for row in second.execute("SELECT body FROM note ORDER BY id LIMIT 1")],
+            ["bravo 1"],
+        )
+
+    def test_an_overlay_sqlite_refuses_falls_back_to_a_full_decryption(self) -> None:
+        """A torn overlay costs a decryption, never an error the caller sees."""
+        self.log.write_bytes(make_wal([self.settled()]))
+        self.cache.connect(self.database, KEY)
+        self.log.write_bytes(
+            make_wal([self.settled(), (2, 2, self.encrypted(self.pages_b, 2))])
+        )
+
+        torn = b"SQLite format 3\x00" + bytes(PAGE_SIZE)
+        with patch.object(self.cache, "_update_log_with_retry", return_value=torn):
+            recovered = self.cache.connect(self.database, KEY)
+        self.assertEqual(
+            [row[0] for row in recovered.execute("SELECT body FROM note ORDER BY id LIMIT 1")],
+            ["bravo 1"],
+        )
 
     def test_a_changed_database_is_decrypted_again(self) -> None:
         first = self.cache.connect(self.database, KEY)

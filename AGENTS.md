@@ -75,6 +75,22 @@ Every command pays discovery before it answers, and both halves were slow:
   case because Windows path comparison does.
 - Together: `status` 2.43 s → 0.30 s, `rooms` 2.54 s → 0.63 s, `friends` 2.06 s
   → 0.38 s, with byte-identical output.
+- **A message that arrives is not a reason to decrypt the file again.** SQLite
+  appends committed frames to `-wal` and leaves the `.edb` alone, so
+  `SnapshotCache` keeps the decrypted base pages beside the snapshot and
+  `update_image_with_wal` lays only the log over them. Measured on live rooms:
+  a 48.3 MB log with a 4.1 MB `-wal` fell from 431.5 ms to 100.2 ms, and the
+  29.9 MB catalog from 222.3 ms to 36.7 ms — and the overlay was **byte-identical
+  to the full decryption** in both. The base pages are charged to the cache
+  budget too, because an entry that quietly costs twice what the cache believes
+  is how a budget stops meaning anything.
+- **The decryption is checked with `PRAGMA quick_check`, not `integrity_check`.**
+  Both walk every page and every B-tree, which is what a wrong key fails; the
+  full check additionally verifies index sort order against the rows indexed,
+  and on the 48.3 MB room that was 337.4 ms against 87.0 ms. The overlay path
+  skips even that: those base pages were checked when they were decrypted and
+  every log frame carries its own checksum, so it connects and reads
+  `sqlite_master` once instead.
 
 ### Consistency
 
@@ -84,6 +100,22 @@ Every command pays discovery before it answers, and both halves were slow:
   pins this.
 - Caching and following *do* use `os.stat`, where a stale answer costs one
   extra poll rather than a wrong result.
+- **What licenses reusing the base pages is the log's generation, not a stat.**
+  `BasePages.generation` is the 32-byte log header those pages were decrypted
+  against, and the salt pair in it names the current run of the log. In
+  write-ahead logging mode nothing but a checkpoint ever writes the `.edb`,
+  and a checkpoint copies frames the log still holds — so while the generation
+  stands, every page it may have written underneath us is a page the overlay
+  applies anyway and the image comes out the same. A checkpoint that *restarts*
+  the log is the one that would strand pages in a file no longer being read,
+  and restarting is exactly what changes that salt. A page-1 sentinel was tried
+  first and is weaker: it is a guess about which pages a checkpoint touches,
+  where this is a proof about which pages the log still carries.
+- **The overlay is given up on, never defended.** A new generation, a log that
+  moved mid-read, a page the log grew the database to but never wrote, or an
+  image SQLite will not read `sqlite_master` from all fall back to a full
+  decryption rather than surfacing an error, because the caller asked a
+  question the data can still answer.
 - **`ReadDirectoryChangesW` does not work here**, and neither does C#'s
   `FileSystemWatcher` which wraps it: zero events across 30 seconds of live
   observation, because NTFS defers directory-entry updates while SQLite holds
@@ -286,10 +318,19 @@ on a live client, newest 4,000 rows of each readable room.
   when the snapshot had gone stale, and sending a message is exactly what
   makes it stale, so the duplicate-title census comes from the room list the
   screen already loaded rather than from a fresh read.
-- **Polling yields to typing.** A poll that finds something re-decrypts the
-  room's whole log — 0.62 s and 0.94 s measured on two live rooms — and this
-  loop is single-threaded, so `_poll_due` defers while keys are still arriving
-  and `_next_poll_at` waits behind an expensive room instead of in front of it.
+- **Polling yields to typing.** A poll that finds something used to re-decrypt
+  the room's whole log — 0.62 s and 0.94 s measured on two live rooms — and
+  this loop is single-threaded, so `_poll_due` defers while keys are still
+  arriving and `_next_poll_at` waits behind an expensive room instead of in
+  front of it. The log-only overlay is what let `REFRESH_SECONDS` drop from
+  0.35 to 0.15; the deferral stays, because an arrival is still the most
+  expensive thing that can happen between two keystrokes.
+- **The first frame is drawn before the first decryption.** Opening the
+  interface means decrypting the catalog, which is the slowest thing this
+  program does, and it used to happen before anything reached the screen — so
+  the terminal sat blank with no explanation. `App.run` paints one frame
+  carrying a loading status first; it costs nothing and names what is being
+  waited on.
 - **The screen is narrower than the buffer, twice over.** `shutil` reports the
   console buffer, which is wider than the window showing it, so the visible
   region (`srWindow`) is used instead. On top of that Windows Terminal paints
