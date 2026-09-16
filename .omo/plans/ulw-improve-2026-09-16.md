@@ -28,10 +28,56 @@ P9. 릴리스 C6, kakaoread-mac 이슈화 C5.
 goal 에 등록된 C1~C6. 각 항목별 RED→GREEN 캡처 + 실면 증거.
 
 ## Now
-P0 커밋·푸시
+완료. 릴리스 1d3d382 푸시, kakaoread-mac 이슈 #12~#18 등록.
+
+## Outcome (증거)
+
+| 기준 | 결과 | 증거 |
+| --- | --- | --- |
+| C1 포트 착지 | PASS | RED: origin/main==79d1ece(0.5.0). GREEN: 4e786b3 푸시, 587 tests OK |
+| C2 항목별 처리 | PASS | 구현 A1/A2/A5/A6/A4/A8, 기각 D1/D2/D3/D4/D6, 오탐 A3 (아래) |
+| C3 기존 결함 | PASS | SendResult 진단 5건 → 0건. 운영 코드 전체 진단 0건 |
+| C4 실전 | PASS | 읽기 ok:true + 답장 파싱. 전송 submitted:true → fromMe:true 로 되읽음 |
+| C5 mac 이슈 | PASS | #12 #13 #14 #15 #16 #17 #18 |
+| C6 릴리스 | PASS | 1d3d382 chore: release 0.5.1, origin/main == HEAD |
+
+커밋: 4e786b3 perf / 76c9a3d chore(세션 로그 제외) / 3192a40 fix(watcher) /
+b558351 fix(cache+types+doc) / 1d3d382 chore: release 0.5.1
+
+### A3 는 오탐이었다 — 기록
+
+탐색 에이전트는 `/back` 이 초안을 잃는다고 했고, 나는 반대로 "지운 초안이 되살아난다"고
+재구성했다. **둘 다 틀렸다.** `_submit`(app.py:927) 이 명령을 실행하기 전에 이미
+`self.drafts.pop(chat.room.id, None)` 을 하므로 `/back` 과 `_leave_room` 의 관측 가능한
+동작은 동일하다. 운영 코드는 바꾸지 않았다.
+
+다만 그 과정에서 쓴 두 테스트는 남겼다. 뮤테이션 증명으로 가짜가 아님을 확인했다:
+`_submit` 의 `drafts.pop` 을 제거하니 `test_back_does_not_bring_a_cleared_draft_back` 이
+정확히 그 회귀로 실패했고, 되돌리니 62개 GREEN.
+
+### QA cleanup receipt
+
+- `scratch_measure.py`, `_scratch_frame.py`: 삭제 확인 (`ls` 가 두 파일 모두 없다고 보고).
+- 백그라운드 프로세스/서버/포트/tmux/브라우저 컨텍스트: 띄운 적 없음.
+- 전송 QA 가 연 카카오톡 방 창: 설계대로 최소화되어 원상 복구(`--open` 경로).
+- `.omo/issues/*.md`: 이슈 본문 원본. `.gitignore` 에 추가해 저장소에 남기지 않음.
+- git 작업 트리: clean.
+
+### Self-review (HEAVY, 단 ulw-plan 산출물이 없으므로 리뷰어 루프 아님)
+
+- 행동을 바꾼 변경 전부에 RED 를 먼저 캡처했다: A1/A2/A6 은 3건 동시 RED,
+  A5 는 `ProgrammingError: Cannot operate on a closed database`, A4 는 LSP 진단 5건.
+  A8 은 산문이라 테스트 없이 출고(규칙대로).
+- 오버레이가 전체 복호화와 **바이트 동일**함을 실제 사용자 데이터로 확인했고(identical True),
+  그게 이 최적화가 정확하다는 가장 강한 증거다.
+- 티어가 HEAVY 로 유지된 이유: 캐시 수명/예산 회계를 건드렸고, 실제 클라이언트에
+  메시지를 보내는 되돌릴 수 없는 동작이 포함됐다.
+- 남은 위험: `_reuse_base_pages` 는 `SELECT 1 FROM sqlite_master` 한 번으로만 오버레이를
+  검증한다. 세대 검사가 있어 이론적 구멍은 닫혔지만, 더 깊은 손상은 질의 시점에야 드러난다.
+  실제로 그런 사례를 관측하면 reader 쪽에 1회 재시도를 붙이는 것이 다음 수순이다.
 
 ## Todo
-P1..P9 (todo 툴이 라이브 커서)
+없음 — 전부 완료.
 
 ## Findings
 
