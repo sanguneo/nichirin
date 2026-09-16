@@ -214,9 +214,22 @@ def update_image_with_wal(
     committed = wal_format.parse(log, page_size, base_pages)
     total_pages = committed.database_pages
 
-    image = bytearray(base_image)
-    if total_pages > base_pages:
-        image.extend(b"\x00" * ((total_pages - base_pages) * page_size))
+    missing = [
+        number
+        for number in range(base_pages + 1, total_pages + 1)
+        if number not in committed.pages
+    ]
+    if missing:
+        raise ConsistencyError(
+            f"incremental WAL update for {database.name} leaves pages {missing[:4]} undefined"
+        )
+
+    if total_pages < base_pages:
+        image = bytearray(base_image[: total_pages * page_size])
+    else:
+        image = bytearray(base_image)
+        if total_pages > base_pages:
+            image.extend(b"\x00" * ((total_pages - base_pages) * page_size))
 
     with geometry.prepared() as prepared:
         for number, raw in committed.pages.items():
@@ -342,8 +355,9 @@ class SnapshotCache:
                 )
                 # Incremental WAL updates only overlay checksummed frames on
                 # top of an already verified base database image; connect
-                # directly without paying another full-database integrity check.
+                # directly and verify schema readability with a lightweight probe.
                 connection = _connect(image)
+                connection.execute("SELECT 1 FROM sqlite_master LIMIT 1")
                 self._store(
                     database,
                     Fingerprint.of(database),
@@ -352,8 +366,8 @@ class SnapshotCache:
                     cached.base_image,
                 )
                 return connection
-            except (ConsistencyError, KakaoReadError, wal_format.WalFormatError):
-                pass  # Fall back to full decryption if incremental update fails.
+            except (ConsistencyError, KakaoReadError, wal_format.WalFormatError, sqlite3.DatabaseError):
+                pass  # Fall back to full decryption if incremental update fails or produces malformed SQLite.
 
         image = self._decrypt_with_retry(database, geometry)
         connection = open_image(image, database.name)
