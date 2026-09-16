@@ -517,6 +517,7 @@ class App:
             self._hints(
                 [
                     ("enter", "전송"),
+                    ("@", "멘션"),
                     ("↑↓", "scroll"),
                     ("/sum 30m", "요약"),
                     ("/older", "이전"),
