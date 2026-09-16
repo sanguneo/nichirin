@@ -1,5 +1,11 @@
 # kakaoread
 
+![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![의존성 0개](https://img.shields.io/badge/dependencies-0-2ea44f)
+![로컬 전용](https://img.shields.io/badge/network-none-2ea44f)
+![MIT](https://img.shields.io/badge/license-MIT-blue)
+
 내 PC의 카카오톡을 **읽고, 따라가고, 보내는** 윈도우용 CLI. 의존성 0개, 파이썬 표준 라이브러리와 윈도우 API만 씁니다.
 
 *A Windows CLI that reads, follows and sends your own KakaoTalk, with no third-party
@@ -139,6 +145,9 @@ python -m kakaoread tui
 
 ![전송 확인 표시](demo/shots/sent.png)
 
+*입력창 오른쪽 끝, 테두리에 붙은 `✓` 하나가 그 표시입니다. 자리를 차지하지 않으려고
+글자를 밀지 않는 자리에 두었습니다.*
+
 입력창에서 보낸 메시지는 그 방의 카카오톡 창이 닫혀 있어도 나갑니다. 읽고 있던 방이
 대상이니 더 물을 것이 없어서, 창이 없으면 열고 보낸 뒤 최소화해둡니다.
 
@@ -185,6 +194,9 @@ python -m kakaoread names --room-id 123 "닉네임"    # 그 이름을 쓴 적 �
 **그게 바로 사칭의 모습**입니다.
 
 ![같은 이름을 쓰는 계정 두 개](demo/shots/real.png)
+
+*상태줄 한 줄이 답입니다 — `이 이름을 쓴 계정 2개 · 지수 | 런닝맨 → 지수(지금)`.
+둘 중 누가 원래 그 이름이었는지, 누가 나중에 가져다 썼는지.*
 
 ## AI 에이전트에 붙이기
 
