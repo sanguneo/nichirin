@@ -1,6 +1,6 @@
 [project]
 name = "kakaoread"
-version = "0.1.0"
+version = "0.5.0"
 description = "Read-only KakaoTalk conversation reader for AI agents on Windows"
 readme = "README.md"
 requires-python = ">=3.10"
