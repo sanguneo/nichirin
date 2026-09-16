@@ -139,8 +139,12 @@ def _colour_supported() -> bool:
 def _truecolor_supported() -> bool:
     if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
         return True
-    # Windows Terminal and modern conhost both render 24-bit colour.
-    return os.environ.get("WT_SESSION") is not None or sys.platform == "win32"
+    # iTerm2 and Apple Terminal both render 24-bit colour; iTerm advertises
+    # itself, and Terminal.app is detected by its program name.
+    return (
+        os.environ.get("TERM_PROGRAM") in {"iTerm.app", "Apple_Terminal", "vscode"}
+        or "ITERM_SESSION_ID" in os.environ
+    )
 
 
 # -- Speaker tints -----------------------------------------------------------

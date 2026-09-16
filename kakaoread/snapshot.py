@@ -10,21 +10,19 @@ check: a rewrite of the same length inside a single file-time tick leaves
 a torn database.  An appended log is caught by comparing the prefix we read.
 
 Change *detection* for caching and following is a different question with a
-different answer, and there ``os.stat`` is the right tool: it is what actually
-observes a live SQLite writer on Windows, where directory change notifications
-(``ReadDirectoryChangesW``, and therefore C#'s ``FileSystemWatcher``) reported
-nothing at all across a 30-second observation of the running client, because
-NTFS defers directory-entry updates while SQLite holds the log handle open.  A
-stale answer there costs one extra poll rather than a wrong result.
+different answer, and there ``os.stat`` is the right tool: a stale answer costs
+one extra poll rather than a wrong result, so the cheap signal is enough.
 
-*Cost.*  Decryption is whole-file, so it is the expensive operation in this
-program.  A snapshot is therefore cached against that same stat fingerprint:
-repeat reads of an unchanged conversation cost one stat instead of one
-decryption, which is what makes following a conversation affordable.
+*Cost.*  Decryption is whole-file, and the macOS client keeps one large
+database (measured 119 MB) that it rewrites constantly, so reading it in place
+loses the consistency race again and again.  :func:`clone_snapshot` takes an
+APFS copy-on-write clone first — instant and frozen against the writer — and
+the decrypted image is cached against the stat fingerprint so an unchanged
+conversation costs one stat rather than one decryption.
 
 *Exposure.*  On Python 3.11 and newer the plaintext never reaches the disk at
-all, because the image is handed straight to SQLite in memory.  On 3.10 a
-temporary file is still required; it is deleted, but deletion is not secure
+all, because the image is handed straight to SQLite in memory.  On 3.9 and 3.10
+a temporary file is still required; it is deleted, but deletion is not secure
 erasure and that limitation is documented rather than hidden.
 """
 

@@ -20,8 +20,8 @@ consequences shape this module.
 Unlike the address cache, which deliberately stores no key, and the row memory,
 which stores a hash rather than a title, this ledger holds real nicknames.  That
 is the feature: a history of names cannot be kept without keeping the names.  It
-lives beside the other local state under ``%LOCALAPPDATA%``, never in the
-repository, and it is written only by callers that opt in by supplying a path.
+lives beside the other local state under ``~/Library/Application Support``,
+never in the repository, and is written only by callers that opt in with a path.
 """
 
 from __future__ import annotations
