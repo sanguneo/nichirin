@@ -66,6 +66,43 @@ code that depends on them without re-checking will quietly break.
 - `NTUser` has no `type` column; a friend is `friendType = 1`. The message
   attachment column is spelled `attachment` here (the Windows client
   misspelled it `attachement`).
+- **Which end the limit cuts from depends on the question.** A window wants the
+  newest rows, so `messages` orders descending. Catch-up does not: asked for
+  what arrived after a cursor, taking the newest page skips everything between
+  the cursor and that page, and a follower that then advances its cursor never
+  sees the difference again. `messages` therefore orders *ascending* when
+  `after_id` is given without `before_id`, and `Watcher._catch_up` pages until
+  a short page arrives. The client backfills from the server after a
+  reconnection, writing far more than the 500-row page in one go.
+- **A failed read must not consume the change that prompted it.** One
+  fingerprint covers the whole account here, so a pass that records it before
+  reading lets a failed room stand in for a successful one: the next poll finds
+  the database unchanged and returns immediately. `Watcher.poll` stores the
+  fingerprint only when every watched room was read.
+- **What licenses reusing the cached base pages is the log's generation, not a
+  stat.** `BasePages.generation` is the 32-byte log header those pages were
+  decrypted against, and its salt pair names the current run of the log. In WAL
+  mode only a checkpoint writes the `.edb`, and a checkpoint copies frames the
+  log still holds — so while the generation stands, every page written
+  underneath us is one the overlay applies anyway. A checkpoint that *restarts*
+  the log is the case that would strand pages, and restarting is exactly what
+  changes that salt; it is `LogRestarted` rather than a plain
+  `ConsistencyError` because backing off cannot undo it.
+- **The overlay is given up on, never defended.** A new generation, a log that
+  moved mid-read, a page the log grew the database to but never wrote, or an
+  image SQLite will not read `sqlite_master` from all fall back to a full
+  decryption — and the connection opened for a rejected image is closed on the
+  way out, since neither the cache nor the caller ever learned about it.
+- **Base pages are charged to the cache budget, and shed before a snapshot
+  is.** Keeping them uncounted made an entry cost twice what the cache believed.
+  Counting them alone halves how many snapshots fit and closes connections
+  callers still hold, so `_make_room` drops base pages first, least recently
+  used first, and evicts a snapshot only when giving up every set was still not
+  enough.
+- `build_image` and `update_image_with_wal` assemble their result through the
+  same `_overlay_log`, so a commit that shrank the database truncates the image
+  in both. They drifted apart once already, and only the incremental path was
+  fixed.
 
 ### Sending
 
