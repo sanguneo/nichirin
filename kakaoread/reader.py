@@ -438,6 +438,7 @@ class Reader:
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
         log_id, author, type_code, text, attachment, sent_at = tuple(row)
         sender_id = int(author or 0)
+        kind = int(type_code or 0)
         known = self.names()
         own = self.own_user_id()
         # The attachment is read for what it records about *other* messages —
@@ -451,8 +452,12 @@ class Reader:
             room_id=room_id,
             sender_id=sender_id,
             sender=known.get(sender_id, f"User {sender_id}"),
-            text=text if isinstance(text, str) and text else "",
-            type=int(type_code or 0),
+            # A membership feed's message column is the client's own JSON,
+            # not words anybody typed, so it is not passed off as text.
+            text=""
+            if kind == model.FEED_MESSAGE
+            else (text if isinstance(text, str) and text else ""),
+            type=kind,
             sent_at=None if sent_at is None else int(sent_at),
             from_me=own is not None and sender_id == own,
             mentions=mentions,
@@ -481,10 +486,13 @@ class Reader:
             except KakaoReadError:
                 continue
             rows = connection.execute(
+                # Feeds are excluded rather than filtered afterwards: their
+                # message column is JSON, so a search for an ordinary word
+                # like "type" would match rows that show no text at all.
                 "SELECT logId, authorId, type, message, attachement, sendAt FROM chatLogs "
-                "WHERE COALESCE(deleted, 0) = 0 AND message LIKE ? "
+                "WHERE COALESCE(deleted, 0) = 0 AND type != ? AND message LIKE ? "
                 "ORDER BY logId DESC LIMIT ?",
-                (pattern, remaining),
+                (model.FEED_MESSAGE, pattern, remaining),
             ).fetchall()
             for row in rows:
                 yield self._message(room.id, row)

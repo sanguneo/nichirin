@@ -64,7 +64,9 @@ Before summarising or drafting:
 3. Check whether the user already answered the latest incoming message. A last
    message from the other person is not automatically a question awaiting a reply.
 4. Treat an empty `text` with a non-`text` `kind` as an attachment you did not
-   see. Never describe its contents.
+   see. Never describe its contents. `kind: "feed"` is not a message at all —
+   it is the client's own record that somebody joined, left or was invited, and
+   it never carries text. Use `names` to ask what those rows say about names.
 5. Check `attention` before saying nothing is waiting on the user. Being
    @mentioned or replied to is invisible in the message text.
 

@@ -114,6 +114,15 @@ Taken from a live client, not guessed.
   account; neither identifies the user.
 - Local history is substantial: one observed room held 445,714 messages. Do not
   assume only a handful of messages are cached.
+- **A `type = 0` row is the client's bookkeeping, and its `message` is JSON.**
+  One live open chat had **364 of these in its newest 400 records**; another
+  had 37. Passing that column through as message text filled the screen with
+  `{"feedType": 2, …}` and handed an agent the same wall to reason over, so
+  the text is dropped and the kind is `feed`. `names.from_feeds` reads those
+  rows straight from the database, so the name history is unaffected, and
+  `search` excludes them because an ordinary word would otherwise match a row
+  that shows no text at all. Live feeds carry a real `authorId`, so they are
+  attributed like any other row.
 
 ### Being addressed: mentions and replies
 

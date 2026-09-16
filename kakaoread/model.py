@@ -36,6 +36,17 @@ ROOM_KINDS: Final = {
 }
 """Client type strings mapped to stable names an agent can branch on."""
 
+FEED_MESSAGE: Final = 0
+"""The client's own membership bookkeeping, not something a person typed.
+
+These rows carry JSON in the ``message`` column — a join, a leave, an invite —
+and in one live open chat 364 of the newest 400 records were this. Showing
+that JSON as message text buries the conversation and hands an agent a wall of
+``{"feedType": 2, ...}`` to reason over, so the text is dropped. The nicknames
+these rows record are read straight from the database by ``names.from_feeds``,
+which is unaffected.
+"""
+
 TEXT_MESSAGE: Final = 1
 PHOTO_MESSAGE: Final = 2
 VIDEO_MESSAGE: Final = 3
@@ -47,6 +58,7 @@ Every row of this type carried ``src_logId``, ``src_userId``, ``src_type`` and
 """
 
 _MESSAGE_KINDS: Final = {
+    FEED_MESSAGE: "feed",
     TEXT_MESSAGE: "text",
     PHOTO_MESSAGE: "photo",
     VIDEO_MESSAGE: "video",

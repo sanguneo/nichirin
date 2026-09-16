@@ -34,9 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from .model import to_iso
-
-FEED_MESSAGE: int = 0
+from .model import FEED_MESSAGE, to_iso
 """The ``chatLogs.type`` of a membership feed, the only row that names anyone."""
 
 _MEMBER_KEYS = ("members", "member", "inviter", "leaver")

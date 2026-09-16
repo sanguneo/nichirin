@@ -232,5 +232,46 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, ErrorCode.KAKAO_NOT_RUNNING)
 
 
+class MembershipFeedTests(unittest.TestCase):
+    """A feed row is the client's bookkeeping, and must not read as speech.
+
+    Its ``message`` column holds JSON. One live open chat had 364 of these in
+    its newest 400 records, so passing that through as message text buries the
+    conversation on screen and hands an agent a wall of ``{"feedType": …}`` to
+    reason over.
+    """
+
+    def rows(self):
+        from tests.test_names import feed
+
+        return [
+            feed(20, 1_700_000_000, (PEER_ID, "예전 이름")),
+            (21, PEER_ID, 1, "사람이 쓴 줄", None, 1_700_000_100, 0),
+        ]
+
+    def test_a_feed_carries_no_message_text(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            found = {message.id: message for message in reader.messages(DIRECT_ROOM)}
+        self.assertEqual(found[20].text, "")
+        self.assertEqual(found[21].text, "사람이 쓴 줄")
+
+    def test_a_feed_is_named_rather_than_left_as_a_type_number(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            rendered = reader.messages(DIRECT_ROOM)[0].as_json()
+        self.assertEqual(rendered["kind"], "feed")
+        self.assertEqual(rendered["text"], "")
+
+    def test_the_names_a_feed_records_are_still_read(self) -> None:
+        """The history comes from the database, not from the message text."""
+        with build_reader(messages=self.rows()) as reader:
+            history = reader.name_history(DIRECT_ROOM)
+        self.assertIn(PEER_ID, history)
+        self.assertIn("예전 이름", [record.name for record in history[PEER_ID]])
+
+    def test_a_feed_cannot_be_found_by_searching_for_its_json(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            self.assertEqual(list(reader.search("feedType")), [])
+
+
 if __name__ == "__main__":
     unittest.main()
