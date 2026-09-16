@@ -281,6 +281,9 @@ class RoomOpener:
                 "If KakaoTalk is running, ensure its window is on the current desktop/Space "
                 "(or assign KakaoTalk to 'All Desktops' via Dock icon options)",
             )
+        already_open = self._matching_window(wanted)
+        if already_open is not None:
+            return already_open
         if state != "visible" and not self._backend.show_main_window():
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
@@ -493,10 +496,61 @@ class AXBackend:
         return element
 
     def _windows(self) -> list[ax.Element]:
+        wins = self._app.windows()
+        if wins:
+            return wins
+        # If AXWindows returned empty (e.g. windows on inactive Spaces or behind
+        # full-screen apps), invoke Cocoa's Window menu action to restore accessibility
+        # visibility without taking foreground or moving desktop spaces.
+        self._order_front_via_menu()
         return self._app.windows()
+
+    def _window_menu_items(self) -> dict[str, ax.Element]:
+        """Map window titles to their 'makeKeyAndOrderFront:' menu items."""
+        menubar = self._app.attribute("AXMenuBar")
+        if not menubar:
+            return {}
+        items: dict[str, ax.Element] = {}
+        for bar_item in menubar.children():
+            if bar_item.title in ("창", "Window"):
+                menus = bar_item.children()
+                if not menus:
+                    continue
+                for m in menus[0].children():
+                    if m.identifier == "makeKeyAndOrderFront:" and m.title:
+                        items[m.title.strip().casefold()] = m
+        return items
+
+    def _order_front_via_menu(self, title: Optional[str] = None) -> bool:
+        """Trigger Cocoa makeKeyAndOrderFront: via Window menu without activating."""
+        menu_items = self._window_menu_items()
+        if not menu_items:
+            return False
+        if title is not None:
+            target = menu_items.get(title.strip().casefold())
+            if target is not None and target.perform("AXPress"):
+                time.sleep(0.05)
+                return True
+            return False
+        # If no specific title requested, select '카카오톡' or first window item
+        candidate = menu_items.get("카카오톡") or next(iter(menu_items.values()), None)
+        if candidate is not None and candidate.perform("AXPress"):
+            time.sleep(0.05)
+            return True
+        return False
 
     def _main_window(self) -> Optional[ax.Element]:
         for window in self._windows():
+            if window.identifier == MAIN_WINDOW_IDENTIFIER:
+                return window
+        # Fallback: target '카카오톡' explicitly from the Window menu
+        if self._order_front_via_menu("카카오톡"):
+            for window in self._app.windows():
+                if window.identifier == MAIN_WINDOW_IDENTIFIER:
+                    return window
+        # If still missing (e.g. on another Space or completely closed), activate client to restore
+        activate()
+        for window in self._app.windows():
             if window.identifier == MAIN_WINDOW_IDENTIFIER:
                 return window
         return None
@@ -504,7 +558,8 @@ class AXBackend:
     def chat_windows(self) -> list[ChatWindow]:
         """Return every window that is not the main one, which is a room."""
         found: list[ChatWindow] = []
-        for window in self._windows():
+        windows = self._windows()
+        for window in windows:
             if window.identifier == MAIN_WINDOW_IDENTIFIER:
                 continue
             title = window.title.strip()
@@ -701,6 +756,9 @@ class AXBackend:
 
     def show_main_window(self) -> bool:
         main = self._main_window()
+        if main is None:
+            activate()
+            main = self._main_window()
         if main is None:
             return False
         if main.attribute("AXMinimized") is True:
