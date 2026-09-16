@@ -14,16 +14,18 @@
 
 <img src="demo/shots/chat.png" alt="대화 화면 — 답장 인용과 멘션 표시" width="900">
 
-<sub>
+<br><br>
 
 [5분 안에](#5분-안에) · [무엇을 하나](#무엇을-하나) · [터미널에서 직접](#터미널에서-직접) ·
 [이름 이력](#이름은-지금-이름일-뿐입니다) · [보내기](#보내기) ·
 [에이전트](#ai-에이전트에-붙이기) · [성능](#값으로-말하는-성능) · [못 하는 것](#못-하는-것)
 
-</sub>
+<br>
 
 *A Windows CLI that reads, follows and sends your own KakaoTalk, with no third-party
 dependencies. Korean-first documentation; every command answers in JSON.*
+
+<br>
 
 </div>
 
@@ -184,8 +186,8 @@ python -m kakaoread names --room-id 123 "닉네임"    # 그 이름을 쓴 적 �
 
 ![같은 이름을 쓰는 계정 두 개](demo/shots/real.png)
 
-<sub>상태줄 한 줄이 답입니다 — <code>이 이름을 쓴 계정 2개 · 지수 | 런닝맨 → 지수(지금)</code>.
-둘 중 누가 원래 그 이름이었는지, 누가 나중에 가져다 썼는지.</sub>
+상태줄 한 줄이 답입니다 — `이 이름을 쓴 계정 2개 · 지수 | 런닝맨 → 지수(지금)`.
+둘 중 누가 원래 그 이름이었는지, 누가 나중에 가져다 썼는지.
 
 > [!IMPORTANT]
 > 이름 이력은 `names.py`가 `%LOCALAPPDATA%\kakaoread\names.jsonl`에 스스로 적어 남깁니다.
