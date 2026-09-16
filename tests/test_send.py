@@ -130,37 +130,96 @@ class SendTests(unittest.TestCase):
 
 class AXMessageTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Patch only the AX boundary; no live app or Accessibility grant.
+        # Patch only the AX boundary; no live app or Accessibility grant. The
+        # composer reports a screen rectangle so the click can be aimed, and
+        # activation/foreground restore are stubbed so nothing touches the
+        # desktop.
         self.element = Mock()
         self.element.value = "draft"
+        self.element.frame.return_value = (100.0, 200.0, 80.0, 16.0)
+        # The composer reports itself focused after the click, so typing runs.
+        self.element.attribute.return_value = True
         with patch("kakaoread.macauto.ax.application", return_value=Mock()):
             self.backend = AXBackend(99)
         self.control = self.backend._register(self.element)
+        activate = patch.object(self.backend, "_activate")
+        restore = patch.object(self.backend, "_restore")
+        self.activate = activate.start()
+        self.restore = restore.start()
+        self.addCleanup(activate.stop)
+        self.addCleanup(restore.stop)
 
-    def test_edit_replaces_the_value_atomically_including_unicode_and_newlines(self) -> None:
+    def test_the_message_is_written_with_a_value_then_verified(self) -> None:
+        # The text is placed with an AXValue write, which both fills the
+        # composer and enables the client's send button; success is confirmed
+        # by reading the value back.
         text = "synthetic \uac00\U0001f642\nnext"
+        self.element.set_attribute.return_value = True
+        self.element.value = text  # the write sticks
         self.backend.set_text(self.control, text)
-        self.element.set_attribute.assert_called_once_with("AXValue", text)
+        self.activate.assert_called_once_with()
+        self.element.set_attribute.assert_any_call("AXValue", text)
 
-    def test_the_box_is_never_read_before_it_is_written(self) -> None:
-        with patch.object(self.backend, "get_text", side_effect=AssertionError("draft read")):
+    def test_a_write_that_does_not_stick_is_retried_then_fails(self) -> None:
+        self.element.set_attribute.return_value = True
+        self.element.value = "draft"  # never becomes the text
+        with self.assertRaises(OSError):
             self.backend.set_text(self.control, "synthetic")
-        self.element.set_attribute.assert_called_once_with("AXValue", "synthetic")
+        # It tried more than once before giving up.
+        self.assertGreater(self.element.set_attribute.call_count, 1)
 
-    def test_a_refused_value_write_never_reports_success(self) -> None:
+    def test_a_refused_write_is_a_failure(self) -> None:
         self.element.set_attribute.return_value = False
+        self.element.value = "draft"
         with self.assertRaises(OSError):
             self.backend.set_text(self.control, "synthetic")
 
-    def test_return_is_addressed_to_the_client_process(self) -> None:
-        with patch("kakaoread.macauto.ax.post_key") as post:
-            self.backend.submit(self.control)
-        post.assert_called_once_with(99, ax.KEY_RETURN)
+    def test_the_box_is_never_read_as_a_draft_while_writing(self) -> None:
+        self.element.set_attribute.return_value = True
+        self.element.value = "synthetic"
+        with patch.object(self.backend, "get_text", side_effect=AssertionError("draft read")):
+            self.backend.set_text(self.control, "synthetic")
 
-    def test_failed_return_is_not_ignored(self) -> None:
-        with patch("kakaoread.macauto.ax.post_key", side_effect=OSError("synthetic failure")):
+    def test_the_send_button_is_pressed_and_success_is_the_box_emptying(self) -> None:
+        # submit presses 전송; it is a success because the composer goes empty,
+        # not because the press call says so (this client lies about that).
+        button = Mock()
+        button.role = "AXButton"
+        button.title = "전송"
+        button.perform.return_value = False  # the client under-reports success
+        window = Mock()
+        window.descendants.return_value = [button]
+        self.backend._windows_by_control[self.control] = window
+        self.element.value = ""  # the box emptied → sent
+        self.backend.submit(self.control)
+        button.perform.assert_called_once_with("AXPress")
+        self.restore.assert_called_once_with()
+
+    def test_a_message_left_in_the_box_is_a_failed_send(self) -> None:
+        button = Mock()
+        button.role = "AXButton"
+        button.title = "전송"
+        window = Mock()
+        window.descendants.return_value = [button]
+        self.backend._windows_by_control[self.control] = window
+        self.element.value = "still here"  # never emptied → not sent
+        with self.assertRaises(OSError):
+            self.backend.submit(self.control)
+        self.restore.assert_called_once_with()
+
+    def test_return_is_the_fallback_when_there_is_no_send_button(self) -> None:
+        # With no 전송 button, submit falls back to a session Return.
+        self.element.value = ""
+        with patch("kakaoread.macauto.ax.send_key") as send_key:
+            self.backend.submit(self.control)
+        send_key.assert_called_once_with(ax.KEY_RETURN)
+        self.restore.assert_called_once_with()
+
+    def test_the_foreground_is_restored_even_when_sending_fails(self) -> None:
+        with patch("kakaoread.macauto.ax.send_key", side_effect=OSError("synthetic failure")):
             with self.assertRaises(OSError):
                 self.backend.submit(self.control)
+        self.restore.assert_called_once_with()
 
     def test_empty_hints_are_not_drafts(self) -> None:
         for hint in ("메시지 입력", "Enter message", "", None):

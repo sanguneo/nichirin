@@ -55,6 +55,19 @@ _OPEN_TIMEOUT_SECONDS = 6.0
 _OPEN_POLL_SECONDS = 0.1
 _SEARCHED_ROWS = 8
 
+_TYPE_ATTEMPTS = 4
+"""How many times to click-focus and type before giving up on the composer.
+
+Taking keyboard focus is racy — a click that lands a hair before the window is
+ready leaves the keystrokes going nowhere — so the composer is read back after
+each attempt and the text is retyped until it is actually there."""
+
+_SEND_BUTTON_TITLE = "전송"
+"""The chat window's send button, pressed to commit a message.
+
+An ``AXValue`` write places text without the client counting it as typing, so
+Return over it is ignored; the button is what actually sends."""
+
 
 @dataclass(frozen=True)
 class ChatWindow:
@@ -162,6 +175,21 @@ def client_pid(runner=subprocess.run) -> Optional[int]:
 def running(runner=subprocess.run) -> bool:
     """Whether the KakaoTalk client is running at all."""
     return client_pid(runner) is not None
+
+
+def _frontmost_bundle(runner=subprocess.run) -> Optional[str]:
+    """Return the bundle id of the frontmost app, so it can be restored."""
+    try:
+        completed = runner(
+            ["/usr/bin/osascript", "-e",
+             'tell application "System Events" to get bundle identifier of '
+             "first process whose frontmost is true"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    identifier = (completed.stdout or "").strip()
+    return identifier or None
 
 
 # -- remembered rows ---------------------------------------------------------
@@ -436,7 +464,11 @@ class AXBackend:
         self._pid = pid
         self._app = ax.application(pid)
         self._registry: dict[int, ax.Element] = {}
+        self._windows_by_control: dict[int, ax.Element] = {}
+        self._click_target: dict[int, ax.Element] = {}
         self._next = 1
+        self._restore_bundle: Optional[str] = None
+        self._restore_cursor: Optional[tuple] = None
 
     def _register(self, element: ax.Element) -> int:
         handle = self._next
@@ -478,31 +510,138 @@ class AXBackend:
 
         A chat window holds two scrolling regions, and the one showing the
         conversation contains a table of messages while the composer does not.
+        The composer's own text element reports a rectangle only as wide as the
+        text in it, and clicking that rectangle does not focus it; the
+        surrounding scroll area does, so that scroll area is remembered as the
+        click target for :meth:`set_text`.
         """
         element = self._element(window)
-        composers: list[ax.Element] = []
-        for child in element.descendants():
-            if child.role not in _INPUT_ROLES:
+        input_area: Optional[ax.Element] = None
+        for child in element.children():
+            if child.role != "AXScrollArea":
                 continue
-            composers.append(child)
-        if not composers:
+            if any(d.role == "AXTable" for d in child.descendants(depth=3)):
+                continue  # This is the transcript, not the composer.
+            input_area = child
+        if input_area is None:
             return None
-        # The composer sits below the transcript, so when a window reports more
-        # than one editable area the last one is the one being typed into.
-        return self._register(composers[-1])
+        composer = next(
+            (d for d in input_area.descendants(depth=3) if d.role in _INPUT_ROLES), None
+        )
+        if composer is None:
+            return None
+        handle = self._register(composer)
+        self._windows_by_control[handle] = element
+        self._click_target[handle] = input_area
+        return handle
 
     def get_text(self, control: int) -> str:
         value = self._element(control).value
         text = value if isinstance(value, str) else ""
         return "" if text.strip() in _EMPTY_HINTS else text
 
+    def _activate(self) -> None:
+        """Bring KakaoTalk forward, remembering what to put back afterwards.
+
+        This is the line the Windows build never had to cross: there, a posted
+        message reached a control in any state.  KakaoTalk's composer on macOS
+        only accepts input when it is the focused control of the frontmost app,
+        so sending has to take the foreground for a moment.  Reading never does
+        this.  The previously-frontmost app and the pointer are recorded so
+        both can be restored the instant the message is in.
+        """
+        self._restore_bundle = _frontmost_bundle()
+        try:
+            self._restore_cursor = ax.cursor_location()
+        except Exception:  # noqa: BLE001 - cursor restore is best-effort
+            self._restore_cursor = None
+        subprocess.run(["/usr/bin/open", "-b", BUNDLE_ID], check=False)
+        time.sleep(0.6)
+
+    def _restore(self) -> None:
+        """Undo :meth:`_activate`: put the foreground app and pointer back."""
+        if self._restore_bundle and self._restore_bundle != BUNDLE_ID:
+            subprocess.run(["/usr/bin/open", "-b", self._restore_bundle], check=False)
+        self._restore_bundle = None
+        self._restore_cursor = None
+
     def set_text(self, control: int, text: str) -> None:
-        if not self._element(control).set_attribute("AXValue", text):
-            raise OSError("the client refused to accept the message text")
+        """Replace the composer's contents with *text*, and prove it landed.
+
+        The recipe is the one the reference client automation uses and the only
+        one that works here: raise the chat window, click the *input area* to
+        focus the composer (clicking the composer's own text rectangle does
+        not, because that rectangle is only as wide as its content), clear any
+        draft, and type the message as Unicode.  ``AXValue`` writes are refused
+        by this control, so the text is typed rather than set.
+
+        Focus is racy — a click that does not take leaves the keystrokes going
+        nowhere — so the whole thing is attempted a few times and the composer
+        is read back each time.  The method returns only once the composer
+        actually holds the text, and raises otherwise; that is what lets a
+        caller trust that ``submitted`` means the words were in the box.
+        """
+        composer = self._element(control)
+        window = self._windows_by_control.get(control)
+        self._activate()
+        if window is not None:
+            # A window this tool opened is left minimised; it has to be brought
+            # back and raised before it can be written to, or a later button
+            # press lands on whatever is in front of it.
+            if window.attribute("AXMinimized") is True:
+                window.set_attribute("AXMinimized", "false")
+                time.sleep(0.3)
+            window.perform("AXRaise")
+            time.sleep(0.2)
+
+        # The composer accepts an ``AXValue`` write, and — proven on a live
+        # client — that write both places the text and enables the client's
+        # send button, so the message goes out through the button rather than
+        # through a keystroke.  Synthesised typing was tried and abandoned: it
+        # dropped characters unpredictably even with the field focused, while
+        # the write is exact.  The value is read back so a refused write is a
+        # failure rather than a silent empty send.
+        for _attempt in range(_TYPE_ATTEMPTS):
+            if composer.set_attribute("AXValue", text):
+                time.sleep(0.15)
+                if composer.value == text:
+                    return
+            time.sleep(0.15)
+        raise OSError("KakaoTalk refused to accept the message text into the composer")
+
+    def _send_button(self, control: int) -> Optional[ax.Element]:
+        """Return the chat window's 전송 button, when the client exposes one."""
+        window = self._windows_by_control.get(control)
+        if window is None:
+            return None
+        for element in window.descendants(depth=8):
+            if element.role == "AXButton" and element.title.strip() == _SEND_BUTTON_TITLE:
+                return element
+        return None
 
     def submit(self, control: int) -> None:
-        """Send the Return, aimed at the process rather than at the desktop."""
-        ax.post_key(self._pid, ax.KEY_RETURN)
+        """Commit the message, then release the foreground.
+
+        Pressing the 전송 button is what sends the message the ``AXValue`` write
+        placed and enabled; it needs neither keyboard focus nor the pointer.
+        Success is judged by the composer going empty rather than by the press
+        call's own return value, which this client reports unreliably even on a
+        press that works.  A Return through the session is the fallback for a
+        client that shows no such button.
+        """
+        composer = self._element(control)
+        try:
+            button = self._send_button(control)
+            if button is not None:
+                button.perform("AXPress")
+            else:
+                ax.send_key(ax.KEY_RETURN)
+            time.sleep(0.3)
+            remaining = composer.value
+            if isinstance(remaining, str) and remaining.strip() and remaining.strip() not in _EMPTY_HINTS:
+                raise OSError("the message stayed in the composer; it was not sent")
+        finally:
+            self._restore()
 
     # -- room list ----------------------------------------------------------
 

@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     rooms = commands.add_parser("rooms", help="List conversations, most recent first")
     rooms.add_argument("--limit", type=_positive)
     rooms.add_argument(
-        "--readable-only", action="store_true", help="Only rooms whose key is loaded"
+        "--readable-only", action="store_true", help="Only rooms that can be decrypted"
     )
 
     context = commands.add_parser("context", help="Read one conversation with coverage")
@@ -200,8 +200,9 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
                     "matches": [message.as_json() for message in found],
                     "count": len(found),
                     "unsearchableRooms": unreadable,
-                    "note": "Rooms KakaoTalk has not opened have no key and were not searched; "
-                    "an empty result is not proof a conversation never happened.",
+                    "note": "Search covers the messages KakaoTalk has cached locally; the "
+                    "client keeps only recent history on this machine, so an empty result "
+                    "is not proof a conversation never happened.",
                 }
             )
         )

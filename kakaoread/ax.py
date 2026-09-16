@@ -124,11 +124,48 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     services.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
     services.CGEventPostToPid.argtypes = [ctypes.c_int, ctypes.c_void_p]
     services.CGEventPostToPid.restype = None
+    services.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+    services.CGEventPost.restype = None
     services.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
     services.CGEventSetFlags.restype = None
+    services.CGEventKeyboardSetUnicodeString.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_uint16)
+    ]
+    services.CGEventKeyboardSetUnicodeString.restype = None
+    services.CGEventCreateMouseEvent.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, CGPoint, ctypes.c_uint32
+    ]
+    services.CGEventCreateMouseEvent.restype = ctypes.c_void_p
+    services.CGEventCreate.argtypes = [ctypes.c_void_p]
+    services.CGEventCreate.restype = ctypes.c_void_p
+    services.CGEventGetLocation.argtypes = [ctypes.c_void_p]
+    services.CGEventGetLocation.restype = CGPoint
+    services.AXValueGetValue.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+    services.AXValueGetValue.restype = ctypes.c_bool
 
     _core, _services = core, services
     return core, services
+
+
+class CGPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+class CGSize(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+
+_kAXValueCGPointType: Final = 1
+_kAXValueCGSizeType: Final = 2
+_kCGHIDEventTap: Final = 0
+_kCGSessionEventTap: Final = 1
+_kCGEventMouseMoved: Final = 5
+_kCGEventLeftMouseDown: Final = 1
+_kCGEventLeftMouseUp: Final = 2
+_kCGMouseButtonLeft: Final = 0
+KEY_A: Final = 0
+KEY_DELETE: Final = 51
+FLAG_COMMAND: Final = 0x00100000
 
 
 def is_trusted() -> bool:
@@ -345,6 +382,39 @@ class Element:
                 frontier.append((child, level + 1))
         return found
 
+    def _geometry(self, name: str, kind: int, struct):
+        _core, services = _load()
+        key = _cfstr(name)
+        out = ctypes.c_void_p()
+        try:
+            if services.AXUIElementCopyAttributeValue(self._ref, key, ctypes.byref(out)) != 0:
+                return None
+        finally:
+            _load()[0].CFRelease(key)
+        if not out.value:
+            return None
+        value = struct()
+        ok = services.AXValueGetValue(out.value, kind, ctypes.byref(value))
+        _load()[0].CFRelease(out.value)
+        return value if ok else None
+
+    def frame(self) -> Optional[tuple[float, float, float, float]]:
+        """Return this element's screen rectangle as (x, y, width, height)."""
+        position = self._geometry("AXPosition", _kAXValueCGPointType, CGPoint)
+        size = self._geometry("AXSize", _kAXValueCGSizeType, CGSize)
+        if position is None or size is None:
+            return None
+        return (position.x, position.y, size.width, size.height)
+
+    def set_focused_element(self, element: "Element") -> bool:
+        """Point this (application) element's focus at *element*."""
+        _core, services = _load()
+        key = _cfstr("AXFocusedUIElement")
+        try:
+            return services.AXUIElementSetAttributeValue(self._ref, key, element._ref) == 0
+        finally:
+            _load()[0].CFRelease(key)
+
 
 def application(pid: int) -> Element:
     """Return the accessibility root of one running process."""
@@ -360,7 +430,9 @@ def post_key(pid: int, keycode: int, flags: int = 0) -> None:
 
     ``CGEventPostToPid`` addresses the process rather than the system-wide
     event stream, so the frontmost application, the focused window and the
-    cursor are all left exactly where they were.
+    cursor are all left exactly where they were.  This reaches a control that
+    is already handling the app's key input; a control that has to be focused
+    first is driven through :func:`send_key`, which posts to the session.
     """
     _core, services = _load()
     for pressed in (True, False):
@@ -372,4 +444,96 @@ def post_key(pid: int, keycode: int, flags: int = 0) -> None:
                 services.CGEventSetFlags(event, flags)
             services.CGEventPostToPid(pid, event)
         finally:
+            _load()[0].CFRelease(event)
+
+
+def send_key(keycode: int, flags: int = 0) -> None:
+    """Post a keystroke to the session, i.e. to whatever is frontmost.
+
+    KakaoTalk's composer only reacts to input once it is the focused control
+    of the frontmost app, and a keystroke aimed at the process id does not
+    reach it; the session event stream does.  The caller is responsible for
+    having brought the client forward first.
+    """
+    _core, services = _load()
+    for pressed in (True, False):
+        event = services.CGEventCreateKeyboardEvent(None, keycode, pressed)
+        if not event:
+            raise OSError("could not create a keyboard event")
+        try:
+            if flags:
+                services.CGEventSetFlags(event, flags)
+            services.CGEventPost(_kCGSessionEventTap, event)
+        finally:
+            _load()[0].CFRelease(event)
+
+
+_TYPE_CHAR_DELAY: Final = 0.012
+"""A short pause between characters.
+
+KakaoTalk's composer drops characters when a whole string is delivered on one
+event, and even a burst of back-to-back events loses some; one grapheme per
+key-down/up pair with a small gap is what arrives intact.
+"""
+
+
+def send_text(text: str) -> None:
+    """Type *text* into the frontmost app's focused control, one char at a time.
+
+    The characters are carried on the event itself rather than as key codes,
+    so any Unicode — Hangul, emoji — arrives exactly, with no dependence on the
+    keyboard layout or the input method.  They are sent one grapheme at a time
+    because delivering the whole string at once, or too fast, loses characters
+    in this client.
+    """
+    if not text:
+        return
+    import time as _time
+
+    _core, services = _load()
+    for character in text:
+        units = character.encode("utf-16-le")
+        count = len(units) // 2
+        buffer = (ctypes.c_uint16 * count).from_buffer_copy(units)
+        for pressed in (True, False):
+            event = services.CGEventCreateKeyboardEvent(None, 0, pressed)
+            if not event:
+                raise OSError("could not create a keyboard event")
+            try:
+                services.CGEventKeyboardSetUnicodeString(event, count, buffer)
+                services.CGEventPost(_kCGSessionEventTap, event)
+            finally:
+                _load()[0].CFRelease(event)
+        _time.sleep(_TYPE_CHAR_DELAY)
+
+
+def cursor_location() -> "tuple[float, float]":
+    """Return the pointer's current screen position."""
+    _core, services = _load()
+    event = services.CGEventCreate(None)
+    point = services.CGEventGetLocation(event)
+    if event:
+        _load()[0].CFRelease(event)
+    return (point.x, point.y)
+
+
+def click(x: float, y: float, restore_to: "Optional[tuple[float, float]]" = None) -> None:
+    """Click at a screen point, then put the pointer back where it was.
+
+    A click is the one thing that reliably focuses KakaoTalk's composer, which
+    is why it is here at all; the pointer is restored immediately so the click
+    is the only visible effect.
+    """
+    _core, services = _load()
+    for kind in (_kCGEventLeftMouseDown, _kCGEventLeftMouseUp):
+        event = services.CGEventCreateMouseEvent(None, kind, CGPoint(x, y), _kCGMouseButtonLeft)
+        if event:
+            services.CGEventPost(_kCGHIDEventTap, event)
+            _load()[0].CFRelease(event)
+    if restore_to is not None:
+        event = services.CGEventCreateMouseEvent(
+            None, _kCGEventMouseMoved, CGPoint(restore_to[0], restore_to[1]), _kCGMouseButtonLeft
+        )
+        if event:
+            services.CGEventPost(_kCGHIDEventTap, event)
             _load()[0].CFRelease(event)

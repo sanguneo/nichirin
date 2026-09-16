@@ -1,12 +1,13 @@
 # AGENTS.md — working on kakaoread-mac
 
 macOS-only KakaoTalk reader, friend browser and sender in zero-dependency
-Python 3.10+. Reads stay local; the explicit send command drives the client.
+Python 3.9+. Reads stay local; the explicit send command drives the client.
 This file is about *changing* the tool; `skill/SKILL.md` is about using it.
 
-Forked from the Windows-only `kakaoread`. The port is in progress and this
-file is being rewritten as each macOS fact is established rather than
-inherited. Anything still describing Windows is a leftover, not a claim.
+Forked from the Windows-only `kakaoread`. Every macOS fact below was
+established against a live client rather than inherited; the Windows platform
+layer (CNG, the heap scan, `winauto`) is gone, and reading and sending are
+both verified working on this machine.
 
 ## Commands
 
@@ -37,7 +38,53 @@ fail by hanging rather than by erroring.
   `~/Library/Containers/com.kakao.KakaoTalkMac`. Without it `os.listdir` on
   the container blocks indefinitely instead of raising `PermissionError`,
   which is why every container access is made under a timeout.
-- **Accessibility** — required to drive the client for sending.
+- **Accessibility** — required to drive the client for sending. It is granted
+  to the *responsible process*, which is the terminal (or the app that
+  launched the interpreter), not the `python3` binary; granting the wrong app
+  leaves `AXIsProcessTrusted()` false with no other symptom.
+
+## Facts established against a live client
+
+These were proven by measurement or by reading the running client. Changing
+code that depends on them without re-checking will quietly break.
+
+### Reading
+
+- The database is **one large SQLCipher file** (measured 119 MB) that the
+  running client rewrites continuously. Reading it in place fails the
+  byte-for-byte consistency check over and over — once measured 112 s to catch
+  a clean moment. `snapshot.clone_snapshot` takes an **APFS `cp -c` clone**
+  first (copy-on-write, O(1), frozen against the writer), which dropped a
+  `status` from 112 s to 3.8 s. A non-APFS filesystem falls back to a plain
+  copy.
+- The tested client is **SQLCipher 3** (1024-byte pages, 48-byte reserve), not
+  4; `cipher.detect` proves the profile against the file rather than assuming.
+- The account `userId` is not stored in the clear. It is recovered as the
+  **SHA-512 preimage** of a preference-key suffix
+  (`DESIGNATEDFRIENDSREVISION:<sha512hex>` etc.), searched across cores and
+  then cached in `account.json` — only the id, never a key.
+- `NTUser` has no `type` column; a friend is `friendType = 1`. The message
+  attachment column is spelled `attachment` here (the Windows client
+  misspelled it `attachement`).
+
+### Sending
+
+- KakaoTalk's composer must be reached with the app **activated**. Reading
+  never activates; sending does, and the previously-frontmost app is restored
+  after. This is the one promise the Windows build kept that macOS cannot: a
+  posted message reached a Windows control in any state, an AXValue write or a
+  keystroke here does not.
+- **Set the text with `AXValue`, do not type it.** Synthesised keystrokes
+  (`CGEventPost` unicode) drop characters unpredictably even with the field
+  focused; an `AXValue` write is exact *and* — proven live — enables the
+  client's send button, which a bare write elsewhere would not.
+- **Send by pressing the 전송 `AXButton`, not by posting Return.** Return over
+  AXValue-placed text is ignored. `AXUIElementPerformAction` reports failure
+  even on a press that works, so success is judged by the composer going
+  empty, not by the call's return value.
+- **A sent message is confirmed by reading it back**, never by the submit
+  call alone; `submitted` means the composer emptied, delivery is proven by a
+  new from-me row in the log.
 
 ## Conventions
 
