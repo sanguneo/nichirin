@@ -416,22 +416,47 @@ class Reader:
         }
 
     def member_ids(self, room_id: int) -> set[int]:
-        """Return the users this room lists, as far as the client records them.
+        """Return all known participants for a room.
 
-        The macOS client keeps a group's members as an archived array on the
-        room row rather than in a join table, so this is a decode rather than a
-        query, and it is the display list — enough to name a room, not a roll.
+        Combines display thumbnail members (displayMemberIds), open chat link
+        participants (NTUser.linkId), and authors who have posted messages
+        (NTChatMessage.authorId) so that mentions and name history cover the
+        full roll rather than just the avatar sample.
         """
         columns = self.columns(ROOM_TABLE)
         column = _first_present(columns, ("displayMemberIds", "memberIds"))
-        if column is None:
-            return set()
-        row = self.connection().execute(
-            f"SELECT {column} FROM {ROOM_TABLE} WHERE chatId = ?", (room_id,)
-        ).fetchone()
-        if row is None:
-            return set()
-        return set(_plist_user_ids(row[0]))
+        members: set[int] = set()
+
+        if column is not None:
+            has_link = "linkId" in columns
+            query = (
+                f"SELECT {column}, linkId FROM {ROOM_TABLE} WHERE chatId = ?"
+                if has_link
+                else f"SELECT {column} FROM {ROOM_TABLE} WHERE chatId = ?"
+            )
+            row = self.connection().execute(query, (room_id,)).fetchone()
+            if row is not None:
+                members.update(_plist_user_ids(row[0]))
+                if has_link and row[1]:
+                    try:
+                        user_rows = self.connection().execute(
+                            "SELECT userId FROM NTUser WHERE linkId = ?", (row[1],)
+                        ).fetchall()
+                        members.update(int(ur[0]) for ur in user_rows if ur[0])
+                    except sqlite3.Error:
+                        pass
+
+        # Also include any author who has sent a message in this room
+        try:
+            msg_rows = self.connection().execute(
+                f"SELECT DISTINCT authorId FROM {MESSAGE_TABLE} WHERE chatId = ?",
+                (room_id,),
+            ).fetchall()
+            members.update(int(mr[0]) for mr in msg_rows if mr[0])
+        except sqlite3.Error:
+            pass
+
+        return members
 
     def _kind_of(
         self, link_id: int, peer_id: int, member_ids: list[int], own: Optional[int]

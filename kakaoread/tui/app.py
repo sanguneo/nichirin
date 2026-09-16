@@ -559,12 +559,13 @@ class App:
         if not chat or not chat.mention_candidates:
             return []
         candidates = chat.mention_candidates
+        total = len(candidates)
         selected = chat.mention_index
-        max_show = min(5, len(candidates))
-        start = max(0, min(selected - max_show // 2, len(candidates) - max_show))
+        max_show = min(6, total)
+        start = max(0, min(selected - max_show // 2, total - max_show))
         visible = candidates[start : start + max_show]
-        inner = max(16, min(42, width - 8))
-        header_title = " 멘션 (Tab/Enter, ↑↓ 선택, Esc 닫기) "
+        inner = max(18, min(44, width - 8))
+        header_title = f" 멘션 ({selected + 1}/{total}명 · Tab/Enter 선택) "
         fill = max(0, inner - display_width(header_title))
         top = "  " + self.theme.fg("accent", "┌" + header_title + "─" * fill + "┐")
         rows: list[str] = []
