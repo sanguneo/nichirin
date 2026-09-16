@@ -215,6 +215,23 @@ class CacheTests(_Fixture):
             second = self.cache.connect(self.database, geometry())
         self.assertIsNotNone(second)
 
+    def test_incremental_wal_update_recovers_to_full_rebuild_if_malformed(self) -> None:
+        first = self.cache.connect(self.database, geometry())
+        self.assertIsNotNone(first)
+
+        wal_path = self.database.with_name(self.database.name + "-wal")
+        content = wal_path.read_bytes() if wal_path.exists() else b""
+        wal_path.write_bytes(content)
+        before = wal_path.stat()
+        os.utime(wal_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+        # If _update_wal_with_retry returns damaged bytes that fail sqlite query,
+        # it should smoothly fall back to build_image (full rebuild) instead of raising DatabaseError.
+        with patch.object(self.cache, "_update_wal_with_retry", return_value=b"SQLite format 3\x00" + b"\x00" * 4096):
+            recovered = self.cache.connect(self.database, geometry())
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.execute("SELECT COUNT(*) FROM note").fetchone()[0], len(ROWS_A))
+
     def test_an_unchanged_database_is_not_decrypted_twice(self) -> None:
         first = self.cache.connect(self.database, geometry())
         with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):

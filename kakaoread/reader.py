@@ -146,7 +146,12 @@ class Reader:
         if self._connection is not None:
             return self._connection
         account = self.account
-        return self._cache.connect(account.database, account.geometry)
+        try:
+            return self._cache.connect(account.database, account.geometry)
+        except sqlite3.DatabaseError:
+            # If a malformed snapshot was encountered mid-write, invalidate and retry once cleanly.
+            self._cache.invalidate(account.database)
+            return self._cache.connect(account.database, account.geometry)
 
     def columns(self, table: str) -> set[str]:
         """Return the columns a table has, asked once per table per process."""
