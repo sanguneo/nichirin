@@ -140,6 +140,10 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     services.CGEventCreate.restype = ctypes.c_void_p
     services.CGEventGetLocation.argtypes = [ctypes.c_void_p]
     services.CGEventGetLocation.restype = CGPoint
+    services.CGEventSetIntegerValueField.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int64
+    ]
+    services.CGEventSetIntegerValueField.restype = None
     services.AXValueGetValue.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
     services.AXValueGetValue.restype = ctypes.c_bool
 
@@ -163,6 +167,8 @@ _kCGEventMouseMoved: Final = 5
 _kCGEventLeftMouseDown: Final = 1
 _kCGEventLeftMouseUp: Final = 2
 _kCGMouseButtonLeft: Final = 0
+_kCGMouseEventClickState: Final = 1
+"""``kCGMouseEventClickState``: 1 for a single click, 2 for the second of a pair."""
 KEY_A: Final = 0
 KEY_DELETE: Final = 51
 FLAG_COMMAND: Final = 0x00100000
@@ -447,66 +453,6 @@ def post_key(pid: int, keycode: int, flags: int = 0) -> None:
             _load()[0].CFRelease(event)
 
 
-def send_key(keycode: int, flags: int = 0) -> None:
-    """Post a keystroke to the session, i.e. to whatever is frontmost.
-
-    KakaoTalk's composer only reacts to input once it is the focused control
-    of the frontmost app, and a keystroke aimed at the process id does not
-    reach it; the session event stream does.  The caller is responsible for
-    having brought the client forward first.
-    """
-    _core, services = _load()
-    for pressed in (True, False):
-        event = services.CGEventCreateKeyboardEvent(None, keycode, pressed)
-        if not event:
-            raise OSError("could not create a keyboard event")
-        try:
-            if flags:
-                services.CGEventSetFlags(event, flags)
-            services.CGEventPost(_kCGSessionEventTap, event)
-        finally:
-            _load()[0].CFRelease(event)
-
-
-_TYPE_CHAR_DELAY: Final = 0.012
-"""A short pause between characters.
-
-KakaoTalk's composer drops characters when a whole string is delivered on one
-event, and even a burst of back-to-back events loses some; one grapheme per
-key-down/up pair with a small gap is what arrives intact.
-"""
-
-
-def send_text(text: str) -> None:
-    """Type *text* into the frontmost app's focused control, one char at a time.
-
-    The characters are carried on the event itself rather than as key codes,
-    so any Unicode — Hangul, emoji — arrives exactly, with no dependence on the
-    keyboard layout or the input method.  They are sent one grapheme at a time
-    because delivering the whole string at once, or too fast, loses characters
-    in this client.
-    """
-    if not text:
-        return
-    import time as _time
-
-    _core, services = _load()
-    for character in text:
-        units = character.encode("utf-16-le")
-        count = len(units) // 2
-        buffer = (ctypes.c_uint16 * count).from_buffer_copy(units)
-        for pressed in (True, False):
-            event = services.CGEventCreateKeyboardEvent(None, 0, pressed)
-            if not event:
-                raise OSError("could not create a keyboard event")
-            try:
-                services.CGEventKeyboardSetUnicodeString(event, count, buffer)
-                services.CGEventPost(_kCGSessionEventTap, event)
-            finally:
-                _load()[0].CFRelease(event)
-        _time.sleep(_TYPE_CHAR_DELAY)
-
-
 def cursor_location() -> "tuple[float, float]":
     """Return the pointer's current screen position."""
     _core, services = _load()
@@ -517,19 +463,23 @@ def cursor_location() -> "tuple[float, float]":
     return (point.x, point.y)
 
 
-def click(x: float, y: float, restore_to: "Optional[tuple[float, float]]" = None) -> None:
-    """Click at a screen point, then put the pointer back where it was.
+def double_click(x: float, y: float, restore_to: "Optional[tuple[float, float]]" = None) -> None:
+    """Double-click at a screen point.
 
-    A click is the one thing that reliably focuses KakaoTalk's composer, which
-    is why it is here at all; the pointer is restored immediately so the click
-    is the only visible effect.
+    macOS does not infer a double-click from two clicks arriving close
+    together: the second pair has to carry a click *state* of 2, and without it
+    the chat list simply highlights a row instead of opening it.
     """
     _core, services = _load()
-    for kind in (_kCGEventLeftMouseDown, _kCGEventLeftMouseUp):
-        event = services.CGEventCreateMouseEvent(None, kind, CGPoint(x, y), _kCGMouseButtonLeft)
-        if event:
-            services.CGEventPost(_kCGHIDEventTap, event)
-            _load()[0].CFRelease(event)
+    for state in (1, 2):
+        for kind in (_kCGEventLeftMouseDown, _kCGEventLeftMouseUp):
+            event = services.CGEventCreateMouseEvent(
+                None, kind, CGPoint(x, y), _kCGMouseButtonLeft
+            )
+            if event:
+                services.CGEventSetIntegerValueField(event, _kCGMouseEventClickState, state)
+                services.CGEventPost(_kCGHIDEventTap, event)
+                _load()[0].CFRelease(event)
     if restore_to is not None:
         event = services.CGEventCreateMouseEvent(
             None, _kCGEventMouseMoved, CGPoint(restore_to[0], restore_to[1]), _kCGMouseButtonLeft
@@ -537,3 +487,5 @@ def click(x: float, y: float, restore_to: "Optional[tuple[float, float]]" = None
         if event:
             services.CGEventPost(_kCGHIDEventTap, event)
             _load()[0].CFRelease(event)
+
+

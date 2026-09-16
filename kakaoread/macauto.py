@@ -55,18 +55,26 @@ _OPEN_TIMEOUT_SECONDS = 6.0
 _OPEN_POLL_SECONDS = 0.1
 _SEARCHED_ROWS = 8
 
-_TYPE_ATTEMPTS = 4
-"""How many times to click-focus and type before giving up on the composer.
+_WRITE_ATTEMPTS = 3
+"""How many times to write the message before giving up on the composer."""
 
-Taking keyboard focus is racy — a click that lands a hair before the window is
-ready leaves the keystrokes going nowhere — so the composer is read back after
-each attempt and the text is retyped until it is actually there."""
+_SETTLE_SECONDS = 0.2
+"""Long enough for the client to act on a write, and no longer."""
 
-_SEND_BUTTON_TITLE = "전송"
+_WAIT_SECONDS = 3.0
+"""How long to wait for the send button to enable, and for the box to empty."""
+
+_POLL_SECONDS = 0.05
+"""Gap between those polls; an accessibility read is cheap."""
+
+_ACTIVATE_SECONDS = 0.6
+"""How long the client needs to actually come forward before it can be clicked."""
+
+_SEND_BUTTON_TITLES = ("전송", "Send")
 """The chat window's send button, pressed to commit a message.
 
-An ``AXValue`` write places text without the client counting it as typing, so
-Return over it is ignored; the button is what actually sends."""
+An ``AXValue`` write places the text without the client counting it as typing,
+so a Return over it is ignored; the button is what actually sends."""
 
 
 @dataclass(frozen=True)
@@ -177,19 +185,19 @@ def running(runner=subprocess.run) -> bool:
     return client_pid(runner) is not None
 
 
-def _frontmost_bundle(runner=subprocess.run) -> Optional[str]:
-    """Return the bundle id of the frontmost app, so it can be restored."""
+def activate(runner=subprocess.run) -> None:
+    """Bring KakaoTalk forward.
+
+    Sending never needs this.  Opening a *closed* room does: its chat-list rows
+    ignore both ``AXPress`` and a posted Return, so the only thing that opens
+    one is a real double-click, and a click at screen coordinates is only safe
+    aimed at the window in front.
+    """
     try:
-        completed = runner(
-            ["/usr/bin/osascript", "-e",
-             'tell application "System Events" to get bundle identifier of '
-             "first process whose frontmost is true"],
-            capture_output=True, text=True, timeout=5,
-        )
+        runner(["/usr/bin/open", "-b", BUNDLE_ID], check=False)
     except (OSError, subprocess.SubprocessError):
-        return None
-    identifier = (completed.stdout or "").strip()
-    return identifier or None
+        return
+    time.sleep(_ACTIVATE_SECONDS)
 
 
 # -- remembered rows ---------------------------------------------------------
@@ -465,10 +473,7 @@ class AXBackend:
         self._app = ax.application(pid)
         self._registry: dict[int, ax.Element] = {}
         self._windows_by_control: dict[int, ax.Element] = {}
-        self._click_target: dict[int, ax.Element] = {}
         self._next = 1
-        self._restore_bundle: Optional[str] = None
-        self._restore_cursor: Optional[tuple] = None
 
     def _register(self, element: ax.Element) -> int:
         handle = self._next
@@ -510,29 +515,22 @@ class AXBackend:
 
         A chat window holds two scrolling regions, and the one showing the
         conversation contains a table of messages while the composer does not.
-        The composer's own text element reports a rectangle only as wide as the
-        text in it, and clicking that rectangle does not focus it; the
-        surrounding scroll area does, so that scroll area is remembered as the
-        click target for :meth:`set_text`.
+        Both levels are read as direct children rather than crawled, because
+        every node is a separate IPC round trip into the client and the
+        transcript below holds hundreds of them.
         """
         element = self._element(window)
-        input_area: Optional[ax.Element] = None
+        composer: Optional[ax.Element] = None
         for child in element.children():
             if child.role != "AXScrollArea":
                 continue
-            if any(d.role == "AXTable" for d in child.descendants(depth=3)):
-                continue  # This is the transcript, not the composer.
-            input_area = child
-        if input_area is None:
-            return None
-        composer = next(
-            (d for d in input_area.descendants(depth=3) if d.role in _INPUT_ROLES), None
-        )
+            found = [c for c in child.children() if c.role in _INPUT_ROLES]
+            if found and not any(c.role == "AXTable" for c in child.children()):
+                composer = found[0]
         if composer is None:
             return None
         handle = self._register(composer)
         self._windows_by_control[handle] = element
-        self._click_target[handle] = input_area
         return handle
 
     def get_text(self, control: int) -> str:
@@ -540,108 +538,90 @@ class AXBackend:
         text = value if isinstance(value, str) else ""
         return "" if text.strip() in _EMPTY_HINTS else text
 
-    def _activate(self) -> None:
-        """Bring KakaoTalk forward, remembering what to put back afterwards.
-
-        This is the line the Windows build never had to cross: there, a posted
-        message reached a control in any state.  KakaoTalk's composer on macOS
-        only accepts input when it is the focused control of the frontmost app,
-        so sending has to take the foreground for a moment.  Reading never does
-        this.  The previously-frontmost app and the pointer are recorded so
-        both can be restored the instant the message is in.
-        """
-        self._restore_bundle = _frontmost_bundle()
-        try:
-            self._restore_cursor = ax.cursor_location()
-        except Exception:  # noqa: BLE001 - cursor restore is best-effort
-            self._restore_cursor = None
-        subprocess.run(["/usr/bin/open", "-b", BUNDLE_ID], check=False)
-        time.sleep(0.6)
-
-    def _restore(self) -> None:
-        """Undo :meth:`_activate`: put the foreground app and pointer back."""
-        if self._restore_bundle and self._restore_bundle != BUNDLE_ID:
-            subprocess.run(["/usr/bin/open", "-b", self._restore_bundle], check=False)
-        self._restore_bundle = None
-        self._restore_cursor = None
-
     def set_text(self, control: int, text: str) -> None:
         """Replace the composer's contents with *text*, and prove it landed.
 
-        The recipe is the one the reference client automation uses and the only
-        one that works here: raise the chat window, click the *input area* to
-        focus the composer (clicking the composer's own text rectangle does
-        not, because that rectangle is only as wide as its content), clear any
-        draft, and type the message as Unicode.  ``AXValue`` writes are refused
-        by this control, so the text is typed rather than set.
+        One ``AXValue`` write, and nothing else.  The write needs no keyboard,
+        no focus and — this is the part worth keeping — **no activation**: the
+        client is never brought forward, the pointer is never moved, and
+        whatever the user is doing is not interrupted.  It also enables the
+        client's own send button, which :meth:`submit` then presses.
 
-        Focus is racy — a click that does not take leaves the keystrokes going
-        nowhere — so the whole thing is attempted a few times and the composer
-        is read back each time.  The method returns only once the composer
-        actually holds the text, and raises otherwise; that is what lets a
-        caller trust that ``submitted`` means the words were in the box.
+        Typing the text was tried and abandoned: synthesised keystrokes drop
+        characters unpredictably, and they only arrive at all once the app has
+        been activated and the field clicked, which is the whole cost this
+        avoids.  The value is read back, so a refused write is a failure rather
+        than a silent empty send.
         """
         composer = self._element(control)
-        window = self._windows_by_control.get(control)
-        self._activate()
-        if window is not None:
-            # A window this tool opened is left minimised; it has to be brought
-            # back and raised before it can be written to, or a later button
-            # press lands on whatever is in front of it.
-            if window.attribute("AXMinimized") is True:
-                window.set_attribute("AXMinimized", "false")
-                time.sleep(0.3)
-            window.perform("AXRaise")
-            time.sleep(0.2)
-
-        # The composer accepts an ``AXValue`` write, and — proven on a live
-        # client — that write both places the text and enables the client's
-        # send button, so the message goes out through the button rather than
-        # through a keystroke.  Synthesised typing was tried and abandoned: it
-        # dropped characters unpredictably even with the field focused, while
-        # the write is exact.  The value is read back so a refused write is a
-        # failure rather than a silent empty send.
-        for _attempt in range(_TYPE_ATTEMPTS):
-            if composer.set_attribute("AXValue", text):
-                time.sleep(0.15)
-                if composer.value == text:
-                    return
-            time.sleep(0.15)
+        for attempt in range(_WRITE_ATTEMPTS):
+            if composer.set_attribute("AXValue", text) and composer.value == text:
+                return
+            if attempt + 1 < _WRITE_ATTEMPTS:
+                time.sleep(_SETTLE_SECONDS)
         raise OSError("KakaoTalk refused to accept the message text into the composer")
 
     def _send_button(self, control: int) -> Optional[ax.Element]:
-        """Return the chat window's 전송 button, when the client exposes one."""
+        """Return the chat window's send button.
+
+        It is a **direct child** of the chat window, so it is found by reading
+        that one list rather than by walking the subtree: the transcript below
+        holds a button per message, and crawling to find this one measured
+        3.5 s against 0.002 s for the direct children.
+        """
         window = self._windows_by_control.get(control)
         if window is None:
             return None
-        for element in window.descendants(depth=8):
-            if element.role == "AXButton" and element.title.strip() == _SEND_BUTTON_TITLE:
+        for element in window.children():
+            if element.role == "AXButton" and element.title.strip() in _SEND_BUTTON_TITLES:
                 return element
         return None
 
     def submit(self, control: int) -> None:
-        """Commit the message, then release the foreground.
+        """Commit the message that :meth:`set_text` placed.
 
-        Pressing the 전송 button is what sends the message the ``AXValue`` write
-        placed and enabled; it needs neither keyboard focus nor the pointer.
-        Success is judged by the composer going empty rather than by the press
-        call's own return value, which this client reports unreliably even on a
-        press that works.  A Return through the session is the fallback for a
-        client that shows no such button.
+        Pressing the send button is what delivers it, and — like the write —
+        it needs no keyboard focus, no pointer and no activation, so the whole
+        send leaves the desktop untouched.  Success is judged by the composer
+        going empty rather than by the press call's own return value, which
+        this client reports as failure even on a press that works.
+
+        A Return aimed at the process is the fallback for a client that shows
+        no such button; it is posted to the pid, not to the session, so it too
+        cannot land in whatever the user has in front.
+
+        The button is enabled by the write, but not instantly, so it is waited
+        for rather than pressed on faith — pressing a disabled button does
+        nothing and leaves the message sitting in the box.  Both waits poll,
+        so a fast client costs one read rather than a fixed sleep.
         """
         composer = self._element(control)
-        try:
-            button = self._send_button(control)
-            if button is not None:
-                button.perform("AXPress")
-            else:
-                ax.send_key(ax.KEY_RETURN)
-            time.sleep(0.3)
+        button = self._send_button(control)
+        if button is not None:
+            self._wait(lambda: button.attribute("AXEnabled") is not False)
+            button.perform("AXPress")
+        else:
+            ax.post_key(self._pid, ax.KEY_RETURN)
+
+        def emptied() -> bool:
             remaining = composer.value
-            if isinstance(remaining, str) and remaining.strip() and remaining.strip() not in _EMPTY_HINTS:
-                raise OSError("the message stayed in the composer; it was not sent")
-        finally:
-            self._restore()
+            if not isinstance(remaining, str):
+                return True
+            return not remaining.strip() or remaining.strip() in _EMPTY_HINTS
+
+        if not self._wait(emptied):
+            raise OSError("the message stayed in the composer; it was not sent")
+
+    @staticmethod
+    def _wait(ready, timeout: float = _WAIT_SECONDS) -> bool:
+        """Poll *ready* until it holds, so a quick client is not made to wait."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if ready():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_POLL_SECONDS)
 
     # -- room list ----------------------------------------------------------
 
@@ -683,19 +663,29 @@ class AXBackend:
         return [self._row_title(row) for row in self._room_rows()]
 
     def open_row(self, row: int) -> bool:
-        """Open one row by selecting it and pressing Return at the process.
+        """Open one row of the chat list with a real double-click.
 
-        Selection rather than a click, because a row scrolled out of view
-        reports coordinates that are outside the window and a synthetic click
-        at them lands on nothing.
+        This is the one part of sending that has to touch the screen.  The
+        rows ignore ``AXPress``, ``AXSelected`` and a posted Return — selecting
+        one only highlights it — so nothing but a genuine double-click opens a
+        room.  macOS does not infer that from two clicks in a row either; the
+        second has to carry a click state of 2, which :func:`ax.double_click`
+        sets.
+
+        Because it is a click at screen coordinates, the client is brought
+        forward first so the click cannot land in somebody else's window, and
+        the pointer is put back where it was.
         """
         rows = self._room_rows()
         if row < 0 or row >= len(rows):
             return False
-        target = rows[row]
-        if not target.set_attribute("AXSelected", "true") and not target.perform("AXPress"):
+        rectangle = rows[row].frame()
+        if rectangle is None:
             return False
-        ax.post_key(self._pid, ax.KEY_RETURN)
+        activate()
+        pointer = ax.cursor_location()
+        x, y = rectangle[0] + rectangle[2] / 2, rectangle[1] + rectangle[3] / 2
+        ax.double_click(x, y, restore_to=pointer)
         return True
 
     def main_state(self) -> str:

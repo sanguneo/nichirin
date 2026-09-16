@@ -69,22 +69,38 @@ code that depends on them without re-checking will quietly break.
 
 ### Sending
 
-- KakaoTalk's composer must be reached with the app **activated**. Reading
-  never activates; sending does, and the previously-frontmost app is restored
-  after. This is the one promise the Windows build kept that macOS cannot: a
-  posted message reached a Windows control in any state, an AXValue write or a
-  keystroke here does not.
-- **Set the text with `AXValue`, do not type it.** Synthesised keystrokes
-  (`CGEventPost` unicode) drop characters unpredictably even with the field
-  focused; an `AXValue` write is exact *and* — proven live — enables the
-  client's send button, which a bare write elsewhere would not.
-- **Send by pressing the 전송 `AXButton`, not by posting Return.** Return over
-  AXValue-placed text is ignored. `AXUIElementPerformAction` reports failure
-  even on a press that works, so success is judged by the composer going
-  empty, not by the call's return value.
-- **A sent message is confirmed by reading it back**, never by the submit
-  call alone; `submitted` means the composer emptied, delivery is proven by a
-  new from-me row in the log.
+Sending into an **already open** room window costs 0.07 s of accessibility
+work and never touches the desktop: no activation, no focus, no pointer, no
+keystrokes. Everything below is what it took to get there.
+
+- **Set the text with `AXValue`, and do not activate anything.** The write
+  needs no keyboard and no focus, and it also enables the client's send
+  button. Synthesised typing was tried and abandoned: `CGEventPost` unicode
+  drops characters unpredictably, and it only arrives at all once the app has
+  been activated and the field clicked — which is the entire cost this avoids.
+- **Send by pressing the 전송 `AXButton`, not by posting Return.** A Return
+  over AXValue-placed text is ignored, because the client does not count the
+  write as typing. `AXUIElementPerformAction` reports failure even on a press
+  that works, so success is judged by the composer going empty.
+- **The button is a direct child of the chat window.** Finding it by crawling
+  measured **3.5 s** — the transcript holds a button per message and every
+  node is an IPC round trip — against **0.002 s** for reading the window's own
+  children. The composer is found the same way: two levels of direct children,
+  never a subtree walk.
+- **Wait for the button to enable; do not press on faith.** The write enables
+  it, but not instantly. While the crawl was slow it accidentally supplied that
+  delay, and removing the crawl exposed the race as a message left sitting in
+  the box. Both that wait and the emptying check poll, so a quick client pays
+  one read rather than a fixed sleep.
+- **Opening a *closed* room is the one step that must touch the screen.** The
+  chat-list rows ignore `AXPress`, `AXSelected` and a posted Return — selecting
+  one only highlights it. Only a real double-click opens a room, and macOS does
+  not infer one from two clicks: the second must carry a click state of 2.
+  Because that is a click at screen coordinates, the client is brought forward
+  first so it cannot land in another window, and the pointer is put back.
+- **A sent message is confirmed by reading it back**, never by the submit call
+  alone; `submitted` means the composer emptied, delivery is proven by a new
+  from-me row in the log.
 
 ## Conventions
 
