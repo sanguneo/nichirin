@@ -160,18 +160,27 @@ class Keyring:
         the way.
         """
         ordered = list(candidates)
-        named = [
-            (identifier, by_stem[derive.database_name(identifier, uuid)])
-            for identifier in ordered
-            if derive.database_name(identifier, uuid) in by_stem
-        ]
-        attempts = named or [
-            (identifier, database) for identifier in ordered for database in databases
-        ]
-        for identifier, database in attempts:
-            geometry = cipher.detect_file(database, derive.passphrase(identifier, uuid))
-            if geometry is not None:
-                return Account(user_id=identifier, database=database, geometry=geometry)
+        # Check candidates one-by-one: each database_name derivation is a 100k-iteration
+        # PBKDF2 calculation, so if the first candidate (e.g. cached id) matches,
+        # return immediately without deriving the remaining candidates.
+        named: list[tuple[int, Path]] = []
+        for identifier in ordered:
+            stem = derive.database_name(identifier, uuid)
+            matched = by_stem.get(stem)
+            if matched is not None:
+                geometry = cipher.detect_file(matched, derive.passphrase(identifier, uuid))
+                if geometry is not None:
+                    return Account(user_id=identifier, database=matched, geometry=geometry)
+                named.append((identifier, matched))
+
+        # Fall back to trying each candidate against every database if no stem matched.
+        if not named:
+            for identifier in ordered:
+                passphrase = derive.passphrase(identifier, uuid)
+                for database in databases:
+                    geometry = cipher.detect_file(database, passphrase)
+                    if geometry is not None:
+                        return Account(user_id=identifier, database=database, geometry=geometry)
         return None
 
     def require(self) -> Account:
