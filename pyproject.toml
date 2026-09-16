@@ -1,0 +1,28 @@
+[project]
+name = "kakaoread"
+version = "0.5.0"
+description = "Zero-dependency KakaoTalk reader, TUI, and text sender for macOS and AI agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = []
+classifiers = [
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+]
+
+[project.scripts]
+kakaoread = "kakaoread.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kakaoread*"]
+
+[tool.pyright]
+include = ["kakaoread", "tests"]
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
