@@ -139,6 +139,21 @@ Taken from a live client, not guessed.
 - **Order by `logId`, not `sendAt`.** `chatLogs` has no index on `sendAt`, so
   ordering by it scans and sorts every row; `logId` is the primary key. Over
   the newest 5,000 rows of a live room the two orders agreed exactly.
+- **Which end the limit cuts from depends on the question.** A window wants
+  the newest rows, so `messages` orders descending. Catch-up does not: asked
+  for what arrived after a cursor, taking the newest page skips everything
+  between the cursor and that page, and a follower that then advances its
+  cursor never sees the difference again. `messages` therefore orders
+  *ascending* when `after_id` is given without `before_id`, and
+  `Watcher._catch_up` pages until a short page arrives. This is not a
+  theoretical burst: the client backfills from the server after a
+  reconnection, writing far more than the 500-row page in one go.
+- **A failed read must not update the follow fingerprint.** `Watcher.poll`
+  decides whether to open a room by stat'ing its log, so recording the
+  fingerprint before the read lets a failure stand in for a success: the next
+  poll finds the log unchanged, skips the room, and whatever arrived during
+  the failure is never reported. The fingerprint is stored only after the
+  read returns.
 - `talkUser` holds **contacts only** — never the signed-in account. Without
   `Profile`, every message the user sent shows a bare numeric sender.
 - **The signed-in account is the sole member of the `MemoChat` room.**

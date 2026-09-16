@@ -113,6 +113,48 @@ class DetectionTests(WatcherTests):
         self.assertTrue(found[0].from_me)
 
 
+class CatchUpTests(WatcherTests):
+    """A burst larger than one catch-up page must still arrive whole.
+
+    The client backfills from the server after a reconnection, so a room can
+    gain thousands of rows between two polls.  Reporting only the newest page
+    and moving the cursor past the rest loses the difference permanently.
+    """
+
+    def burst(self, room_id: int, first_id: int, count: int) -> list[int]:
+        """Insert *count* messages and touch the log once, as a backfill does."""
+        from kakaoread import paths
+
+        connection = self.cache.databases[paths.chat_log_name(room_id)]
+        ids = list(range(first_id, first_id + count))
+        connection.executemany(
+            "INSERT INTO chatLogs VALUES (?, ?, 1, ?, NULL, ?, 0)",
+            [(log_id, PEER_ID, f"burst {log_id}", 1_800_000_000 + log_id) for log_id in ids],
+        )
+        connection.commit()
+        touch_log(self.root, room_id, b"backfilled")
+        return ids
+
+    def test_a_burst_larger_than_one_page_is_reported_in_full(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        expected = self.burst(DIRECT_ROOM, 5200, 520)
+
+        found: list[int] = [message.id for message in watcher.poll()]
+        self.assertEqual(
+            found,
+            expected,
+            "every backfilled message must arrive, oldest first, with none skipped",
+        )
+
+    def test_a_burst_is_not_reported_twice(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.burst(DIRECT_ROOM, 5200, 520)
+        watcher.poll()
+        self.assertEqual(watcher.poll(), [])
+
+
 class CostTests(WatcherTests):
     """An idle conversation must not be decrypted, only stat'ed."""
 
@@ -142,6 +184,30 @@ class CostTests(WatcherTests):
 
 
 class ResilienceTests(WatcherTests):
+    def test_a_room_that_failed_to_be_read_is_tried_again(self) -> None:
+        """A failed read must not be recorded as if it had succeeded.
+
+        The log is stat'ed to decide whether a room is worth opening, so a
+        room whose read raised after its fingerprint was already stored would
+        look unchanged forever after — and the arrival that caused the change
+        would never be reported.
+        """
+        from kakaoread import paths
+
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        name = paths.chat_log_name(GROUP_ROOM)
+        self.arrive(GROUP_ROOM, 6200, text="arrived while the key was gone")
+
+        withheld = self.cache.databases.pop(name)
+        self.assertEqual(watcher.poll(), [], "an unreadable room reports nothing")
+
+        self.cache.databases[name] = withheld
+        found = watcher.poll()
+        self.assertEqual(
+            [message.text for message in found], ["arrived while the key was gone"]
+        )
+
     def test_a_room_that_becomes_unreadable_does_not_stop_the_others(self) -> None:
         from kakaoread import paths
 

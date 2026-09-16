@@ -166,6 +166,28 @@ class MessageTests(unittest.TestCase):
         with build_reader() as reader:
             self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 5003)
 
+    def test_the_newest_id_ignores_a_deleted_row(self) -> None:
+        """The follow cursor must name a message the reader can actually return.
+
+        Every other query excludes deleted rows, so a newest id that counts
+        one hands the watcher a position it will never read a message at.
+        """
+        from kakaoread import paths
+        from kakaoread.reader import Reader
+        from tests.fixtures import build_profile
+
+        cache, ring = build_profile()
+        reader = Reader(keyring=ring, cache=cache)
+        self.addCleanup(reader.close)
+        connection = cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        connection.execute(
+            "INSERT INTO chatLogs VALUES (5004, ?, 1, 'withdrawn', NULL, 1800005004, 1)",
+            (PEER_ID,),
+        )
+        connection.commit()
+
+        self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 5003)
+
     def test_identifiers_past_two_to_the_fifty_third_survive_as_strings(self) -> None:
         with build_reader() as reader:
             found = reader.messages(HUGE_ROOM)

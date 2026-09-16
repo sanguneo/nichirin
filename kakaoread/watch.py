@@ -90,7 +90,6 @@ class Watcher:
             current = Fingerprint.of(path)
             if self._prints.get(room_id) == current:
                 continue
-            self._prints[room_id] = current
 
             since = self._seen.get(room_id)
             try:
@@ -98,22 +97,51 @@ class Watcher:
                     newest = self._reader.newest_log_id(room_id)
                     if newest is not None:
                         self._seen[room_id] = newest
-                    continue
-                arrived = self._reader.messages(
-                    room_id, limit=_CATCH_UP_LIMIT, after_id=since
-                )
+                    arrived = []
+                else:
+                    arrived = self._catch_up(room_id, since)
             except _ROOM_FAILURES:
                 # Following must outlive any single room: a conversation can
                 # lose its key, be closed in the client, or have its database
                 # removed entirely while the loop is running, and none of that
                 # is a reason to stop reporting the other rooms.
+                #
+                # The fingerprint is deliberately left where it was.  Recording
+                # it here would let a failed read stand in for a successful
+                # one, and the next poll would find the log unchanged and skip
+                # the room — so whatever arrived during the failure would never
+                # be reported at all.
                 continue
+
+            self._prints[room_id] = current
             if arrived:
                 self._seen[room_id] = max(message.id for message in arrived)
                 fresh.extend(arrived)
 
         fresh.sort(key=lambda message: (message.sent_at or 0, message.id))
         return fresh
+
+    def _catch_up(self, room_id: int, since: int) -> list[Message]:
+        """Collect every message after *since*, a page at a time.
+
+        One page is not enough.  The client backfills from the server after a
+        reconnection, so a room can gain far more than a page between two
+        polls, and a single read would report the first page and leave the
+        cursor to skip the rest for good.
+        """
+        collected: list[Message] = []
+        cursor = since
+        while True:
+            page = self._reader.messages(
+                room_id, limit=_CATCH_UP_LIMIT, after_id=cursor
+            )
+            if not page:
+                break
+            collected.extend(page)
+            cursor = page[-1].id
+            if len(page) < _CATCH_UP_LIMIT:
+                break
+        return collected
 
     def follow(self) -> Iterator[Message]:
         """Yield new messages forever, sleeping between passes."""
