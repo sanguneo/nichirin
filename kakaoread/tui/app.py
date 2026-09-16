@@ -51,7 +51,7 @@ KEY_WAIT_SECONDS = 0.12
 """How long a frame waits for input before checking for new messages."""
 UNCERTAIN_AFTER_SECONDS = 30.0
 """How long a send may go unseen before the mark stops claiming to be sure."""
-REFRESH_SECONDS = 0.35
+REFRESH_SECONDS = 0.15
 """How often to look for arrivals. A poll that finds nothing costs one stat."""
 TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
