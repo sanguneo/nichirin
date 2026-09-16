@@ -340,7 +340,10 @@ class SnapshotCache:
                 image = self._update_wal_with_retry(
                     cached.base_image, database, geometry
                 )
-                connection = open_image(image, database.name)
+                # Incremental WAL updates only overlay checksummed frames on
+                # top of an already verified base database image; connect
+                # directly without paying another full-database integrity check.
+                connection = _connect(image)
                 self._store(
                     database,
                     Fingerprint.of(database),
