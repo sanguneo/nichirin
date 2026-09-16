@@ -27,7 +27,7 @@ from kakaoread.tui.console import (
 from kakaoread.tui.layout import display_width, strip_ansi
 from kakaoread.tui.theme import Theme
 
-from tests.fixtures import DIRECT_ROOM, PEER_ID, build_reader
+from tests.fixtures import DIRECT_ROOM, GROUP_ROOM, PEER_ID, build_reader
 
 COLUMNS = 40
 ROWS = 8
@@ -90,6 +90,64 @@ class WrapModeTests(unittest.TestCase):
         self.assertFalse(wanted & 0x0002, "the console may still wrap at the last column")
         self.assertTrue(wanted & 0x0004, "escape sequences stopped being processed")
         self.assertTrue(wanted & 0x0001)
+
+
+class AddressedLinesTests(unittest.TestCase):
+    """A quote above a reply, and a mark that costs the head no columns.
+
+    Anything drawn left of a message moves the whole conversation sideways, so
+    the mention mark lives in the gap the head already had between the time
+    and the name. A mark with a column of its own would be invisible in a
+    screenshot and obvious only as text landing one column late.
+    """
+
+    def setUp(self) -> None:
+        self.reader = build_reader()
+        self.addCleanup(self.reader.close)
+        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
+        self.app.load_rooms()
+        self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM))
+
+    def transcript(self, width: int = 60) -> list[str]:
+        return [strip_ansi(line) for line in self.app._transcript_lines(width)]
+
+    def test_a_reply_shows_what_it_answers_on_the_line_above_it(self) -> None:
+        lines = self.transcript()
+        answer = next(index for index, line in enumerate(lines) if "그거 맞아요" in line)
+        self.assertIn("나: 내가 남긴 줄", lines[answer - 1])
+
+    def test_the_replier_is_named_beside_what_they_answered(self) -> None:
+        """One head, the way the client stacks it: who, then what, then their words."""
+        lines = self.transcript()
+        quoted = next(line for line in lines if "나: 내가 남긴 줄" in line)
+        ordinary = next(line for line in lines if "group hello" in line)
+        self.assertIn("Friend", quoted)
+        self.assertEqual(quoted.index("Friend"), ordinary.index("Friend"))
+        self.assertEqual(quoted.index("나:"), ordinary.index("group hello"))
+
+    def test_the_mark_belongs_to_the_answer_and_not_to_the_quotation(self) -> None:
+        lines = self.transcript()
+        answer = next(index for index, line in enumerate(lines) if "그거 맞아요" in line)
+        self.assertNotIn("↳", lines[answer - 1])
+        self.assertTrue(lines[answer].endswith("↳그거 맞아요"), lines[answer])
+
+    def test_a_mention_of_the_user_is_marked(self) -> None:
+        marked = next(line for line in self.transcript() if "이것 좀 봐줘" in line)
+        self.assertIn("@", marked.split("Peer")[0])
+
+    def test_neither_mark_moves_the_conversation_sideways(self) -> None:
+        lines = self.transcript()
+        ordinary = next(line for line in lines if "group hello" in line)
+        mentioned = next(line for line in lines if "이것 좀 봐줘" in line)
+        answered = next(line for line in lines if "그거 맞아요" in line)
+        self.assertEqual(mentioned.index("Peer"), ordinary.index("Friend"))
+        self.assertEqual(answered.index("그거 맞아요"), ordinary.index("group hello"))
+
+    def test_the_quoted_line_is_cut_to_the_screen_like_any_other(self) -> None:
+        for width in (24, 40, 60):
+            with self.subTest(width=width):
+                for line in self.app._transcript_lines(width):
+                    self.assertLessEqual(display_width(line), width)
 
 
 class EveryViewFitsTests(unittest.TestCase):

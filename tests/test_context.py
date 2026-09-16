@@ -29,7 +29,10 @@ class SuccessTests(unittest.TestCase):
         with build_reader() as reader:
             answer = read_context(reader, DIRECT_ROOM)
         self.assertTrue(answer["ok"])
-        self.assertEqual(set(answer), {"ok", "room", "messages", "lastMessageFromMe", "coverage"})
+        self.assertEqual(
+            set(answer),
+            {"ok", "room", "messages", "lastMessageFromMe", "coverage", "attention"},
+        )
         self.assertEqual(answer["room"]["id"], str(DIRECT_ROOM))
 
     def test_messages_are_oldest_first(self) -> None:
@@ -152,7 +155,42 @@ class GroupTests(unittest.TestCase):
             answer = read_context(reader, GROUP_ROOM)
         self.assertTrue(answer["ok"])
         self.assertEqual(answer["room"]["kind"], "group")
-        self.assertEqual(len(answer["messages"]), 1)
+        self.assertEqual(len(answer["messages"]), 5)
+
+
+class AttentionTests(unittest.TestCase):
+    """Which messages were addressed at the user, which the text cannot say."""
+
+    def attention(self, room_id: int = GROUP_ROOM) -> dict:
+        with build_reader() as reader:
+            return read_context(reader, room_id)["attention"]
+
+    def test_names_the_message_that_mentioned_the_user(self) -> None:
+        self.assertEqual(self.attention()["mentionsMe"], ["6003"])
+
+    def test_names_the_message_that_replied_to_the_user(self) -> None:
+        self.assertEqual(self.attention()["repliesToMe"], ["6004"])
+
+    def test_an_everyone_mention_is_reported_apart_from_a_named_one(self) -> None:
+        """@전체 reaches the user without being addressed at them."""
+        found = self.attention()
+        self.assertEqual(found["mentionsEveryone"], ["6005"])
+        self.assertNotIn("6005", found["mentionsMe"])
+
+    def test_a_conversation_nobody_was_addressed_in_reports_nothing(self) -> None:
+        self.assertEqual(
+            self.attention(DIRECT_ROOM),
+            {"mentionsMe": [], "repliesToMe": [], "mentionsEveryone": []},
+        )
+
+    def test_the_quoted_message_travels_with_the_reply(self) -> None:
+        with build_reader() as reader:
+            messages = read_context(reader, GROUP_ROOM)["messages"]
+        reply = next(message for message in messages if message["id"] == "6004")
+        self.assertEqual(reply["kind"], "reply")
+        self.assertEqual(reply["replyTo"]["messageId"], "6002")
+        self.assertEqual(reply["replyTo"]["text"], "내가 남긴 줄")
+        self.assertIs(reply["repliesToMe"], True)
 
 
 if __name__ == "__main__":

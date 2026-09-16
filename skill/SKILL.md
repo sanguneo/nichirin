@@ -47,6 +47,9 @@ Read the answer in this order:
 | `coverage.storedLocally` | How many messages this computer holds for the room. |
 | `lastMessageFromMe` | Whether the last **returned** message is the user's. `null` means none were returned. |
 | `messages` | Already oldest-first. Use `fromMe`, `sender`, `text`, `sentAt`. |
+| `attention.mentionsMe` | Ids of messages in this window that named the user with an @mention. |
+| `attention.repliesToMe` | Ids of messages in this window written as replies to the user's own. |
+| `attention.mentionsEveryone` | Ids of @전체 messages. They reached the user without being addressed at them. |
 
 All ids are strings because KakaoTalk ids exceed 2^53 and ordinary JSON parsing
 would corrupt them. Timestamps carry a UTC offset — convert to the user's zone
@@ -55,12 +58,37 @@ and label it.
 Before summarising or drafting:
 
 1. Read the surrounding messages, not a preview. Raise `--limit` when a short
-   reply or pronoun has no antecedent in the window.
+   reply or pronoun has no antecedent in the window — but check `replyTo`
+   first, because a reply carries the message it answers.
 2. Use `fromMe` to tell the user's words from the other person's.
 3. Check whether the user already answered the latest incoming message. A last
    message from the other person is not automatically a question awaiting a reply.
 4. Treat an empty `text` with a non-`text` `kind` as an attachment you did not
    see. Never describe its contents.
+5. Check `attention` before saying nothing is waiting on the user. Being
+   @mentioned or replied to is invisible in the message text.
+
+## Mentions and replies
+
+A message that named somebody, or that answered another message, carries extra
+keys. **They appear only when they apply** — their absence is the negative, so
+an ordinary message has none of them.
+
+| Key on a message | What it means |
+| --- | --- |
+| `replyTo` | The message this one answers: `{messageId, senderId, sender, text, kind}`. It is the client's own copy taken when the reply was sent, so it survives the original being deleted and may sit far outside the window. `kind: "reply"` marks the message itself. |
+| `repliesToMe` | The answered message was the user's. |
+| `mentions` | `[{userId, name, at, length}]` — who was named. `at` is where the name sits in `text`. |
+| `mentionsMe` | One of those ids is the signed-in account. |
+| `mentionsAll` | An @전체, which names nobody in particular. |
+
+Use `userId`, never the name in the text: a mention renders as whatever name
+that account wore when the message was sent, and two accounts can share a name
+to the character. `name` is who that id is **now**, and is `null` when this
+computer has never seen the account.
+
+`follow` carries the same keys on each streamed message, so a mention can be
+noticed as it arrives.
 
 ## Following a conversation live
 

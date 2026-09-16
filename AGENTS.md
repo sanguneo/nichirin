@@ -115,6 +115,31 @@ Taken from a live client, not guessed.
 - Local history is substantial: one observed room held 445,714 messages. Do not
   assume only a handful of messages are cached.
 
+### Being addressed: mentions and replies
+
+Both live in `attachement`, which was previously read and thrown away. Measured
+on a live client, newest 4,000 rows of each readable room.
+
+- **A reply is `type = 26`** and its attachment carries `src_logId`,
+  `src_userId`, `src_type`, `src_message` and `src_linkId` — all five on all
+  108 replies seen, with `src_message` non-empty on every one. That text is the
+  client's own copy taken when the reply was sent, so it survives the original
+  being deleted and may disagree with what the original row says now.
+- **Parsing is keyed on `src_logId`, not on the type.** What makes a message a
+  reply here is that it recorded a source; reading the type instead would drop
+  every quote the moment the client numbers one differently.
+- **A mention is an ordinary `type = 1` row** whose attachment holds
+  `mentions`, each entry exactly `{"at": [offset], "len": n, "user_id": id}` —
+  29 observed, every id an integer, every `at` a one-element list. `@전체` is
+  the separate key `all_mention`, written as an **object** (`{"at": 1}`, 15
+  observed) rather than a flag, so its presence is what is read.
+- **The text carries only a name, so the id is the mention.** Same reason the
+  sender column cannot be trusted below: the name in the message is what that
+  account wore when it was sent, and anyone can wear it.
+- Frequencies, per room over 4,000 rows: replies 51, 25 and 4; mention rows 10,
+  15 and 1. Rare enough that a window of 40 usually has none, which is why
+  these keys are omitted when absent rather than rendered as empty.
+
 ### Names, and why they cannot be trusted retroactively
 
 - **Every name this tool shows is the name that user carries *now*.**
@@ -174,7 +199,7 @@ Taken from a live client, not guessed.
   over a whole screen returns characters, not cells, so one wide character
   shifts every row after it and a correct frame looks smeared. Read one row at a
   time. Every glyph the interface draws was checked against the cursor's own
-  advance: box characters, `❯`, `•`, `◉`, `↑↓`, `✓` one column, Hangul two.
+  advance: box characters, `❯`, `•`, `◉`, `↑↓`, `✓`, `↳` one column, Hangul two.
 - **The composer is an editor, not an append-only line.** `ChatState.caret` is an
   index into the draft, and anything drawn left of the text belongs to the
   caret's column too. Home and End move the caret while something is written and
@@ -238,6 +263,16 @@ Taken from a live client, not guessed.
   per key at the default 400-message window and 142 ms at 800, which is what
   made input stutter; cached, a keystroke costs 0.17 ms. Anything that changes
   a loaded message must change that key or the screen will lie.
+- **A reply is stacked the way the client stacks it, and neither mark costs a
+  column.** The replier is named once, on the row that carries the quotation:
+  time, name, then the one line they were answering, cut because the message
+  it quotes is routinely far outside the window. Their own words go on the
+  next row, where the `↳` occupies the single column that already separated
+  the name from the text — the mark belongs to the answer, not to the quote.
+  The mention mark uses the two-column gap the head already had between the
+  time and the name. Both are width-neutral on purpose: anything drawn left of
+  a message moves the whole conversation sideways, which is invisible in a
+  screenshot and shows up only as text landing one column late.
 - **A send must not re-read the catalog.** `reader.rooms()` measured 3.0 s
   when the snapshot had gone stale, and sending a message is exactly what
   makes it stale, so the duplicate-title census comes from the room list the
@@ -304,6 +339,11 @@ Taken from a live client, not guessed.
   client instead of failing for the same reason.
 - Ambiguity is refused with candidates attached, never resolved by picking the
   first match.
+- **A key that reports being addressed appears only when it applies.**
+  `replyTo`, `mentions`, `mentionsAll`, `mentionsMe` and `repliesToMe` are
+  absent on an ordinary message rather than rendered empty, because a window is
+  forty messages and denying five things per line triples the answer. Their
+  absence is the negative; `context` also summarises them once in `attention`.
 
 ## Friends and sending
 

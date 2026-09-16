@@ -9,9 +9,10 @@ history was consulted.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 from .errors import ErrorCode, KakaoReadError, success
+from .model import Message
 from .reader import Reader
 
 DEFAULT_LIMIT = 40
@@ -55,6 +56,7 @@ def read_context(
             "room": room.as_json(),
             "messages": [message.as_json() for message in messages],
             "lastMessageFromMe": messages[-1].from_me if messages else None,
+            "attention": _attention(messages),
             "coverage": {
                 "localOnly": True,
                 "reachesLatestKnown": reaches_latest,
@@ -65,6 +67,26 @@ def read_context(
             },
         }
     )
+
+
+def _attention(messages: Sequence[Message]) -> dict[str, Any]:
+    """Say which messages in this window were addressed at the user.
+
+    A reply and an @name are the two ways somebody asks for an answer, and
+    neither is visible in the text: the quoted message lives in the reply's
+    attachment, and a mention reads as an ordinary name that anybody in the
+    room could also be wearing.  Messages the user sent are left out, so this
+    is a list of things waiting on them rather than of things they did.
+
+    Ids only.  The messages themselves are already in the answer, and pointing
+    at them twice invites a summary written from the pointer.
+    """
+    incoming = [message for message in messages if not message.from_me]
+    return {
+        "mentionsMe": [str(message.id) for message in incoming if message.mentions_me],
+        "repliesToMe": [str(message.id) for message in incoming if message.replies_to_me],
+        "mentionsEveryone": [str(message.id) for message in incoming if message.mentions_all],
+    }
 
 
 def _resolve(reader: Reader, target: Union[int, str]):

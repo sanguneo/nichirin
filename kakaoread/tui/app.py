@@ -575,17 +575,53 @@ class App:
 
             head = (
                 self.theme.fg("dim", stamp)
-                + "  "
+                + self._mention_mark(message)
                 + self.theme.fg(self.palette.name_colour(speaker), pad_to_width(name, name_width))
                 + " "
             )
             body_colour = self.palette.body_colour(speaker)
-            lines.append(truncate_to_width(head + self.theme.fg(body_colour, wrapped[0]), width))
+            opening = head
+            if message.reply is not None:
+                # Named once, above what they were answering — the way the
+                # client itself stacks a reply. Their own words come next,
+                # with the mark in the column the head was using anyway.
+                lines.append(truncate_to_width(head + self._quoted(message, body_width), width))
+                opening = " " * (indent - 1) + self.theme.fg("dim", "↳")
+            lines.append(truncate_to_width(opening + self.theme.fg(body_colour, wrapped[0]), width))
             for continuation in wrapped[1:]:
                 lines.append(
                     truncate_to_width(" " * indent + self.theme.fg(body_colour, continuation), width)
                 )
         return lines
+
+    def _quoted(self, message: Message, body_width: int) -> str:
+        """Render what a reply is answering, to sit beside the replier's name.
+
+        One line, collapsed and cut. It is the client's own copy, so it is
+        here even when the original is far above the window or has since been
+        deleted — but it is context for the answer below it, and letting it
+        wrap would bury what was actually said.
+        """
+        quote = message.reply
+        assert quote is not None
+        who = "나" if message.replies_to_me else (quote.sender or f"User {quote.sender_id}")
+        said = " ".join(quote.text.split())
+        if not said:
+            said = f"[{message_kind(quote.type)}]" if quote.type is not None else "[원문 없음]"
+        return self.theme.fg("dim", truncate_to_width(f"{who}: {said}", body_width, ELLIPSIS))
+
+    def _mention_mark(self, message: Message) -> str:
+        """Mark a message that named somebody, in the head's own two columns.
+
+        The gap between the time and the name is already there, so a marked
+        line starts its text exactly where every other line does; a mark with
+        a column of its own would move the whole conversation sideways.
+        """
+        if message.mentions_me:
+            return " " + self.theme.fg("warning", "@")
+        if message.mentions_all:
+            return " " + self.theme.fg("muted", "@")
+        return "  "
 
     def _digest_lines(self, width: int) -> list[str]:
         """Render slices the way OmO renders a reflection: a padded tinted box."""

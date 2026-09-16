@@ -11,6 +11,7 @@ tests about the part that decides what an agent is told.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -60,6 +61,26 @@ CREATE TABLE chatLogs (
     attachement TEXT, sendAt INTEGER, deleted INTEGER
 );
 """
+
+REPLY_TYPE = 26
+"""The client's type for a message written against another one."""
+
+MENTION_OF_OWNER = json.dumps({"mentions": [{"at": [0], "len": 12, "user_id": OWN_ID}]})
+"""A mention as the client writes it: an id and where the name sits."""
+
+MENTION_OF_EVERYONE = json.dumps({"all_mention": {"at": 0}})
+"""An @전체, which records no ids at all — only that the token was used."""
+
+REPLY_TO_OWNER = json.dumps(
+    {
+        "src_logId": 6002,
+        "src_userId": OWN_ID,
+        "src_type": 1,
+        "src_message": "내가 남긴 줄",
+        "src_linkId": 0,
+    }
+)
+"""A reply carrying its own copy of the message it answers."""
 
 
 def _connect(script: str, rows: Optional[dict[str, list[tuple]]] = None) -> sqlite3.Connection:
@@ -122,7 +143,7 @@ def build_profile(
 
     rooms = [
         (DIRECT_ROOM, "DirectChat", "", 0, 2, 0, 5003, 3000, PEER_ID),
-        (GROUP_ROOM, "MultiChat", "", 0, 3, 2, 6001, 2000, 0),
+        (GROUP_ROOM, "MultiChat", "", 0, 3, 2, 6005, 2000, 0),
         (UNREADABLE_ROOM, "MultiChat", "Named Group", 1, 4, 0, 7001, 1500, 0),
         (HUGE_ROOM, "DirectChat", "", 0, 2, 0, HUGE_ID, 1000, HUGE_ID),
     ]
@@ -152,9 +173,19 @@ def build_profile(
             (5003, PEER_ID, 1, "third", None, 1_700_000_300, 0),
         ]
     direct_log = _connect(LOG_SCHEMA, {"chatLogs": messages})
+    # The group is where being addressed happens: a mention names an id the
+    # text does not carry, and a reply carries the message it answers.
     group_log = _connect(
         LOG_SCHEMA,
-        {"chatLogs": [(6001, FRIEND_ID, 1, "group hello", None, 1_700_000_400, 0)]},
+        {
+            "chatLogs": [
+                (6001, FRIEND_ID, 1, "group hello", None, 1_700_000_400, 0),
+                (6002, OWN_ID, 1, "내가 남긴 줄", None, 1_700_000_410, 0),
+                (6003, PEER_ID, 1, "@My Own Name 이것 좀 봐줘", MENTION_OF_OWNER, 1_700_000_420, 0),
+                (6004, FRIEND_ID, REPLY_TYPE, "그거 맞아요", REPLY_TO_OWNER, 1_700_000_430, 0),
+                (6005, PEER_ID, 1, "@전체 공지입니다", MENTION_OF_EVERYONE, 1_700_000_440, 0),
+            ]
+        },
     )
     self_log = _connect(
         LOG_SCHEMA,

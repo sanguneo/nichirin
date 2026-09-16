@@ -438,18 +438,28 @@ class Reader:
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
         log_id, author, type_code, text, attachment, sent_at = tuple(row)
         sender_id = int(author or 0)
-        body = text if isinstance(text, str) and text else ""
-        if not body and isinstance(attachment, str) and attachment:
-            body = ""  # Attachment metadata is not message text and is not invented here.
+        known = self.names()
+        own = self.own_user_id()
+        # The attachment is read for what it records about *other* messages —
+        # who this one named, and which one it answered. It is never turned
+        # into message text, which would show words nobody typed.
+        extra = model.parse_attachment(attachment)
+        mentions = model.mentions_in(extra, known.get)
+        reply = model.quoted_in(extra, known.get)
         return Message(
             id=int(log_id),
             room_id=room_id,
             sender_id=sender_id,
-            sender=self.names().get(sender_id, f"User {sender_id}"),
-            text=body,
+            sender=known.get(sender_id, f"User {sender_id}"),
+            text=text if isinstance(text, str) and text else "",
             type=int(type_code or 0),
             sent_at=None if sent_at is None else int(sent_at),
-            from_me=self.own_user_id() is not None and sender_id == self.own_user_id(),
+            from_me=own is not None and sender_id == own,
+            mentions=mentions,
+            mentions_all=model.everyone_mentioned(extra),
+            mentions_me=own is not None and any(one.user_id == own for one in mentions),
+            reply=reply,
+            replies_to_me=own is not None and reply is not None and reply.sender_id == own,
         )
 
     def search(self, keyword: str, limit: int = 20) -> Iterator[Message]:
