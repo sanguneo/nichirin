@@ -233,10 +233,12 @@ def open_image(image: bytes, label: str) -> sqlite3.Connection:
 
     A wrong key produces plausible-looking bytes rather than an error, so this
     check is what separates "decrypted" from "decrypted correctly".
+    Using quick_check verifies page structure and B-trees without the heavy
+    cost of checking index sort order on large databases.
     """
     connection = _connect(image)
     try:
-        if connection.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+        if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise KakaoReadError(
                 ErrorCode.READ_FAILED, f"{label} did not decrypt to a valid database"
             )

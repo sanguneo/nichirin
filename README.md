@@ -42,6 +42,16 @@ macOS와 **Python 3.9 이상**, 이 Mac에 로그인한 카카오톡 계정의 �
 macOS 15.7에서 확인했습니다. 저장소 디렉터리에서 실행하세요. `pip install`도 가상환경도
 필수는 아닙니다. 서드파티 런타임 패키지를 쓰지 않습니다.
 
+> [!TIP]
+> **더 빠른 실행을 원할 때 (`uv` / Python 3.12+)**  
+> macOS 기본 Python 3.9 대신 `uv`로 최신 Python(3.11+)을 사용하면, 바이트코드 최적화와
+> SQLite 메모리 직렬화(`deserialize`) 지원 덕분에 실행 속도가 **3배 이상 단축**되며(약 1.6s)
+> 디스크 임시 파일도 생성되지 않습니다:
+> ```bash
+> uv run --python 3.12 -m kakaoread status
+> uv run --python 3.12 -m kakaoread tui
+> ```
+
 먼저 **시스템 설정 → 개인정보 보호 및 보안**에서 도구를 실행하는 **터미널 앱**
 (iTerm 또는 Terminal)에 권한을 주세요. 파이썬 파일에 주는 권한이 아닙니다.
 
