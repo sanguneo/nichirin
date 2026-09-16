@@ -277,7 +277,9 @@ class RoomOpener:
         if state == "missing":
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
-                "KakaoTalk's main window is not available, so no room can be opened",
+                "KakaoTalk's main window is not available, so no room can be opened. "
+                "If KakaoTalk is running, ensure its window is on the current desktop/Space "
+                "(or assign KakaoTalk to 'All Desktops' via Dock icon options)",
             )
         if state != "visible" and not self._backend.show_main_window():
             raise KakaoReadError(
@@ -382,7 +384,8 @@ class Sender:
             raise KakaoReadError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
-                "KakaoTalk (double-click it so it pops out) and try again",
+                "KakaoTalk (double-click it so it pops out) and try again. "
+                "If already open, ensure the window is on the current desktop/Space",
             )
         if len(matches) > 1:
             raise KakaoReadError(
