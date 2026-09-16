@@ -88,7 +88,14 @@ class ComposerCase(unittest.TestCase):
         return [strip_ansi(line) for line in self.app.render(WIDTH, HEIGHT)]
 
     def composer(self) -> str:
-        return "\n".join(self.frame()[-5:-2])
+        # Top divider + composer content lines + bottom divider, right above footer
+        lines = self.frame()
+        for i in range(len(lines) - 2, -1, -1):
+            if lines[i].startswith("─"):
+                following = "\n".join(lines[i + 1 : -1])
+                if "❯" in following:
+                    return "\n".join(lines[i:-1])
+        return "\n".join(lines[-4:-1])
 
     def type(self, written: str) -> None:
         for character in written:
@@ -106,16 +113,14 @@ class ComposerCase(unittest.TestCase):
         self.app.flush_pending()
 
 class ComposerTests(ComposerCase):
-    def test_an_open_room_shows_a_bordered_message_box(self) -> None:
+    def test_an_open_room_shows_an_open_input_with_top_divider(self) -> None:
         box = self.composer()
         self.assertIn("❯", box)
-        for corner in ("╭", "╮", "╰", "╯"):
-            self.assertIn(corner, box)
+        self.assertIn("─", box)
 
-    def test_the_box_is_closed_on_both_sides(self) -> None:
+    def test_the_box_is_left_open_omo_style(self) -> None:
         middle = self.composer().split("\n")[1]
-        self.assertTrue(middle.startswith("│"), middle[:12])
-        self.assertTrue(middle.endswith("│"), middle[-12:])
+        self.assertTrue(middle.startswith("❯ ") or middle.startswith("❯"), middle[:12])
 
     def test_the_room_list_has_no_message_box(self) -> None:
         self.app.chat = None
@@ -421,13 +426,19 @@ class SentMarkTests(ComposerCase):
         self.assertIn("*", middle)
         self.assertGreater(middle.index("*"), middle.index("❯"))
         # Columns, not string indexes: the placeholder is Hangul.
-        self.assertEqual(display_width(middle[: middle.index("*")]), WIDTH - 2)
+        # Open omo-style has no right border, so mark sits at WIDTH-1.
+        self.assertEqual(display_width(middle[: middle.index("*")]), WIDTH - 1)
 
     def test_the_prompt_does_not_move_when_a_mark_appears(self) -> None:
-        # The first attempt used emoji and shifted the prompt on every send.
-        before = self.composer().index("❯")
+        # Open style: prompt stays at column 0 of the first content line.
+        def prompt_col() -> int:
+            for line in self.composer().split("\n"):
+                if "❯" in line:
+                    return line.index("❯")
+            return -1
+        before = prompt_col()
         self.send()
-        self.assertEqual(self.composer().index("❯"), before)
+        self.assertEqual(prompt_col(), before)
 
     def test_the_mark_becomes_a_tick_once_the_client_writes_it(self) -> None:
         self.send("보낸 말")
