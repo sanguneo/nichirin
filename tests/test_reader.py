@@ -6,6 +6,7 @@ import unittest
 
 from kakaoread.errors import ErrorCode, KakaoReadError
 from kakaoread.keyring import Keyring
+from kakaoread.reader import Reader
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -21,6 +22,7 @@ from tests.fixtures import (
     SELF_ROOM,
     STRANGER_ID,
     NAMED_ROOM,
+    build_profile,
     build_reader,
 )
 
@@ -189,6 +191,45 @@ class MessageTests(unittest.TestCase):
     def test_the_newest_id_is_available_without_reading_bodies(self) -> None:
         with build_reader() as reader:
             self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 5003)
+
+    def test_the_newest_id_ignores_a_deleted_row(self) -> None:
+        """The follow cursor must name a message the reader can actually return.
+
+        Every other query excludes deleted rows, so a newest id that counts
+        one hands the watcher a position it will never read a message at.
+        """
+        cache, keyring = build_profile()
+        reader = Reader(cache=cache, keyring=keyring)
+        self.addCleanup(reader.close)
+        cache.database.execute(
+            "INSERT INTO NTChatMessage VALUES (5004, ?, ?, 1, 'withdrawn', NULL, ?, 1)",
+            (DIRECT_ROOM, PEER_ID, 1_700_000_400),
+        )
+        cache.database.commit()
+
+        self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 5003)
+
+    def test_catching_up_after_a_cursor_starts_at_the_oldest_unseen_message(self) -> None:
+        """A page cut from the newest end would skip everything below it.
+
+        Asked what arrived after a known message, a caller advances its
+        cursor past whatever it is handed, so a page taken from the far end
+        loses the gap between the cursor and that page for good.
+        """
+        cache, keyring = build_profile()
+        reader = Reader(cache=cache, keyring=keyring)
+        self.addCleanup(reader.close)
+        cache.database.executemany(
+            "INSERT INTO NTChatMessage VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
+            [
+                (log_id, DIRECT_ROOM, PEER_ID, f"burst {log_id}", 1_700_001_000 + log_id)
+                for log_id in range(5200, 5210)
+            ],
+        )
+        cache.database.commit()
+
+        found = reader.messages(DIRECT_ROOM, limit=4, after_id=5003)
+        self.assertEqual([message.id for message in found], [5200, 5201, 5202, 5203])
 
     def test_identifiers_past_two_to_the_fifty_third_survive_as_strings(self) -> None:
         with build_reader() as reader:

@@ -117,6 +117,49 @@ class DetectionTests(WatcherTests):
         self.assertTrue(found[0].from_me)
 
 
+class CatchUpTests(WatcherTests):
+    """A burst larger than one catch-up page must still arrive whole.
+
+    The client backfills from the server after a reconnection, so a room can
+    gain thousands of rows between two polls.  Reporting only one page and
+    moving the cursor past the rest loses the difference permanently.
+    """
+
+    def burst(self, room_id: int, first_id: int, count: int) -> list[int]:
+        """Insert *count* messages and move the database once, as a backfill does."""
+        connection = self.cache.database
+        ids = list(range(first_id, first_id + count))
+        connection.executemany(
+            "INSERT INTO NTChatMessage VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
+            [
+                (log_id, room_id, PEER_ID, f"burst {log_id}", 1_800_000_000 + log_id)
+                for log_id in ids
+            ],
+        )
+        connection.commit()
+        touch_log(self.root, room_id, b"backfilled")
+        return ids
+
+    def test_a_burst_larger_than_one_page_is_reported_in_full(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        expected = self.burst(DIRECT_ROOM, 5200, 520)
+
+        found = [message.id for message in watcher.poll()]
+        self.assertEqual(
+            found,
+            expected,
+            "every backfilled message must arrive, oldest first, with none skipped",
+        )
+
+    def test_a_burst_is_not_reported_twice(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.burst(DIRECT_ROOM, 5200, 520)
+        watcher.poll()
+        self.assertEqual(watcher.poll(), [])
+
+
 class CostTests(WatcherTests):
     """An idle conversation must not be decrypted, only stat'ed."""
 
@@ -146,6 +189,34 @@ class CostTests(WatcherTests):
 
 
 class ResilienceTests(WatcherTests):
+    def test_a_room_whose_read_failed_is_tried_again_on_the_next_poll(self) -> None:
+        """A failed read must not consume the change that prompted it.
+
+        One fingerprint covers the whole account here, so recording it after
+        a failure lets that failure stand in for a success: the next poll
+        finds the database unchanged, returns immediately, and what arrived
+        during the failure waits for somebody else to write.
+        """
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.arrive(GROUP_ROOM, 6200, text="arrived while the room was unreadable")
+        real_messages = self.reader.messages
+
+        def read(room_id, **kwargs):
+            if room_id == GROUP_ROOM:
+                raise KakaoReadError(ErrorCode.READ_FAILED, "synthetic query failure")
+            return real_messages(room_id, **kwargs)
+
+        with patch.object(self.reader, "messages", side_effect=read):
+            self.assertEqual(watcher.poll(), [], "an unreadable room reports nothing")
+
+        found = watcher.poll()
+        self.assertEqual(
+            [message.text for message in found],
+            ["arrived while the room was unreadable"],
+            "the arrival must survive the failed pass, with nothing else writing",
+        )
+
     def test_a_room_read_failure_does_not_stop_the_other_rooms(self) -> None:
         watcher = Watcher(self.reader)
         watcher.prime()

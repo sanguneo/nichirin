@@ -583,10 +583,18 @@ class Reader:
         before_id: Optional[int] = None,
         after_id: Optional[int] = None,
     ) -> list[Message]:
-        """Return up to *limit* messages ending at the newest, oldest first.
+        """Return up to *limit* messages, oldest first.
 
         *before_id* pages backwards through history; *after_id* collects what
         has arrived since a known message, which is how following works.
+
+        Which end the limit cuts from is decided by that difference.  Asked
+        for a window, the newest messages are the ones worth having.  Asked
+        for what arrived since a known message, they are not: taking the
+        newest page there skips everything between the cursor and that page,
+        and a caller that then advances its cursor never sees the difference
+        again.  KakaoTalk backfills from the server after a reconnection, so a
+        room really can gain thousands of rows between two polls.
 
         Ordered by ``logId`` rather than by the timestamp: it is the key the
         client indexes, and it is monotonic per room.
@@ -600,14 +608,17 @@ class Reader:
         if after_id is not None:
             conditions.append("logId > ?")
             parameters.append(after_id)
+        forwards = after_id is not None and before_id is None
         sql = (
             f"SELECT {selected} FROM {MESSAGE_TABLE} WHERE {' AND '.join(conditions)} "
-            "ORDER BY logId DESC LIMIT ?"
+            f"ORDER BY logId {'ASC' if forwards else 'DESC'} LIMIT ?"
         )
         parameters.append(limit)
 
         rows = self.connection().execute(sql, parameters).fetchall()
-        return [self._message(room_id, row) for row in reversed(rows)]
+        if not forwards:
+            rows = list(reversed(rows))
+        return [self._message(room_id, row) for row in rows]
 
     def count_messages(self, room_id: int) -> int:
         """Return how many undeleted messages are stored locally for a room."""
@@ -619,10 +630,16 @@ class Reader:
         return int(row[0])
 
     def newest_log_id(self, room_id: int) -> Optional[int]:
-        """Return the newest locally stored message id, without reading bodies."""
-        self._require_table(MESSAGE_TABLE)
+        """Return the newest locally stored message id, without reading bodies.
+
+        Deleted rows are excluded, as they are everywhere else: this id is
+        where following resumes, and one that names a withdrawn message names
+        a position no query will ever return a message at.
+        """
+        _selected, deleted = self._message_query()
         row = self.connection().execute(
-            f"SELECT MAX(logId) FROM {MESSAGE_TABLE} WHERE chatId = ?", (room_id,)
+            f"SELECT MAX(logId) FROM {MESSAGE_TABLE} WHERE chatId = ? AND {deleted}",
+            (room_id,),
         ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
