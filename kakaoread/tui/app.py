@@ -138,6 +138,7 @@ class App:
         """
         self.cursor: Optional[tuple[int, int]] = None
         """Where the terminal caret belongs, so an IME composes in the box."""
+        self._last_width = 80
 
     # -- data ---------------------------------------------------------------
 
@@ -322,6 +323,7 @@ class App:
 
     def render(self, width: int, height: int) -> list[str]:
         self.cursor = None
+        self._last_width = width
         if self.chat is not None:
             return self._render_chat(width, height)
         if self.show_friends:
@@ -505,8 +507,8 @@ class App:
             "",
         ]
 
-        composer, caret = self._composer_lines(width)
-        body_height = max(1, height - len(lines) - len(composer) - 2)
+        composer, (caret_row, caret_col) = self._composer_lines(width)
+        body_height = max(1, height - len(lines) - len(composer) - 1)
         body = (
             self._digest_lines(width)
             if chat.slices
@@ -519,12 +521,11 @@ class App:
             chat.anchor_top = False
         window = _window(body, chat.offset, body_height)
         lines.extend(window)
-        while len(lines) < height - len(composer) - 2:
+        while len(lines) < height - len(composer) - 1:
             lines.append("")
 
-        self.cursor = (len(lines) + 1, caret)
+        self.cursor = (len(lines) + 1 + caret_row, caret_col)
         lines.extend(composer)
-        lines.append(self._status_line(width))
         lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
 
@@ -677,22 +678,10 @@ class App:
         rows.append(boxed(""))
         return rows
 
-    def _composer_lines(self, width: int) -> tuple[list[str], int]:
-        """Draw the message box: closed on both sides, marked on the right.
-
-        Nothing is drawn to stand in for the cursor. The terminal's own caret
-        is parked at the end of the draft, and a block drawn beside it read as
-        a second cursor in the wrong place. The mark for the last message sits
-        against the right border, where it cannot push the prompt or the text
-        sideways — and the caret's column counts everything left of the text,
-        which is what it failed to do when the mark first appeared.
-        """
+    def _composer_lines(self, width: int) -> tuple[list[str], tuple[int, int]]:
+        """Draw the message box: OmO-style open input with a top divider line."""
         chat = self.chat
         assert chat is not None
-        inner = max(8, width - 2)
-        edge = self.theme.fg("borderMuted", "│")
-        top = self.theme.fg("borderMuted", "╭" + "─" * inner + "╮")
-        bottom = self.theme.fg("borderMuted", "╰" + "─" * inner + "╯")
 
         if chat.delivered:
             mark = self.theme.fg("success", "✓")
@@ -704,27 +693,110 @@ class App:
             # Long enough that "queued" would be a claim rather than a fact.
             mark = self.theme.fg("warning", "?")
 
-        prompt = self.theme.fg("accent", "❯ ")
-        # A line break has no room of its own here, so it is shown as a mark
-        # and sent as the newline it really is.
-        shown = chat.draft.replace("\n", NEWLINE_MARK)
-        written, column = window_around(shown, chat.caret, max(1, inner - 6))
-        body = " " + prompt + written
-        if not chat.draft:
-            body += self.theme.fg("dim", "메시지 입력 후 enter")
-        body = pad_to_width(truncate_to_width(body, inner - 2), inner - 2)
-        middle = edge + body + " " + mark + edge
-        caret = min(width - 1, 4 + column)
-        return [top, middle, bottom], caret
+        content_width = max(6, width - 4)
+        paragraphs = chat.draft.split("\n")
+        wrapped_rows: list[str] = []
+        caret_row = 0
+        caret_col = 0
+        char_offset = 0
+
+        for p_idx, p in enumerate(paragraphs):
+            sub_lines = wrap_to_width(p, content_width) if p else [""]
+            for s_idx, s_line in enumerate(sub_lines):
+                line_chars = len(s_line)
+                if char_offset <= chat.caret <= char_offset + line_chars or (
+                    p_idx == len(paragraphs) - 1
+                    and s_idx == len(sub_lines) - 1
+                    and chat.caret >= char_offset
+                ):
+                    caret_row = len(wrapped_rows)
+                    caret_col = display_width(s_line[: max(0, chat.caret - char_offset)])
+                wrapped_rows.append(s_line)
+                char_offset += line_chars
+                if s_idx < len(sub_lines) - 1 and p[char_offset : char_offset + 1] == " ":
+                    char_offset += 1
+            char_offset += 1
+
+        max_visible = 6
+        start_row = 0
+        if len(wrapped_rows) > max_visible:
+            start_row = max(0, min(caret_row - max_visible // 2, len(wrapped_rows) - max_visible))
+            visible_rows = wrapped_rows[start_row : start_row + max_visible]
+            caret_row = caret_row - start_row
+        else:
+            visible_rows = wrapped_rows
+
+        top_divider = self._status_divider(width)
+
+        content_lines: list[str] = []
+        for idx, row_text in enumerate(visible_rows):
+            prompt = self.theme.fg("accent", "❯ ") if (start_row + idx == 0) else "  "
+            body = prompt + row_text
+            if not chat.draft and idx == 0:
+                body += self.theme.fg("dim", "메시지 입력 (Enter 전송 · Shift+Enter 줄바꿈)")
+            m_mark = (" " + mark) if (idx == len(visible_rows) - 1 and mark != " ") else ""
+            row_width = max(1, width - display_width(m_mark))
+            line = pad_to_width(truncate_to_width(body, row_width), row_width) + m_mark
+            content_lines.append(line)
+
+        caret_cursor = (caret_row, min(width - 1, 2 + caret_col))
+        bottom_divider = self.theme.fg("borderMuted", "─" * width)
+        return [top_divider, *content_lines, bottom_divider], caret_cursor
+
+    def _status_divider(self, width: int) -> str:
+        """Draw the OmO-style active status divider right above the input."""
+        chat = self.chat
+        if chat is not None and chat.outbox is not None and not chat.delivered:
+            elapsed = f"{self._clock() - chat.outbox_at:.1f}s"
+            bullet = "•"
+            left = f"── {bullet} 전송 중… ({elapsed}) "
+            fill = max(0, width - display_width(left))
+            content = (
+                self.theme.fg("accent", "── ")
+                + self.theme.fg("warning", bullet)
+                + self.theme.fg("accent", " 전송 중… ")
+                + self.theme.fg("dim", f"({elapsed}) ")
+                + self.theme.fg("borderMuted", "─" * fill)
+            )
+            return truncate_to_width(content, width)
+        if chat is not None and chat.notice:
+            bullet = "•"
+            notice_text = truncate_to_width(chat.notice, max(1, width - 8))
+            left = f"── {bullet} {notice_text} "
+            fill = max(0, width - display_width(left))
+            content = (
+                self.theme.fg("accent", "── ")
+                + self.theme.fg("warning", bullet)
+                + self.theme.fg("text", f" {notice_text} ")
+                + self.theme.fg("borderMuted", "─" * fill)
+            )
+            return truncate_to_width(content, width)
+        if chat is not None and chat.unseen:
+            bullet = "↓"
+            text = f" 새 메시지 {chat.unseen}개 (end 키로 이동) "
+            left = f"── {bullet}{text}"
+            fill = max(0, width - display_width(left))
+            content = (
+                self.theme.fg("accent", "── ")
+                + self.theme.fg("accent", bullet)
+                + self.theme.fg("accent", text)
+                + self.theme.fg("borderMuted", "─" * fill)
+            )
+            return truncate_to_width(content, width)
+        return self.theme.fg("borderMuted", "─" * width)
 
     def _status_line(self, width: int) -> str:
         chat = self.chat
+        if chat is not None and chat.outbox is not None and not chat.delivered:
+            return self._status_divider(width)
+        if chat is not None and chat.notice:
+            return self._status_divider(width)
         if chat is not None and chat.unseen:
-            arrivals = self.theme.fg("accent", f"↓ 새 메시지 {chat.unseen}개")
-            hint = self.theme.fg("muted", "  (end 키로 맨 아래)")
-            return truncate_to_width(arrivals + hint, width)
-        message = (chat.notice if chat else "") or self.status
-        return truncate_to_width(self.theme.fg("muted", message), width) if message else ""
+            return self._status_divider(width)
+        message = self.status
+        if message:
+            return truncate_to_width(self.theme.fg("muted", message), width)
+        return ""
 
     def _footer_rooms(self, width: int) -> str:
         # On macOS one derived key opens every room, so there is no per-room
@@ -887,9 +959,11 @@ class App:
             else:
                 self._leave_room(chat)
         elif kind == Key.UP:
-            chat.offset += 1
+            if not self._move_caret_vertical(chat, -1):
+                chat.offset += 1
         elif kind == Key.DOWN:
-            chat.offset = max(0, chat.offset - 1)
+            if not self._move_caret_vertical(chat, 1):
+                chat.offset = max(0, chat.offset - 1)
         elif kind == Key.PAGE_UP:
             chat.offset += 10
         elif kind == Key.PAGE_DOWN:
@@ -908,6 +982,56 @@ class App:
                 chat.offset = 0
         if chat.offset == 0:
             chat.unseen = 0
+
+    def _visual_rows(self, chat: ChatState, width: int) -> tuple[list[str], list[int], int]:
+        """Split draft into visual rows with draft offsets and caret row."""
+        content_width = max(6, width - 4)
+        paragraphs = chat.draft.split("\n")
+        wrapped_rows: list[str] = []
+        row_starts: list[int] = []
+        caret_row = 0
+        char_offset = 0
+        for p_idx, p in enumerate(paragraphs):
+            sub_lines = wrap_to_width(p, content_width) if p else [""]
+            for s_idx, s_line in enumerate(sub_lines):
+                line_chars = len(s_line)
+                row_starts.append(char_offset)
+                if char_offset <= chat.caret <= char_offset + line_chars or (
+                    p_idx == len(paragraphs) - 1
+                    and s_idx == len(sub_lines) - 1
+                    and chat.caret >= char_offset
+                ):
+                    caret_row = len(wrapped_rows)
+                wrapped_rows.append(s_line)
+                char_offset += line_chars
+                if s_idx < len(sub_lines) - 1 and p[char_offset : char_offset + 1] == " ":
+                    char_offset += 1
+            char_offset += 1
+        return wrapped_rows, row_starts, caret_row
+
+    def _move_caret_vertical(self, chat: ChatState, direction: int) -> bool:
+        """Move caret vertically between visual rows in a multiline draft.
+
+        Returns True if moved within draft, False if caret is already at boundary.
+        """
+        width = getattr(self, "_last_width", 80)
+        wrapped_rows, row_starts, caret_row = self._visual_rows(chat, width)
+        if len(wrapped_rows) <= 1:
+            return False
+        curr_col = chat.caret - row_starts[caret_row] if row_starts else 0
+        if direction == -1:  # UP
+            if caret_row > 0:
+                target = caret_row - 1
+                chat.caret = row_starts[target] + min(curr_col, len(wrapped_rows[target]))
+                return True
+            return False
+        if direction == 1:  # DOWN
+            if caret_row < len(wrapped_rows) - 1:
+                target = caret_row + 1
+                chat.caret = row_starts[target] + min(curr_col, len(wrapped_rows[target]))
+                return True
+            return False
+        return False
 
     def _leave_room(self, chat: ChatState) -> None:
         """Close the conversation, keeping whatever was half-written in it."""

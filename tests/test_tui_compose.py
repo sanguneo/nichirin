@@ -163,12 +163,18 @@ class NewlineTests(ComposerCase):
         self.type("둘째 줄")
         self.assertEqual(self.chat.draft, "첫 줄\n둘째 줄")
 
-    def test_the_box_shows_a_newline_as_a_mark_rather_than_a_break(self) -> None:
+    def test_the_box_expands_to_display_multiple_lines(self) -> None:
         self.type("첫 줄")
         self.app.handle("char", "\n")
-        composer = self.composer()
-        self.assertEqual(len(composer.split("\n")), 3, "the box grew a row")
-        self.assertIn("↵", composer)
+        self.type("둘째 줄")
+        frame = self.frame()
+        self.assertIn("첫 줄", "\n".join(frame))
+        self.assertIn("둘째 줄", "\n".join(frame))
+        # Open omo-style layout: top divider, content lines, bottom divider, footer
+        self.assertIn("─", frame[-5])
+        self.assertIn("첫 줄", frame[-4])
+        self.assertIn("둘째 줄", frame[-3])
+        self.assertIn("─", frame[-2])
 
     def test_what_is_sent_carries_the_real_newline(self) -> None:
         self.type("첫 줄")
