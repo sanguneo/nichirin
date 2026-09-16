@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import struct
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from kakaoread import snapshot
 from kakaoread.errors import ErrorCode, KakaoReadError
 from kakaoread.snapshot import (
     ConsistencyError,
@@ -16,6 +18,7 @@ from kakaoread.snapshot import (
     SnapshotCache,
     build_image,
     open_image,
+    update_image_with_wal,
 )
 
 from tests.support import PAGE_SIZE, build_database, encrypt_pages, make_wal, geometry
@@ -129,6 +132,19 @@ class BuildImageTests(_Fixture):
             build_image(self.database, geometry())
         self.assertEqual(raised.exception.code, ErrorCode.READ_FAILED)
 
+    def test_a_commit_that_shrank_the_database_truncates_the_image(self) -> None:
+        """Pages the last commit dropped must not ride along on the image.
+
+        The log decides how long the database is, so a commit that shrank it
+        past the base file has to cut the image down; leaving the old pages
+        attached hands SQLite a file describing rows that no longer exist.
+        """
+        self.assertEqual(len(self.database.read_bytes()), 2 * PAGE_SIZE)
+        self.log.write_bytes(make_wal([(1, 1, self.encrypted(self.pages_b, 1))]))
+
+        image = build_image(self.database, geometry())
+        self.assertEqual(len(image), PAGE_SIZE, "the image must end where the commit does")
+
     def test_detects_a_same_size_rewrite_even_when_stat_reports_no_change(self) -> None:
         """The case a timestamp check would wave through.
 
@@ -181,6 +197,82 @@ class BuildImageTests(_Fixture):
             return real_reconstruct(prepared, number, page, page_size, reserve)
 
         return wrapper
+
+
+class OverlayTests(_Fixture):
+    """The log-only path, which reuses base pages instead of decrypting them."""
+
+    def settled(self) -> tuple[int, int, bytes]:
+        """One committed frame that changes nothing, so a log already exists."""
+        return (2, 2, self.encrypted(self.pages_a, 2))
+
+    def base(self, frames=()):
+        """Decrypt the file against whatever log is beside it, and keep its pages."""
+        self.log.write_bytes(make_wal(list(frames)))
+        base = build_image(self.database, geometry()).base
+        assert base is not None
+        return base
+
+    def test_lays_a_committed_log_over_pages_decrypted_earlier(self) -> None:
+        base = self.base([self.settled()])
+        self.log.write_bytes(
+            make_wal(
+                [
+                    self.settled(),
+                    (1, 0, self.encrypted(self.pages_b, 1)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ]
+            )
+        )
+        connection = open_image(
+            update_image_with_wal(base, self.database, geometry()), "fixture"
+        )
+        self.addCleanup(connection.close)
+        self.assertEqual(
+            [row[0] for row in connection.execute("SELECT body FROM note ORDER BY id")],
+            [body for _id, body in ROWS_B],
+        )
+
+    def test_refuses_to_reuse_pages_once_the_log_starts_a_new_generation(self) -> None:
+        """A checkpoint that restarts the log is what strands the base pages.
+
+        Until then a checkpoint is harmless: it copies pages the log still
+        carries, so the overlay applies them anyway.  A new salt pair says the
+        log was restarted, and from that point the database file may hold
+        pages this image has no record of — which a stat would not show.
+        """
+        base = self.base([self.settled()])
+        self.log.write_bytes(
+            make_wal([(2, 2, self.encrypted(self.pages_b, 2))], salt=(99, 98))
+        )
+
+        with self.assertRaises(ConsistencyError):
+            update_image_with_wal(base, self.database, geometry())
+
+    def test_refuses_to_reuse_pages_once_a_log_appears_where_there_was_none(self) -> None:
+        base = build_image(self.database, geometry()).base
+        assert base is not None
+        self.log.write_bytes(make_wal([(2, 2, self.encrypted(self.pages_b, 2))]))
+
+        with self.assertRaises(ConsistencyError):
+            update_image_with_wal(base, self.database, geometry())
+
+    def test_gives_up_when_the_log_leaves_a_page_undefined(self) -> None:
+        base = self.base([self.settled()])
+        body = self.encrypted(self.pages_b, 2)
+        self.log.write_bytes(make_wal([self.settled(), (2, 0, body), (4, 4, body)]))
+
+        with self.assertRaises(ConsistencyError):
+            update_image_with_wal(base, self.database, geometry())
+
+    def test_a_commit_that_shrank_the_database_truncates_the_overlay(self) -> None:
+        base = self.base([self.settled()])
+        self.log.write_bytes(
+            make_wal([self.settled(), (1, 1, self.encrypted(self.pages_b, 1))])
+        )
+
+        image = update_image_with_wal(base, self.database, geometry())
+        self.assertEqual(len(image), PAGE_SIZE)
 
 
 class OpenImageTests(_Fixture):
@@ -298,6 +390,142 @@ class CacheTests(_Fixture):
         self.cache.close()
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
+
+    def test_an_overlay_sqlite_refuses_is_closed_before_the_fallback(self) -> None:
+        """A rejected overlay must not leave its connection open.
+
+        Nobody else can close it: the cache never learned about it and the
+        caller never saw it.  This is the retry path, so a leak here repeats
+        for as long as the overlay keeps failing.
+        """
+        self.log.write_bytes(make_wal([(2, 2, self.encrypted(self.pages_a, 2))]))
+        self.cache.connect(self.database, geometry())
+
+        before = self.log.stat()
+        self.log.write_bytes(
+            make_wal(
+                [
+                    (2, 2, self.encrypted(self.pages_a, 2)),
+                    (1, 0, self.encrypted(self.pages_b, 1)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ]
+            )
+        )
+        os.utime(self.log, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+        opened: list[sqlite3.Connection] = []
+        real_connect = snapshot._connect
+        real_update = update_image_with_wal
+
+        def recording(image):
+            connection = real_connect(image)
+            opened.append(connection)
+            return connection
+
+        def malformed(base, database, geometry_):
+            image = bytearray(real_update(base, database, geometry_))
+            struct.pack_into(">H", image, 103, 500)  # page 1 claims cells it has not got
+            return bytes(image)
+
+        with (
+            patch("kakaoread.snapshot._connect", side_effect=recording),
+            patch("kakaoread.snapshot.update_image_with_wal", side_effect=malformed),
+        ):
+            second = self.cache.connect(self.database, geometry())
+
+        self.assertEqual(len(opened), 2, "the overlay is tried, then the file is decrypted")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
+        self.assertEqual(
+            [row[0] for row in second.execute("SELECT body FROM note ORDER BY id LIMIT 1")],
+            ["bravo 1"],
+        )
+
+    def test_a_restarted_log_is_decrypted_rather_than_overlaid(self) -> None:
+        """What licenses reusing base pages is the log's generation, not a stat.
+
+        The database file is untouched here, so a stat says the pages are
+        still good.  The log's salt pair says it restarted, which means the
+        file may now hold pages these base pages never saw.
+        """
+        self.log.write_bytes(make_wal([(2, 2, self.encrypted(self.pages_a, 2))]))
+        self.cache.connect(self.database, geometry())
+
+        before = self.log.stat()
+        self.log.write_bytes(
+            make_wal([(2, 2, self.encrypted(self.pages_b, 2))], salt=(99, 98))
+        )
+        os.utime(self.log, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+        decryptions: list[object] = []
+        naps: list[float] = []
+
+        def counting(*args, **kwargs):
+            decryptions.append(args)
+            return build_image(*args, **kwargs)
+
+        with (
+            patch("kakaoread.snapshot.build_image", side_effect=counting),
+            patch("kakaoread.snapshot.time.sleep", naps.append),
+        ):
+            second = self.cache.connect(self.database, geometry())
+
+        self.assertEqual(len(decryptions), 1, "stale base pages must not be overlaid")
+        self.assertEqual(naps, [], "a restart is not transient, so it must not be retried")
+        self.assertEqual(
+            [row[0] for row in second.execute("SELECT body FROM note ORDER BY id LIMIT 1")],
+            ["bravo 1"],
+        )
+
+    def test_base_pages_are_shed_before_a_live_snapshot_is_closed(self) -> None:
+        """Keeping base pages must not cost a caller its connection.
+
+        They are a cache of a cache: losing a set costs the next read one
+        decryption, where closing a snapshot takes a connection out of a
+        caller's hands.  A budget that fits two snapshots but not their base
+        pages as well must therefore give up the pages — which also means the
+        pages have to be charged to that budget in the first place.
+        """
+        self.log.write_bytes(make_wal([(2, 2, self.encrypted(self.pages_a, 2))]))
+        other = self.root / "other.edb"
+        other.write_bytes(encrypt_pages(self.pages_b))
+        held = len(self.database.read_bytes())
+        cache = SnapshotCache(budget_bytes=held * 3)
+        self.addCleanup(cache.close)
+
+        first = cache.connect(self.database, geometry())
+        second = cache.connect(other, geometry())
+        self.assertEqual(
+            first.execute("SELECT COUNT(*) FROM note").fetchone()[0], len(ROWS_A)
+        )
+        self.assertEqual(
+            second.execute("SELECT COUNT(*) FROM note").fetchone()[0], len(ROWS_B)
+        )
+
+        before = self.log.stat()
+        self.log.write_bytes(
+            make_wal(
+                [
+                    (2, 2, self.encrypted(self.pages_a, 2)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ]
+            )
+        )
+        os.utime(self.log, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+        decryptions: list[object] = []
+
+        def counting(*args, **kwargs):
+            decryptions.append(args)
+            return build_image(*args, **kwargs)
+
+        with patch("kakaoread.snapshot.build_image", side_effect=counting):
+            cache.connect(self.database, geometry())
+        self.assertEqual(
+            len(decryptions),
+            1,
+            "the pages that did not fit the budget must have been given up",
+        )
 
     def test_a_small_budget_evicts_the_least_recently_used_snapshot(self) -> None:
         other = self.root / "other.edb"
