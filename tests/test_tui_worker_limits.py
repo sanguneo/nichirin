@@ -102,3 +102,55 @@ class SaturatedInterfaceTests(AppCase):
             self.worker._hand_over(done)
 
         self.assertIsNone(self.worker.watcher)
+
+    def finish_reads_and_cleanup(self) -> None:
+        # Each sentinel is queued after earlier work. The second also follows
+        # cleanup retried after the first batch of replies was handed over.
+        for token in (-1000, -1001):
+            self.app._pump(WIDTH)
+            self.assertTrue(self.worker.submit(Job(ROOMS, token=token)))
+            while True:
+                done = self.worker._done.get(timeout=WAIT)
+                self.worker._hand_over(done)
+                if done.job.token == token:
+                    break
+
+    def assert_arrival_reaches_reopened_room(self) -> None:
+        self.write(9998, "AFTER_REOPEN")
+        self.app.refresh(WIDTH)
+        self.app._pump(WIDTH, timeout=WAIT)
+        self.assertIn("AFTER_REOPEN", self.texts(self.pane))
+
+    def test_repeated_cancel_and_reopen_keeps_the_latest_room_watched(self) -> None:
+        self.app.selected = next(
+            index for index, room in enumerate(self.app.visible_rooms())
+            if room.id == DIRECT_ROOM
+        )
+        gate = self.gate("messages")
+        self.app.handle(Key.ENTER, "")
+        self.assertTrue(gate.arrived())
+
+        for _ in range(2):
+            for kind, text in (("char", "f"), ("char", "f"), (Key.ENTER, "")):
+                self.app._pump(WIDTH)
+                self.app.handle(kind, text)
+        gate.release()
+        self.finish_reads_and_cleanup()
+
+        self.assert_arrival_reaches_reopened_room()
+
+    def test_deferred_release_does_not_cancel_a_new_open_in_flight(self) -> None:
+        self.open(DIRECT_ROOM)
+        room = self.pane.room
+        gate = self.fill_queue()
+        self.app.handle(Key.ESCAPE, "")
+        self.empty_queue(gate)
+
+        opening = self.gate("messages")
+        self.app.open_room(room)
+        self.assertTrue(opening.arrived())
+        self.app._pump(WIDTH)
+        opening.release()
+        self.finish_reads_and_cleanup()
+
+        self.assert_arrival_reaches_reopened_room()

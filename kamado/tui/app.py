@@ -278,7 +278,15 @@ class App:
         """
         self._last_width = width
         self._db.drain(timeout)
+        wanted = {chat.room.id for chat in self.chats} | set(self._opening.values())
         for key, job in tuple(self._cleanup.items()):
+            # A later open supersedes deferred teardown. Retrying it after
+            # that open would silently stop arrivals in the new pane.
+            if (job.kind == UNWATCH and job.room_id in wanted) or (
+                job.kind == RELEASE and wanted
+            ):
+                self._cleanup.pop(key)
+                continue
             if not self._ask(job):
                 break
             self._cleanup.pop(key)
