@@ -85,6 +85,13 @@ Every command pays discovery before it answers, and both halves were slow:
   to the full decryption** in both. The base pages are charged to the cache
   budget too, because an entry that quietly costs twice what the cache believes
   is how a budget stops meaning anything.
+- **The image reaches SQLite as memory, and that is worth a whole Python
+  version.** `_connect` hands the decrypted bytes to `sqlite3`'s `deserialize`,
+  which exists from 3.11; before that the image has to be written to a
+  temporary file and backed up into memory. On the 29.9 MB catalog that is
+  **5.4 ms against 240.9 ms**, per database opened, and a room log is larger
+  than the catalog. It is also the difference between the plaintext never
+  touching the disk and it being written and unlinked.
 - **The decryption is checked with `PRAGMA quick_check`, not `integrity_check`.**
   Both walk every page and every B-tree, which is what a wrong key fails; the
   full check additionally verifies index sort order against the rows indexed,
@@ -615,6 +622,16 @@ Taken:
 
 Not taken, and why:
 
+- **Running through `uv` for speed**, which that README recommends. The
+  speedup it reports is not uv's: macOS ships Python 3.9, so `_connect` there
+  falls back to a temporary file, and `uv run --python 3.12` is simply the
+  easiest way to get a 3.11+ interpreter onto a Mac. Windows ships no Python
+  at all, so whatever is installed is what runs, and the fast path is already
+  taken on anything past 3.10. Measured here, the launcher is a cost rather
+  than a saving: `uv run --no-project python -c pass` 63.9 ms against 29.6 ms,
+  and `status` 313.1 ms against 253.3 ms. With no dependencies to resolve,
+  uv has nothing to win back — the README says "use 3.11+" instead, and names
+  uv only as one way to get it.
 - **Expiring the delivery tick after 1.6 s** (`kamado-cli#27`). There the tick
   is a whole row above the composer, and that row is shared: `_status_line`
   gives a delivery priority over the notice and the unseen count, so a tick
