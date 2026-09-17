@@ -15,6 +15,7 @@ both verified working on this machine.
 python3 -m unittest discover -t . -s tests    # the whole suite
 python3 -m kamado status                      # does anything work right now
 python3 install.py --target <dir> --force     # install the skill
+python3 demo/capture.py --all                 # re-render the demo screenshots
 ```
 
 Discovery needs `-t .` so `tests` stays an importable package.
@@ -138,6 +139,30 @@ keystrokes. Everything below is what it took to get there.
 - **A sent message is confirmed by reading it back**, never by the submit call
   alone; `submitted` means the composer emptied, delivery is proven by a new
   from-me row in the log.
+
+### The demo
+
+- **`demo/mockup.py` keeps its own copy of the schema, and that copy rotted
+  once.** It builds the macOS single-database shape (`NTChatRoom`,
+  `NTChatMessage`, `NTUser`) in memory so it can run standalone. When the
+  runtime moved off the Windows catalog-plus-a-file-per-room layout the
+  generator silently stopped matching it — nothing failed, because nothing ran
+  it, and the committed screenshots were simply older than the code.
+  `tests/test_demo.py` now drives it through the real `App`, so drift is a test
+  failure rather than a stale picture.
+- **A room's kind comes from its shape, so the fixtures must carry the shape.**
+  `_kind_of` reads a `linkId` as an open chat, a `directChatMemberUserId` as a
+  direct chat, and members that are only the account as the memo chat. There is
+  no shape that yields `PlusChat`, which is why the demo has no channel room.
+- **Screenshots are rendered, not photographed.** `demo/capture.py` turns a
+  scene into a page that is itself the picture, frame and all; the Windows
+  original drove a terminal and photographed the window, which is how Windows
+  chrome and Windows fonts ended up in the shots. Alignment is not left to the
+  font — a terminal gives a Korean syllable two cells and a browser gives it
+  whatever the font says, so every character is placed in a box sized by
+  `layout.char_width`, the same function the interface lays itself out with.
+- Shots are committed as **lossless WebP**; the same nine frames as PNG weigh
+  four times as much.
 
 ## Conventions
 

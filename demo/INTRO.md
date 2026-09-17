@@ -48,8 +48,10 @@
   `PERMISSION_REQUIRED`로 설명합니다.
 - **이름은 지금 이름일 뿐입니다.** 현재 `NTUser` 이름과 메시지가 쓰인 시점의 이름은
   다를 수 있습니다. 이름 이력은 멤버십 피드와 도구가 관측한 이름을 합친 것이며 완전하지 않습니다.
-- **보내기는 지정한 창으로만.** Accessibility로 `AXValue`를 쓰고 `CGEventPostToPid`로
-  Return을 보냅니다. 초안은 지우되 `clearedDraft`로 알립니다. `submitted`는 전달 확인이 아닙니다.
+- **보내기는 지정한 창으로만.** Accessibility로 `AXValue`에 글자를 넣고 그 창의 전송
+  버튼을 누릅니다. `AXValue`로 넣은 글자 위의 Return은 클라이언트가 무시하므로, 버튼이
+  실제로 보내는 동작입니다. 초안은 지우되 `clearedDraft`로 알립니다. `submitted`는
+  입력창이 비워졌다는 뜻이지 전달 확인이 아닙니다.
 
 ## 못 하는 것 (먼저 말합니다)
 

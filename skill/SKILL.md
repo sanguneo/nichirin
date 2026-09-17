@@ -210,9 +210,12 @@ New server messages reach the local database only while the client syncs them.
 ## Sending explicitly authorized text
 
 Sending requires a running, signed-in KakaoTalk client and a uniquely targeted
-chat window. macOS Accessibility (`AXUIElement`) finds the composer and sets
-its `AXValue`; `CGEventPostToPid` posts one Return to that process. It does not
-activate the app, take foreground, move the cursor, or touch the clipboard.
+chat window. macOS Accessibility (`AXUIElement`) finds the composer, sets its
+`AXValue`, and presses the window's send button. A Return over AXValue-placed
+text is ignored, because the client does not count the write as typing, so the
+button is what actually sends; posting a Return to the process is the fallback
+for a client that shows no such button. It does not activate the app, take
+foreground, move the cursor, or touch the clipboard.
 
 ```bash
 python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --dry-run "Approved text"
@@ -231,7 +234,7 @@ python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --open "Ap
   previous minimized state is restored. **`--dry-run --open` can still open
   windows**; it is not a side-effect-free check.
 - Space sends **at least two seconds apart**. The caller enforces this interval.
-- `submitted: true` means queue acceptance, never confirmed delivery. Read
+- `submitted: true` means the composer emptied, never confirmed delivery. Read
   `context` or `messages` for a new matching `fromMe` record before saying the
   message was observed locally. That is not a recipient read receipt.
   **Never automatically retry an uncertain send.**
