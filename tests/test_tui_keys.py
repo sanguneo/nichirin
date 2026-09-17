@@ -1,15 +1,16 @@
 """Key decoding contract.
 
-The interface used to read keys with ``msvcrt.kbhit()`` plus
-``msvcrt.getwch()``. A console queues more than characters — key releases,
-focus changes, mouse moves, buffer resizes — and ``kbhit`` answers yes to all
-of them while ``getwch`` then blocks with no deadline. Driving a real console
-showed the cost: after typing 가나다 the screen still read 가나, and one
-backspace later it read 가나다, because the loop sat inside ``getwch`` holding
-the last keystroke until another key arrived.
+The terminal hands over bytes: a character, or an escape sequence for anything
+that is not one, and nothing at all when the reader's deadline passes. What the
+interface upstream wants is a name — ``enter``, ``up``, ``escape`` — so the
+console normalises every press into one ``KeyEvent`` first. That record keeps
+the numeric ``virtual_key`` field the Windows original used, on purpose: the
+decoding contract is the same on both sides and the port stayed
+API-compatible rather than inventing a second shape for the same job.
 
-These tests drive the decoder with synthetic console events, so they pin the
-contract without a console.
+These tests drive the decoder with synthetic events, so they pin the contract
+without a terminal — the reason the numbers below are written out as constants
+instead of being read from one.
 """
 
 from __future__ import annotations
