@@ -476,7 +476,9 @@ class App:
                     ("enter", "open"),
                     ("/", "찾기"),
                     ("f", "친구"),
-                    ("q", "quit"),
+                    # Quitting from in front of an open conversation would be a
+                    # surprise, so there the same keys go back to it instead.
+                    ("esc", "돌아가기") if self.picking else ("q", "quit"),
                 ],
                 width,
             ),
@@ -1117,9 +1119,14 @@ class App:
         if self._filter_key(kind, text):
             return
         shown = self.visible_rooms()
-        if self.picking and kind in (Key.ESCAPE, Key.TAB):
+        if self.picking and (
+            kind in (Key.ESCAPE, Key.TAB)
+            or (kind == "char" and text in ("q", "Q"))
+        ):
             # The list is in front of conversations that are still open, so
-            # leaving it goes back to them rather than out of the interface.
+            # every way out of it goes back to them rather than out of the
+            # interface. While a filter is being typed those keys are letters,
+            # and the filter has already taken them.
             self.picking = False
             self._forget_filter()
         elif kind == "char" and text in ("q", "Q"):

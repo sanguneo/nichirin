@@ -249,6 +249,39 @@ class OpenCommandTests(PaneCase):
         self.assertFalse(self.app.picking)
         self.assertEqual([chat.room.id for chat in self.app.chats], [DIRECT_ROOM, NAMED_ROOM])
 
+    def test_the_list_can_be_searched_before_picking(self) -> None:
+        """Six hundred rooms is too many to arrow through."""
+        self.open(DIRECT_ROOM)
+        self.app._run_command("/open")
+        self.app.handle("char", "/")
+        for character in "Named":
+            self.app.handle("char", character)
+        self.assertTrue(self.app.filtering)
+        self.assertIn(
+            "Named Group", [room.title for room in self.app.visible_rooms()]
+        )
+
+    def test_quitting_that_list_leaves_the_list_not_the_interface(self) -> None:
+        """The list stands in front of conversations that are still open."""
+        self.open(DIRECT_ROOM)
+        self.app._run_command("/open")
+        self.app.handle("char", "q")
+        self.assertTrue(self.app.running, "q closed the interface over an open room")
+        self.assertFalse(self.app.picking)
+        self.assertEqual(len(self.app.chats), 1)
+
+    def test_q_still_quits_from_the_ordinary_room_list(self) -> None:
+        self.app.handle("char", "q")
+        self.assertFalse(self.app.running)
+
+    def test_a_letter_typed_into_the_filter_is_not_a_shortcut(self) -> None:
+        self.open(DIRECT_ROOM)
+        self.app._run_command("/open")
+        self.app.handle("char", "/")
+        self.app.handle("char", "q")
+        self.assertTrue(self.app.picking, "the filter's own letter left the list")
+        self.assertEqual(self.app.filter, "q")
+
     def test_leaving_that_list_goes_back_to_the_conversations(self) -> None:
         """Escape out of the list must not be read as escape out of the tool."""
         self.open(DIRECT_ROOM)
