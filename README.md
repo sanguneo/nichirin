@@ -14,6 +14,8 @@
 ![로컬 읽기](https://img.shields.io/badge/reads-local-2ea44f)
 ![MIT](https://img.shields.io/badge/license-MIT-blue)
 
+**윈도우라면 → [kanao-cli](https://github.com/sanguneo/kanao-cli)** · 같은 명령과 같은 JSON 봉투를 쓰는 윈도우용 자매 프로젝트
+
 <img src="demo/shots/chat.webp" alt="합성 대화 화면 — 답장 인용과 멘션 표시" width="900">
 
 <br><br>
