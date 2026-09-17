@@ -20,6 +20,20 @@ python3 demo/capture.py --all                 # re-render the demo screenshots
 
 Discovery needs `-t .` so `tests` stays an importable package.
 
+## Pull requests
+
+- **The evidence is the review.** A pull request carries what it ran and what
+  it measured — the suite's last line, the new test failing against the code
+  before the fix, the before-and-after numbers with the data they were taken
+  on, and what was and was not done against a live client. A reviewer should
+  be able to check the claim without rebuilding the experiment, and a claim
+  with nothing attached is not ready to open.
+  `.github/pull_request_template.md` is that list.
+- **Merge oldest first.** Pull requests land in the order they were opened,
+  so the later one rebases onto the earlier. Landing them out of order makes
+  the conflict somebody else's, and the branch that was reviewed is no longer
+  the branch that merged.
+
 ## The two platform differences that drive the whole port
 
 1. **The key is derived, not stolen.** Windows kept the SQLCipher key only in
