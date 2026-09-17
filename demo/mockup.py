@@ -5,16 +5,16 @@ the "key ring" hands back connections to them, and no name, message or room in
 this file belongs to a real person. That is the whole point — a screenshot of
 the real thing would publish somebody's conversation.
 
-    python demo/mockup.py rooms      the conversation list
-    python demo/mockup.py chat       a conversation, with a reply and a mention
-    python demo/mockup.py digest     /sum 30m over the same room
-    python demo/mockup.py friends    the friend list
-    python demo/mockup.py real       /real over two accounts sharing a nickname
-    python demo/mockup.py filter     the list narrowed by /
-    python demo/mockup.py sent       a message the client has confirmed back
-    python demo/mockup.py unseen     scrolled up while arrivals land below
-    python demo/mockup.py cli        the JSON an agent is handed
-    python demo/mockup.py --print chat   the frame as text, for a terminal-less check
+    python3 demo/mockup.py rooms      the conversation list
+    python3 demo/mockup.py chat       a conversation, with a reply and a mention
+    python3 demo/mockup.py digest     /sum 30m over the same room
+    python3 demo/mockup.py friends    the friend list
+    python3 demo/mockup.py real       /real over two accounts sharing a nickname
+    python3 demo/mockup.py filter     the list narrowed by /
+    python3 demo/mockup.py sent       a message the client has confirmed back
+    python3 demo/mockup.py unseen     scrolled up while arrivals land below
+    python3 demo/mockup.py cli        the JSON an agent is handed
+    python3 demo/mockup.py --print chat   the frame as text, for a terminal-less check
 
 The window opens at whatever size the console already has; 110x30 shows the
 interface the way it is meant to look.
@@ -22,7 +22,9 @@ interface the way it is meant to look.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import plistlib
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -30,13 +32,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from kamado import paths  # noqa: E402
+from kamado import cipher  # noqa: E402
 from kamado.errors import ErrorCode, KamadoError  # noqa: E402
-from kamado.keyring import Keyring  # noqa: E402
+from kamado.keyring import Account, Keyring  # noqa: E402
 from kamado.reader import Reader  # noqa: E402
 
 KST = timezone(timedelta(hours=9))
-PROFILE = Path("C:/mockup-profile")
+
+CONTAINER = Path("/synthetic/mockup-container")
+DATABASE = CONTAINER / hashlib.sha512(b"kamado demo profile").hexdigest()[:78]
+"""Where the invented profile pretends to live; nothing is ever written here.
+
+The name is a digest of a fixed phrase rather than a row of placeholder
+letters: the client names its database with 78 hex characters, and a
+screenshot that shows the shape of a real name teaches more than ``bbbb…``.
+"""
 
 ME = 70001
 JISOO, MINJUN, SEOYEON, DOYUN, HAJUN, YERIN = 70002, 70003, 70004, 70005, 70006, 70007
@@ -53,32 +63,36 @@ SELF_ROOM = 90003
 WORK_ROOM = 90004
 STUDY_ROOM = 90005
 MINJUN_ROOM = 90006
-CHANNEL_ROOM = 90007
 SEOYEON_ROOM, DOYUN_ROOM, HAJUN_ROOM, YERIN_ROOM = 90008, 90009, 90010, 90011
 
-USER_SCHEMA = """
-CREATE TABLE talkUser (
-    userId INTEGER, type INTEGER, nickName TEXT, friendNickName TEXT,
-    phoneNumber TEXT, statusMessage TEXT, directChatId INTEGER, favorite INTEGER
+SCHEMA = """
+CREATE TABLE NTChatRoom (
+    chatId INTEGER PRIMARY KEY, type INTEGER, chatName TEXT,
+    activeMembersCount INTEGER, countOfNewMessage INTEGER, lastLogId INTEGER,
+    lastUpdatedAt INTEGER, directChatMemberUserId INTEGER, linkId INTEGER,
+    displayMemberIds BLOB
 );
-CREATE TABLE Profile (userId INTEGER, nickname TEXT, hasMeBadge INTEGER);
+CREATE TABLE NTChatMessage (
+    logId INTEGER PRIMARY KEY, chatId INTEGER, authorId INTEGER, type INTEGER,
+    message TEXT, attachment TEXT, sentAt INTEGER, deleted INTEGER
+);
+CREATE TABLE NTUser (
+    userId INTEGER, linkId INTEGER, type INTEGER, nickName TEXT,
+    displayName TEXT, friendNickName TEXT, phoneNumber TEXT, statusMessage TEXT,
+    directChatId INTEGER, favorite INTEGER
+);
+CREATE TABLE NTOpenLink (linkId INTEGER, linkName TEXT);
+CREATE TABLE NTChatContext (userId INTEGER);
+"""
+"""The macOS client's shape: one database holding every room and message.
+
+The Windows original this was forked from kept a catalog plus one file per
+room, which is why the demo had three schemas and a key per database.
 """
 
-CATALOG_SCHEMA = """
-CREATE TABLE chatRoomList (
-    chatId INTEGER, type TEXT, chatRoomTitle TEXT, useCustomChatRoomTitle INTEGER,
-    activeMembersCount INTEGER, newMessageCount INTEGER, lastLogId INTEGER,
-    lastUpdatedAt INTEGER, directChatMemberId INTEGER
-);
-CREATE TABLE chatMembers (chatId INTEGER, userId INTEGER, isActive INTEGER);
-"""
+FRIEND, NOT_FRIEND = 1, 1000
 
-LOG_SCHEMA = """
-CREATE TABLE chatLogs (
-    logId INTEGER PRIMARY KEY, authorId INTEGER, type INTEGER, message TEXT,
-    attachement TEXT, sendAt INTEGER, deleted INTEGER
-);
-"""
+CREW_LINK, STUDY_LINK = 40001, 40002
 
 TEXT, PHOTO, REPLY = 1, 2, 26
 
@@ -121,9 +135,14 @@ def renamed(log_id: int, sent_at: int, user_id: int, was: str) -> tuple:
     return (log_id, user_id, 0, body, None, sent_at, 0)
 
 
-def connect(script: str, rows: dict[str, list[tuple]]) -> sqlite3.Connection:
+def members_blob(user_ids: list[int]) -> bytes:
+    """Archive a member list the way the client stores one: a binary plist."""
+    return plistlib.dumps(user_ids, fmt=plistlib.FMT_BINARY)
+
+
+def connect(rows: dict[str, list[tuple]]) -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:", check_same_thread=False)
-    connection.executescript(script)
+    connection.executescript(SCHEMA)
     for table, values in rows.items():
         if values:
             placeholders = ", ".join("?" * len(values[0]))
@@ -133,21 +152,20 @@ def connect(script: str, rows: dict[str, list[tuple]]) -> sqlite3.Connection:
 
 
 class Cache:
-    """Stands in for the snapshot cache, handing back the invented databases."""
+    """Stands in for the snapshot cache, handing back the invented database."""
 
-    def __init__(self, databases: dict[str, sqlite3.Connection]) -> None:
-        self.databases = databases
+    def __init__(self, database: sqlite3.Connection) -> None:
+        self.database = database
 
-    def connect(self, path: Path, key: bytes, page_size: int = 4096, reserve: int = 80):
-        name = Path(path).as_posix()
-        for candidate, connection in self.databases.items():
-            if name.endswith(candidate):
-                return connection
-        raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {name}")
+    def connect(self, path: Path, geometry: cipher.Geometry) -> sqlite3.Connection:
+        if Path(path).name != DATABASE.name:
+            # Refuse the way the real cache refuses, so a demo cannot pass
+            # against an error the runtime never raises.
+            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {path}")
+        return self.database
 
     def close(self) -> None:
-        for connection in self.databases.values():
-            connection.close()
+        self.database.close()
 
 
 CREW_LOG = [
@@ -219,73 +237,88 @@ STUDY_LOG = [
 ]
 
 
+def in_room(room_id: int, log: list[tuple]) -> list[tuple]:
+    """Put a room's messages into the one table every room now shares."""
+    return [(entry[0], room_id, *entry[1:]) for entry in log]
+
+
 def build_reader() -> Reader:
     """Assemble the invented profile and hand back a reader over it."""
-    users = connect(
-        USER_SCHEMA,
-        {
-            "talkUser": [
-                (JISOO, 1, "지수", None, None, "오늘도 10km", JISOO_ROOM, 1),
-                (MINJUN, 1, "민준", None, None, "사진 찍는 러너", MINJUN_ROOM, 1),
-                (SEOYEON, 1, "서연", None, None, "천천히 오래", SEOYEON_ROOM, 0),
-                (DOYUN, 1, "도윤", None, None, None, DOYUN_ROOM, 0),
-                (HAJUN, 1, "하준", None, None, "스터디 모집 중", HAJUN_ROOM, 0),
-                (YERIN, 1, "예린", None, None, "출근 중", YERIN_ROOM, 0),
-                # Not a friend, just a co-member — and currently named 지수.
-                (COPYCAT, 1000, "지수", None, None, None, None, 0),
-            ],
-            "Profile": [(ME, "나", 0)],
-        },
-    )
+    users = [
+        # userId, linkId, type, nickName, displayName, friendNickName,
+        # phone, status, directChatId, favorite
+        (JISOO, 0, FRIEND, "지수", None, None, None, "오늘도 10km", JISOO_ROOM, 1),
+        (MINJUN, 0, FRIEND, "민준", None, None, None, "사진 찍는 러너", MINJUN_ROOM, 1),
+        (SEOYEON, 0, FRIEND, "서연", None, None, None, "천천히 오래", SEOYEON_ROOM, 0),
+        (DOYUN, 0, FRIEND, "도윤", None, None, None, None, DOYUN_ROOM, 0),
+        (HAJUN, 0, FRIEND, "하준", None, None, None, "스터디 모집 중", HAJUN_ROOM, 0),
+        (YERIN, 0, FRIEND, "예린", None, None, None, "출근 중", YERIN_ROOM, 0),
+        # Not a friend, just a co-member — and currently named 지수.
+        (COPYCAT, 0, NOT_FRIEND, "지수", None, None, None, None, None, 0),
+        # This schema carries the signed-in account in the same table.
+        (ME, 0, NOT_FRIEND, "나", None, None, None, None, None, 0),
+    ]
 
+    crew = [ME, JISOO, MINJUN, SEOYEON, DOYUN, HAJUN]
+    study = [ME, HAJUN, YERIN, JISOO, COPYCAT]
     rooms = [
+        # A room is named by its shape, not by a type code: a linkId makes it
+        # an open chat, a peer makes it direct, and members that are only the
+        # account make it the memo chat.
+        #
         # No emoji in a title: the console advances the two columns they
         # measure but paints over the next cell, and the smear survives.
-        (CREW_ROOM, "OM", "주말 러닝크루", 1, 42, 3, 5023, at(19, 27), 0),
-        (JISOO_ROOM, "DirectChat", "", 0, 2, 1, 7010, at(17, 12), JISOO),
-        (WORK_ROOM, "MultiChat", "프로덕트 · 배포 준비", 1, 8, 0, 6011, at(11, 32), 0),
-        (STUDY_ROOM, "OM", "주말 알고리즘 스터디 모집", 1, 128, 12, 9013, at(20, 33), 0),
-        (SELF_ROOM, "MemoChat", "나", 0, 1, 0, 8010, at(9, 5), 0),
-        (MINJUN_ROOM, "DirectChat", "", 0, 2, 0, None, at(8, 40, 1), MINJUN),
-        (CHANNEL_ROOM, "PlusChat", "동네 러닝 소식", 1, 2, 0, None, at(19, 0, 2), 0),
-        # Rooms the client has not opened this session: catalogued, unreadable,
-        # and therefore absent from the list — which is the honest state.
-        (SEOYEON_ROOM, "DirectChat", "", 0, 2, 0, None, at(21, 10, 1), SEOYEON),
-        (DOYUN_ROOM, "DirectChat", "", 0, 2, 0, None, at(13, 5, 2), DOYUN),
-        (HAJUN_ROOM, "DirectChat", "", 0, 2, 0, None, at(9, 40, 3), HAJUN),
-        (YERIN_ROOM, "DirectChat", "", 0, 2, 0, None, at(15, 22, 4), YERIN),
+        (CREW_ROOM, 2, "", 42, 3, 5023, at(19, 27), 0, CREW_LINK, members_blob(crew)),
+        (JISOO_ROOM, 0, "", 2, 1, 7010, at(17, 12), JISOO, 0, members_blob([ME, JISOO])),
+        (WORK_ROOM, 1, "프로덕트 · 배포 준비", 8, 0, 6011, at(11, 32), 0, 0,
+         members_blob([ME, YERIN])),
+        (STUDY_ROOM, 2, "", 128, 12, 9013, at(20, 33), 0, STUDY_LINK,
+         members_blob(study)),
+        (SELF_ROOM, 5, "", 1, 0, 8010, at(9, 5), 0, 0, members_blob([ME])),
+        (MINJUN_ROOM, 0, "", 2, 0, None, at(8, 40, 1), MINJUN, 0,
+         members_blob([ME, MINJUN])),
+        # Quiet rooms, catalogued with no messages read yet. On macOS every
+        # room lives in the one database, so none of them is unreadable —
+        # the Windows original listed these as absent for want of a key.
+        (SEOYEON_ROOM, 0, "", 2, 0, None, at(21, 10, 1), SEOYEON, 0,
+         members_blob([ME, SEOYEON])),
+        (DOYUN_ROOM, 0, "", 2, 0, None, at(13, 5, 2), DOYUN, 0,
+         members_blob([ME, DOYUN])),
+        (HAJUN_ROOM, 0, "", 2, 0, None, at(9, 40, 3), HAJUN, 0,
+         members_blob([ME, HAJUN])),
+        (YERIN_ROOM, 0, "", 2, 0, None, at(15, 22, 4), YERIN, 0,
+         members_blob([ME, YERIN])),
     ]
-    members = [
-        (SELF_ROOM, ME, 1),
-        (JISOO_ROOM, ME, 1),
-        (JISOO_ROOM, JISOO, 1),
-        (MINJUN_ROOM, ME, 1),
-        (MINJUN_ROOM, MINJUN, 1),
-        *[(CREW_ROOM, one, 1) for one in (ME, JISOO, MINJUN, SEOYEON, DOYUN, HAJUN)],
-        *[(WORK_ROOM, one, 1) for one in (ME, YERIN)],
-        *[(STUDY_ROOM, one, 1) for one in (ME, HAJUN, YERIN, JISOO, COPYCAT)],
-    ]
-    catalog = connect(CATALOG_SCHEMA, {"chatRoomList": rooms, "chatMembers": members})
 
-    databases = {
-        paths.USER_DATABASE: users,
-        paths.CATALOG_DATABASE: catalog,
-        paths.chat_log_name(CREW_ROOM): connect(LOG_SCHEMA, {"chatLogs": CREW_LOG}),
-        paths.chat_log_name(WORK_ROOM): connect(LOG_SCHEMA, {"chatLogs": WORK_LOG}),
-        paths.chat_log_name(JISOO_ROOM): connect(LOG_SCHEMA, {"chatLogs": JISOO_LOG}),
-        paths.chat_log_name(SELF_ROOM): connect(LOG_SCHEMA, {"chatLogs": SELF_LOG}),
-        paths.chat_log_name(STUDY_ROOM): connect(LOG_SCHEMA, {"chatLogs": STUDY_LOG}),
-    }
-    # One key object per database, the way a real ring pairs them: the footer
-    # counts distinct keys, and a shared object would report a single one.
-    invented = {name: bytes([index + 1] * 32) for index, name in enumerate(databases)}
+    messages = [
+        *in_room(CREW_ROOM, CREW_LOG),
+        *in_room(WORK_ROOM, WORK_LOG),
+        *in_room(JISOO_ROOM, JISOO_LOG),
+        *in_room(SELF_ROOM, SELF_LOG),
+        *in_room(STUDY_ROOM, STUDY_LOG),
+    ]
+
+    database = connect(
+        {
+            "NTUser": users,
+            "NTChatRoom": rooms,
+            "NTChatMessage": messages,
+            "NTOpenLink": [
+                (CREW_LINK, "주말 러닝크루"),
+                (STUDY_LINK, "주말 알고리즘 스터디 모집"),
+            ],
+            "NTChatContext": [(ME,)],
+        }
+    )
+
+    geometry = cipher.Geometry(profile=cipher.PROFILES[0], page_size=4096, key=bytes(32))
     keyring = Keyring(
-        user_directory=PROFILE,
-        pid=1234,
-        keys=invented | {Path(name).name: key for name, key in invented.items()},
+        container=CONTAINER,
+        databases=[DATABASE],
+        account=Account(user_id=ME, database=DATABASE, geometry=geometry),
     )
     # ledger stays unset: this reader must never write a name anywhere.
-    return Reader(user_directory=PROFILE, cache=Cache(databases), keyring=keyring)
+    return Reader(cache=Cache(database), keyring=keyring)
 
 
 def arrange(app, scene: str) -> None:
@@ -295,7 +328,7 @@ def arrange(app, scene: str) -> None:
         app.selected = next(
             index for index, one in enumerate(app.rooms) if one.id == CREW_ROOM
         )
-        app.status = "카카오톡이 연 적 있는 방만 읽을 수 있습니다"
+        app.status = "한 데이터베이스에 모든 방이 들어 있습니다"
         return
     if scene == "friends":
         app.show_friends = True

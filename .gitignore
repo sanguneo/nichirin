@@ -24,3 +24,6 @@ kamado-cli-*.txt
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Demo capture intermediates
+demo/.render/

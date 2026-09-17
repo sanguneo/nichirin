@@ -12,7 +12,7 @@
 ![로컬 읽기](https://img.shields.io/badge/reads-local-2ea44f)
 ![MIT](https://img.shields.io/badge/license-MIT-blue)
 
-<img src="demo/shots/chat.png" alt="합성 대화 화면 — 답장 인용과 멘션 표시" width="900">
+<img src="demo/shots/chat.webp" alt="합성 대화 화면 — 답장 인용과 멘션 표시" width="900">
 
 <br><br>
 
@@ -175,7 +175,7 @@ python3 -m kamado tui
 직접 실행하세요. 읽기는 클라이언트가 닫혀 있어도 되고, 입력창에서 보내려면 실행 중인
 카카오톡과 손쉬운 사용 권한이 필요합니다.
 
-![합성 대화방 목록](demo/shots/rooms.png)
+![합성 대화방 목록](demo/shots/rooms.webp)
 
 대화방 목록, 대화, 친구 목록, 그리고 하단의 입력창. 글자를 치면 메시지가 되고 `/`로
 시작하면 명령이 됩니다. 답장은 원문 인용과 함께, 나를 `@`로 부른 줄은 별도 표시로
@@ -192,8 +192,8 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 
 <table>
 <tr>
-<td width="50%"><img src="demo/shots/unseen.png" alt="합성 새 메시지 알림 화면"></td>
-<td width="50%"><img src="demo/shots/sent.png" alt="합성 전송 확인 표시"></td>
+<td width="50%"><img src="demo/shots/unseen.webp" alt="합성 새 메시지 알림 화면"></td>
+<td width="50%"><img src="demo/shots/sent.webp" alt="합성 전송 확인 표시"></td>
 </tr>
 <tr>
 <td align="center"><sub>과거를 읽는 중이면 상태줄로만 알립니다</sub></td>
@@ -201,7 +201,7 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 </tr>
 </table>
 
-![합성 다이제스트](demo/shots/digest.png)
+![합성 다이제스트](demo/shots/digest.webp)
 
 `/sum 30m`이나 `/sum 2h`는 **요약하는 척하지 않습니다.** 이 프로세스 안에는 모델이
 없으므로 구간의 활동량·화자·단어·대표 문장을 뽑을 뿐입니다. `/export`는 다이제스트의
@@ -210,8 +210,8 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 
 <table>
 <tr>
-<td width="50%"><img src="demo/shots/friends.png" alt="합성 친구 목록"></td>
-<td width="50%"><img src="demo/shots/filter.png" alt="합성 목록 필터"></td>
+<td width="50%"><img src="demo/shots/friends.webp" alt="합성 친구 목록"></td>
+<td width="50%"><img src="demo/shots/filter.webp" alt="합성 목록 필터"></td>
 </tr>
 </table>
 
@@ -231,7 +231,7 @@ python3 -m kamado names --room-id 123 --user-id 456
 개명을 복원하는 기능은 아닙니다. 그냥 바꾼 이름은 도구가 그 뒤 처음 읽었을 때부터
 알 수 있습니다. 닉네임 검색에 계정이 둘 이상 나오는 것은 오류가 아니라 답입니다.
 
-![합성 데이터의 같은 이름을 쓰는 계정 두 개](demo/shots/real.png)
+![합성 데이터의 같은 이름을 쓰는 계정 두 개](demo/shots/real.webp)
 
 > [!IMPORTANT]
 > 이름 이력은 `~/Library/Application Support/kamado-cli/names.jsonl`에 남습니다.
@@ -297,7 +297,7 @@ python3 install.py --target "$HOME/.claude/skills/kamado-cli" --force
 `@전체`의 아이디 목록)이 함께 옵니다. `reachesLatestKnown: null`은 최신 여부를
 판단할 근거가 없다는 뜻입니다. 메시지의 답장·멘션 정보는 해당할 때만 키가 붙습니다.
 
-![합성 데이터로 만든 에이전트 JSON](demo/shots/cli.png)
+![합성 데이터로 만든 에이전트 JSON](demo/shots/cli.webp)
 
 ## 못 하는 것
 
@@ -317,8 +317,8 @@ python3 -m unittest discover -t . -s tests
 ```
 
 테스트는 합성 데이터를 씁니다. **실제 대화·연락처·열쇠는 저장소에도, 테스트에도,
-로그에도 넣지 않습니다.** 기존 화면은 `demo/mockup.py`가 지어낸 프로필로 만든 것입니다.
-데모 생성기와 캡처 도구의 포팅 상태는 [demo/README.md](demo/README.md)를 보세요.
+로그에도 넣지 않습니다.** 이 문서의 화면은 `demo/mockup.py`가 지어낸 프로필로 만든 것입니다.
+다시 찍는 방법은 [demo/README.md](demo/README.md)를 보세요.
 코드를 고칠 생각이라면 `AGENTS.md`를 먼저 읽으세요.
 
 ## 출처와 라이선스
