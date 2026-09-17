@@ -8,8 +8,11 @@ exactly the kind of bug a test has to catch instead of an eye.
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
+from kanao.tui import theme as theme_module
 from kanao.tui.layout import (
     ELLIPSIS,
     Segment,
@@ -20,8 +23,19 @@ from kanao.tui.layout import (
     strip_ansi,
     truncate_to_width,
     wrap_to_width,
+    wrap_with_links,
 )
-from kanao.tui.theme import TEXT, SpeakerPalette, Theme, to_256
+from kanao.tui.theme import (
+    LIGHT_BACKGROUND,
+    TEXT,
+    THEME_VARIABLE,
+    TOKENS_DARK,
+    TOKENS_LIGHT,
+    SpeakerPalette,
+    Theme,
+    detect_dark_mode,
+    to_256,
+)
 
 RED = "\x1b[38;2;204;102;102m"
 OFF = "\x1b[39m"
@@ -103,6 +117,62 @@ class WrapTests(unittest.TestCase):
         text = "가나다 라마바 사아자"
         joined = "".join(wrap_to_width(text, 8)).replace(" ", "")
         self.assertEqual(joined, text.replace(" ", ""))
+
+
+class LinkTests(unittest.TestCase):
+    """A URL in a message is clickable, and costs the layout nothing.
+
+    The escapes that carry the target are zero-width. If anything measures
+    them, every column after a link moves by the length of the URL, which is
+    invisible in a screenshot and shows up only as text landing late.
+    """
+
+    URL = "https://example.com/products/5035494?ref=chat"
+
+    def targets(self, lines: list[str]) -> list[str]:
+        """Every target bound anywhere in *lines*, in order."""
+        found = []
+        for line in lines:
+            for piece in line.split("\x1b]8;;")[1:]:
+                target = piece.split("\x1b\\")[0]
+                if target:
+                    found.append(target)
+        return found
+
+    def test_a_url_is_bound_to_its_own_text(self) -> None:
+        lines = wrap_with_links(f"봐봐 {self.URL} 이거", 200)
+        self.assertEqual(self.targets(lines), [self.URL])
+        self.assertIn(self.URL, strip_ansi(lines[0]))
+
+    def test_a_split_url_carries_the_whole_target_on_every_line(self) -> None:
+        lines = wrap_with_links(f"봐봐 {self.URL} 이거", 20)
+        self.assertGreater(len(self.targets(lines)), 1, "the URL was not split")
+        self.assertEqual(set(self.targets(lines)), {self.URL})
+
+    def test_a_link_costs_no_columns(self) -> None:
+        for width in (20, 32, 60):
+            with self.subTest(width=width):
+                for line in wrap_with_links(f"봐봐 {self.URL} 이거", width):
+                    self.assertLessEqual(display_width(line), width)
+
+    def test_the_text_is_the_text_that_would_have_been_wrapped(self) -> None:
+        """Binding a target must not move, drop or duplicate a character."""
+        text = f"앞 {self.URL} 뒤  두칸 {self.URL}/b 끝"
+        for width in (16, 24, 40, 100):
+            with self.subTest(width=width):
+                linked = [strip_ansi(line) for line in wrap_with_links(text, width)]
+                self.assertEqual(linked, wrap_to_width(text, width))
+
+    def test_text_without_a_url_is_left_alone(self) -> None:
+        text = "링크 없는 평범한 줄입니다"
+        self.assertEqual(wrap_with_links(text, 12), wrap_to_width(text, 12))
+
+    def test_a_trailing_bracket_is_not_part_of_the_address(self) -> None:
+        lines = wrap_with_links(f"(보기 {self.URL})", 200)
+        self.assertEqual(self.targets(lines), [self.URL])
+
+    def test_strip_ansi_removes_the_link_escapes(self) -> None:
+        self.assertEqual(strip_ansi(wrap_with_links(self.URL, 200)[0]), self.URL)
 
 
 class FooterTests(unittest.TestCase):
@@ -252,6 +322,88 @@ class SpeakerPaletteTests(unittest.TestCase):
             ):
                 with self.subTest(colour=colour):
                     self.assertLessEqual(self._spread(colour), 60, "a tint, never a colour")
+
+
+class LightModeTests(unittest.TestCase):
+    """A light terminal is a different problem, not the dark one inverted.
+
+    Subtlety is what the dark palette is for. On a white field the same tints
+    are simply missing, so the light palette trades some of that calm for
+    contrast — and the number is checked rather than asserted in a comment.
+    """
+
+    BACKGROUNDS = (LIGHT_BACKGROUND, "#ffffff")
+    FLOOR = 3.8
+
+    @staticmethod
+    def _relative_luminance(colour: str) -> float:
+        channels = []
+        for index in (1, 3, 5):
+            srgb = int(colour[index : index + 2], 16) / 255
+            channels.append(
+                srgb / 12.92 if srgb <= 0.04045 else ((srgb + 0.055) / 1.055) ** 2.4
+            )
+        red, green, blue = channels
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    @classmethod
+    def _contrast(cls, colour: str, background: str) -> float:
+        first = cls._relative_luminance(colour)
+        second = cls._relative_luminance(background)
+        return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+
+    def test_every_speaker_is_legible_on_a_light_terminal(self) -> None:
+        palette = SpeakerPalette(dark=False)
+        for index in range(40):
+            speaker = f"speaker{index}"
+            for background in self.BACKGROUNDS:
+                for colour in (palette.name_colour(speaker), palette.body_colour(speaker)):
+                    with self.subTest(colour=colour, background=background):
+                        self.assertGreaterEqual(
+                            self._contrast(colour, background), self.FLOOR
+                        )
+
+    def test_the_marks_that_carry_meaning_are_legible(self) -> None:
+        """✓, ? and @ say whether a message landed and whether it named you."""
+        for token in ("success", "warning", "error", "text", "accent"):
+            for background in self.BACKGROUNDS:
+                with self.subTest(token=token, background=background):
+                    self.assertGreaterEqual(
+                        self._contrast(TOKENS_LIGHT[token], background), self.FLOOR
+                    )
+
+    def test_a_light_room_still_separates_its_speakers(self) -> None:
+        palette = SpeakerPalette(dark=False)
+        speakers = [f"speaker{index}" for index in range(32)]
+        self.assertGreaterEqual(palette.distinct_names(speakers), 30)
+
+    def test_the_dark_palette_is_not_changed_by_any_of_this(self) -> None:
+        palette = SpeakerPalette()
+        self.assertTrue(palette.dark)
+        self.assertEqual(palette.name_colour("speaker0"), "#e8c0c0")
+        self.assertEqual(Theme(truecolor=True, enabled=True).tokens, TOKENS_DARK)
+
+    def test_the_environment_decides_before_anything_else_is_asked(self) -> None:
+        for value, dark in (("light", False), ("dark", True), ("Latte", False)):
+            with self.subTest(value=value):
+                with patch.dict(os.environ, {THEME_VARIABLE: value}):
+                    self.assertIs(detect_dark_mode(), dark)
+
+    def test_a_terminal_that_reports_its_background_is_believed(self) -> None:
+        for background, dark in (("15;15", False), ("15;0", True)):
+            with self.subTest(background=background):
+                with patch.dict(os.environ, {THEME_VARIABLE: "", "COLORFGBG": background}):
+                    self.assertIs(detect_dark_mode(), dark)
+
+    def test_an_unreadable_environment_leaves_the_theme_dark(self) -> None:
+        with patch.dict(os.environ, {THEME_VARIABLE: "chartreuse", "COLORFGBG": "nonsense"}):
+            with patch.object(theme_module, "_apps_use_light_theme", lambda: False):
+                self.assertTrue(detect_dark_mode())
+
+    def test_the_windows_app_theme_is_the_last_word(self) -> None:
+        with patch.dict(os.environ, {THEME_VARIABLE: "", "COLORFGBG": ""}):
+            with patch.object(theme_module, "_apps_use_light_theme", lambda: True):
+                self.assertFalse(detect_dark_mode())
 
 
 if __name__ == "__main__":

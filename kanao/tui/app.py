@@ -4,9 +4,11 @@ The shape follows OmO's interactive mode so the two feel like one toolchain:
 a title row with status pinned right, hint rows beneath it, a body, and a
 single footer line that gives up its middle before its edges.
 
-Every frame is rebuilt whole and written once: partial redraws flicker and
-strand stale cells, and one frame per key is imperceptible. The conversation
-itself is the exception, and deliberately so — `_transcript_lines` is cached
+Every frame is rebuilt whole: a caller never decides what to repaint, because
+that is how partial redraws flicker and strand stale cells. `Console.draw`
+writes only the rows that changed, which is its business and not this module's.
+The conversation is the one thing not rebuilt — deliberately so, since
+`_transcript_lines` is cached
 per (width, message count), because rebuilding it on every keystroke measured
 71 ms per key at the default window. Anything that changes a loaded message
 must change that key.
@@ -22,7 +24,7 @@ from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KanaoError
-from ..model import Friend, Message, Room, message_kind
+from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
 from .console import CLEAR_BOX, Console, Key, force_size
@@ -36,6 +38,7 @@ from .layout import (
     truncate_to_width,
     window_around,
     wrap_to_width,
+    wrap_with_links,
 )
 from ..watch import Watcher
 from .theme import SpeakerPalette, Theme
@@ -63,6 +66,14 @@ the room can be asked more often without the screen paying for it.
 """
 TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
+COMPOSING_GRACE_SECONDS = 1.5
+"""How long a half-written message holds a poll off, IME pauses included."""
+MIN_PANE_COLUMNS = 44
+"""The narrowest a conversation can be drawn in and still read as one.
+
+Hangul takes two columns a character, so the time and a name already spend a
+third of this before any words arrive.
+"""
 
 
 @dataclass
@@ -98,6 +109,8 @@ class ChatState:
     Read when the room is opened rather than when a message is sent: the
     catalog is rewritten constantly, and re-reading it cost 3.0 s per send.
     """
+    feeds: dict[int, str] = field(default_factory=dict)
+    """What each feed row in this window says about itself, asked once."""
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
 
@@ -118,8 +131,11 @@ class App:
         self.rooms: list[Room] = []
         self.selected = 0
         self.scroll = 0
-        self.chat: Optional[ChatState] = None
-        self.palette = SpeakerPalette()
+        self.chats: list[ChatState] = []
+        """Every conversation on screen, left to right."""
+        self.focus = 0
+        """Which of them the composer and the footer belong to."""
+        self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
         self.running = True
         self.zone = KST
@@ -135,6 +151,8 @@ class App:
         """What the list is narrowed by; empty means the whole list."""
         self.filtering = False
         """Whether typing goes to the filter instead of the shortcuts."""
+        self.adding = False
+        """Whether the room list is in front of conversations that stay open."""
         self.pending_send: Optional[str] = None
         self._clock = time.monotonic
         """Read rather than called directly, so a test can hold time still."""
@@ -146,6 +164,46 @@ class App:
         """
         self.cursor: Optional[tuple[int, int]] = None
         """Where the terminal caret belongs, so an IME composes in the box."""
+
+    @property
+    def chat(self) -> Optional[ChatState]:
+        """The conversation the keyboard is in, of however many are open.
+
+        Everything that acts on "the" conversation — sending, scrolling, the
+        footer, the commands — means this one, which is why it stays a single
+        attribute rather than every caller learning about panes.
+        """
+        if not self.chats:
+            return None
+        self.focus = max(0, min(self.focus, len(self.chats) - 1))
+        return self.chats[self.focus]
+
+    @chat.setter
+    def chat(self, value: Optional[ChatState]) -> None:
+        """Replace every open conversation with this one, or with none."""
+        self.chats = [] if value is None else [value]
+        self.focus = 0
+
+    def _pane_width(self, width: int, panes: int) -> int:
+        """How wide one pane is, once the dividers have taken their columns."""
+        return max(1, (width - (panes - 1)) // max(1, panes))
+
+    def _visible_panes(self, width: int) -> list[ChatState]:
+        """The conversations that fit, keeping the focused one among them.
+
+        A pane narrower than `MIN_PANE_COLUMNS` cannot hold a conversation —
+        Hangul is two columns a character, so the name and the time alone eat
+        half of a narrow one. Rooms that do not fit are hidden rather than
+        closed, because the reader opened them and a window that got smaller
+        is not a decision to let one go.
+        """
+        if not self.chats:
+            return []
+        fits = max(1, (width + 1) // (MIN_PANE_COLUMNS + 1))
+        if fits >= len(self.chats):
+            return list(self.chats)
+        start = min(max(0, self.focus - fits + 1), len(self.chats) - fits)
+        return self.chats[start : start + fits]
 
     # -- data ---------------------------------------------------------------
 
@@ -222,9 +280,25 @@ class App:
         self.show_friends = False
         self.open_room(room)
 
-    def open_room(self, room: Room) -> None:
+    def open_room(self, room: Room, beside: bool = False) -> None:
+        """Show a conversation, replacing what is open or joining it.
+
+        *beside* is what `/open` asks for: the rooms already on screen stay,
+        and this one takes the keyboard. A room that is already open is
+        focused rather than opened twice, because two panes of one
+        conversation would each hold their own draft of the same message.
+        """
+        already = next(
+            (index for index, pane in enumerate(self.chats) if pane.room.id == room.id),
+            None,
+        )
+        if already is not None:
+            self.focus = already
+            return
+
         messages = self.reader.messages(room.id, limit=HISTORY_WINDOW)
-        self.palette = SpeakerPalette()
+        if not beside:
+            self.palette = SpeakerPalette(dark=self.theme.dark)
         for message in messages:
             self.palette.hue(message.sender)
         watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)
@@ -232,7 +306,7 @@ class App:
         stored = self.reader.stored_title(room.id)
         kept = self.drafts.get(room.id, "")
         # A conversation opens at its newest line, not at its oldest.
-        self.chat = ChatState(
+        opened = ChatState(
             room=room,
             messages=messages,
             watcher=watcher,
@@ -241,12 +315,73 @@ class App:
             caret=len(kept),
             window_alias=stored if stored and stored != room.title else None,
         )
+        if beside:
+            self.chats.append(opened)
+            self.focus = len(self.chats) - 1
+        else:
+            self.chat = opened
+
+    def _open_beside(self, chat: ChatState, name: str) -> None:
+        """Put another conversation on screen beside the ones already open.
+
+        Named, it opens straight away; unnamed, the room list comes to the
+        front and what is open stays open behind it. An ambiguous name is
+        refused with the count rather than resolved by taking the first
+        match, the same way every other lookup here refuses one.
+        """
+        if not name.strip():
+            self.adding = True
+            self._forget_filter()
+            self.status = ""
+            return
+        needle = name.strip().casefold()
+        matches = [room for room in self.rooms if room.title.casefold() == needle]
+        if not matches:
+            matches = [room for room in self.rooms if needle in room.title.casefold()]
+        if not matches:
+            chat.notice = f"'{name}': 읽을 수 있는 대화방이 없습니다"
+            return
+        if len(matches) > 1:
+            shown = ", ".join(room.title for room in matches[:3])
+            chat.notice = f"'{name}': {len(matches)}개가 맞습니다 ({shown})"
+            return
+        chat.notice = ""
+        self.open_room(matches[0], beside=True)
+
+    def close_pane(self, chat: ChatState) -> None:
+        """Close one conversation, keeping whatever else is open.
+
+        The focus moves to the pane on the left, the way closing a tab does,
+        and the draft is kept per room so reopening restores it.
+        """
+        if chat not in self.chats:
+            return
+        index = self.chats.index(chat)
+        self.chats.pop(index)
+        if index <= self.focus:
+            self.focus = max(0, self.focus - 1)
 
     def refresh(self, width: int) -> bool:
-        """Pick up anything new. Returns whether the screen needs redrawing."""
-        chat = self.chat
-        if chat is None:
+        """Pick up anything new, for every conversation on screen.
+
+        Each pane keeps its own watcher because a Windows room is its own
+        database: the poll that decides whether anything happened is one stat
+        of that room's log, 0.30 ms measured, so panes cost what they read
+        rather than sharing a fingerprint the way the macOS build can.
+        """
+        if not self.chats:
             return self._refresh_rooms()
+        panes = self._visible_panes(width)
+        cell = self._pane_width(width, max(1, len(panes)))
+        drawn = False
+        for pane in list(self.chats):
+            # An off-screen pane is still followed, or its unseen count would
+            # start from whenever the window happened to get wider.
+            drawn |= self._refresh_pane(pane, cell if pane in panes else width)
+        return drawn
+
+    def _refresh_pane(self, chat: ChatState, width: int) -> bool:
+        """Pick up what arrived in one conversation."""
         if chat.watcher is None:
             return False
         try:
@@ -261,9 +396,9 @@ class App:
         fresh = [message for message in arrived if message.id not in known]
         if not fresh:
             return False
-        self._confirm_delivery(fresh)
+        self._confirm_delivery(chat, fresh)
 
-        before = len(self._transcript_lines(width))
+        before = len(self._transcript_of(chat, width))
         for message in fresh:
             self.palette.hue(message.sender)
         chat.messages.extend(fresh)
@@ -271,16 +406,20 @@ class App:
         if chat.offset > 0:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
-            chat.offset += len(self._transcript_lines(width)) - before
+            chat.offset += len(self._transcript_of(chat, width)) - before
             chat.unseen += len(fresh)
         else:
             chat.unseen = 0
         return True
 
-    def _confirm_delivery(self, arrived: Sequence[Message]) -> None:
-        """Turn the queued mark into a tick once the client writes it back."""
-        chat = self.chat
-        if chat is None or chat.outbox is None:
+    def _confirm_delivery(self, chat: ChatState, arrived: Sequence[Message]) -> None:
+        """Turn the queued mark into a tick once the client writes it back.
+
+        The conversation is named rather than assumed: with several open, the
+        message that comes back belongs to the room it arrived in, not to
+        whichever one the keyboard happens to be in.
+        """
+        if chat.outbox is None:
             return
         # Compared by its words: the client is free to tidy the spacing of
         # what it stores, and a tick that never arrives is worse than one
@@ -330,6 +469,9 @@ class App:
 
     def render(self, width: int, height: int) -> list[str]:
         self.cursor = None
+        # `/open` puts the list in front of conversations that stay open.
+        if self.adding:
+            return self._render_rooms(width, height)
         if self.chat is not None:
             return self._render_chat(width, height)
         if self.show_friends:
@@ -493,9 +635,16 @@ class App:
         return self._compose_footer(anchor, middle, tail, right, width)
 
     def _render_chat(self, width: int, height: int) -> list[str]:
+        """Draw every conversation the screen holds, side by side.
+
+        The composer, the status line and the footer belong to the focused
+        one: a second box would need a second caret and a terminal has one.
+        A single conversation is drawn exactly as it was, header included —
+        naming a room above its own transcript only earns a row once there is
+        another room beside it to tell it apart from.
+        """
         chat = self.chat
         assert chat is not None
-        room = chat.room
         # The room is named in the footer; repeating it here spent a row on
         # something the reader already knows.
         lines = [
@@ -503,9 +652,10 @@ class App:
                 [
                     ("enter", "전송"),
                     ("↑↓", "scroll"),
+                    ("tab", "방 전환"),
+                    ("/open", "방 추가"),
                     ("/sum 30m", "요약"),
                     ("/older", "이전"),
-                    ("/real", "이름"),
                     ("esc", "back"),
                 ],
                 width,
@@ -515,26 +665,62 @@ class App:
 
         composer, caret = self._composer_lines(width)
         body_height = max(1, height - len(lines) - len(composer) - 2)
-        body = (
-            self._digest_lines(width)
-            if chat.slices
-            else self._transcript_lines(width)
-        )
-        if chat.anchor_top:
-            # Resolved here because the top is a distance from the bottom, and
-            # neither the body nor the screen height is known any earlier.
-            chat.offset = max(0, len(body) - body_height)
-            chat.anchor_top = False
-        window = _window(body, chat.offset, body_height)
-        lines.extend(window)
+        panes = self._visible_panes(width)
+        cell = self._pane_width(width, len(panes))
+        # A header earns its row once it is telling two conversations apart,
+        # and equally when one is open but too far off screen to show: without
+        # it nothing on screen says there is another room to tab to.
+        headed = len(panes) > 1 or len(self.chats) > len(panes)
+        rows = max(1, body_height - (1 if headed else 0))
+
+        columns: list[list[str]] = []
+        focused_body = 0
+        for pane in panes:
+            body = (
+                self._digest_of(pane, cell)
+                if pane.slices
+                else self._transcript_of(pane, cell)
+            )
+            if pane is chat:
+                focused_body = len(body)
+            if pane.anchor_top:
+                # Resolved here because the top is a distance from the bottom,
+                # and neither the body nor the screen height is known earlier.
+                pane.offset = max(0, len(body) - rows)
+                pane.anchor_top = False
+            column = [
+                pad_to_width(truncate_to_width(line, cell), cell)
+                for line in _window(body, pane.offset, rows)
+            ]
+            column.extend([" " * cell] * (rows - len(column)))
+            if headed:
+                column.insert(0, self._pane_header(pane, cell, pane is chat))
+            columns.append(column)
+
+        rule = self.theme.fg("borderMuted", "│")
+        for row in range(body_height):
+            # Panes are equal, so an odd screen leaves a column over; it is
+            # padding at the edge rather than one pane a character wider than
+            # its neighbour.
+            lines.append(pad_to_width(rule.join(column[row] for column in columns), width))
         while len(lines) < height - len(composer) - 2:
             lines.append("")
 
         self.cursor = (len(lines) + 1, caret)
         lines.extend(composer)
         lines.append(self._status_line(width))
-        lines.append(self._footer_chat(width, len(body)))
+        lines.append(self._footer_chat(width, focused_body))
         return lines[:height]
+
+    def _pane_header(self, chat: ChatState, width: int, focused: bool) -> str:
+        """Name one pane, which is only worth a row when there are several."""
+        label = f"{'▌' if focused else ' '}{chat.room.title}"
+        if chat.unseen:
+            label += f" +{chat.unseen}"
+        return self.theme.fg(
+            "accent" if focused else "muted",
+            pad_to_width(truncate_to_width(label, width), width),
+        )
 
     def _transcript_lines(self, width: int) -> list[str]:
         """Return the transcript, rebuilding it only when it could have changed.
@@ -546,16 +732,41 @@ class App:
         """
         chat = self.chat
         assert chat is not None
+        return self._transcript_of(chat, width)
+
+    def _transcript_of(self, chat: ChatState, width: int) -> list[str]:
+        """The same, for one named conversation rather than the focused one."""
         key = (width, len(chat.messages))
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
-        lines = self._build_transcript(width)
+        lines = self._build_transcript(chat, width)
         chat.rendered = (key, lines)
         return lines
 
-    def _build_transcript(self, width: int) -> list[str]:
-        chat = self.chat
-        assert chat is not None
+    def _feed_detail(self, chat: ChatState, message: Message) -> str:
+        """What a feed row says about itself, beside the kind it already shows.
+
+        Asked for the whole loaded window in one statement the first time one
+        of them is drawn, and topped up as more arrive: a room whose newest
+        four hundred records are mostly feeds — one live open chat had 364 of
+        them — would otherwise pay a query a line. A feed with nothing to add
+        is remembered as having nothing, so it is never asked about twice.
+        """
+        if message.type != FEED_MESSAGE:
+            return ""
+        if message.id not in chat.feeds:
+            missing = [
+                one.id
+                for one in chat.messages
+                if one.type == FEED_MESSAGE and one.id not in chat.feeds
+            ]
+            said = self.reader.feed_details(chat.room.id, missing)
+            for one in missing:
+                chat.feeds[one] = said.get(one, "")
+        detail = chat.feeds.get(message.id, "")
+        return f" {detail}" if detail else ""
+
+    def _build_transcript(self, chat: ChatState, width: int) -> list[str]:
         stamp_width = 5
         name_width = min(14, max(8, width // 6))
         indent = stamp_width + 2 + name_width + 1
@@ -578,8 +789,14 @@ class App:
             speaker = "나" if message.from_me else message.sender
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
-            text = message.text or self.theme.fg("dim", f"[{message_kind(message.type)}]")
-            wrapped = wrap_to_width(message.text, body_width) if message.text else [text]
+            label = message_kind(message.type) + self._feed_detail(chat, message)
+            text = message.text or self.theme.fg("dim", f"[{label}]")
+            if not message.text:
+                wrapped = [text]
+            elif self.theme.enabled:
+                wrapped = wrap_with_links(message.text, body_width)
+            else:
+                wrapped = wrap_to_width(message.text, body_width)
 
             head = (
                 self.theme.fg("dim", stamp)
@@ -635,6 +852,10 @@ class App:
         """Render slices the way OmO renders a reflection: a padded tinted box."""
         chat = self.chat
         assert chat is not None
+        return self._digest_of(chat, width)
+
+    def _digest_of(self, chat: ChatState, width: int) -> list[str]:
+        """The same, for one named conversation rather than the focused one."""
         inner = max(20, width - 2)
         rows: list[str] = []
 
@@ -793,7 +1014,9 @@ class App:
     # -- input --------------------------------------------------------------
 
     def handle(self, kind: str, text: str) -> None:
-        if self.chat is not None:
+        if self.adding:
+            self._handle_rooms(kind, text)
+        elif self.chat is not None:
             self._handle_chat(kind, text)
         elif self.show_friends:
             self._handle_friends(kind, text)
@@ -804,10 +1027,15 @@ class App:
         if self._filter_key(kind, text):
             return
         shown = self.visible_rooms()
-        if kind == "char" and text in ("q", "Q"):
+        if kind == "char" and text in ("q", "Q") and not self.adding:
             self.running = False
         elif kind == Key.INTERRUPT or kind == Key.ESCAPE:
-            self.running = False
+            if self.adding:
+                # The list was asked for from inside a conversation, so
+                # leaving it goes back there rather than out of the program.
+                self.adding = False
+            else:
+                self.running = False
         elif kind == Key.UP:
             self.selected = max(0, self.selected - 1)
         elif kind == Key.DOWN:
@@ -818,7 +1046,10 @@ class App:
             self.selected = max(0, len(shown) - 1)
         elif kind == Key.ENTER and shown:
             try:
-                self.open_room(shown[min(self.selected, len(shown) - 1)])
+                self.open_room(
+                    shown[min(self.selected, len(shown) - 1)], beside=self.adding
+                )
+                self.adding = False
                 self._forget_filter()
                 self.status = ""
             except KanaoError as error:
@@ -863,6 +1094,10 @@ class App:
 
         if kind == Key.INTERRUPT:
             self.running = False
+        elif kind == Key.TAB and len(self.chats) > 1:
+            # The composer is the only box on screen, so which room it is
+            # typing into has to be something the reader can move.
+            self.focus = (self.focus + 1) % len(self.chats)
         elif kind == "char":
             if text == CLEAR_BOX:
                 chat.draft = ""
@@ -915,12 +1150,16 @@ class App:
             chat.unseen = 0
 
     def _leave_room(self, chat: ChatState) -> None:
-        """Close the conversation, keeping whatever was half-written in it."""
+        """Close this conversation, keeping whatever was half-written in it.
+
+        Only this one: with several open, escape closes the pane the keyboard
+        is in and leaves the rest where they are.
+        """
         if chat.draft:
             self.drafts[chat.room.id] = chat.draft
         else:
             self.drafts.pop(chat.room.id, None)
-        self.chat = None
+        self.close_pane(chat)
 
     def _submit(self, chat: ChatState) -> None:
         """Send what is written, or run it when it starts with a slash."""
@@ -961,14 +1200,27 @@ class App:
         catalog here cost up to 3.0 s per send: a busy room rewrites it
         constantly, and sending rewrites it too, so the snapshot almost always
         had to be decrypted again before the message could go out.
+
+        The refusal names the room it is torn between, because the way out is
+        in the client rather than here: a title is the only thing the window
+        can be addressed by, so nothing short of one of those rooms being
+        renamed resolves it, and being told only that there are two leaves
+        nobody able to say which one to rename.
         """
         census = self.titles or [other.title for other in self.reader.rooms()]
         same = [title for title in census if title == room.title]
-        if len(same) != 1:
-            raise KanaoError(
-                ErrorCode.AMBIGUOUS_CHAT,
-                f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다",
-            )
+        if len(same) == 1:
+            return
+        described = ", ".join(
+            f"{other.kind} {other.member_count}명 {_stamp(other.last_updated_at, self.zone)}"
+            for other in self.rooms
+            if other.title == room.title and other.id != room.id
+        )
+        raise KanaoError(
+            ErrorCode.AMBIGUOUS_CHAT,
+            f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다"
+            + (f" (다른 방: {described})" if described else ""),
+        )
 
     def send_message(self, text: str) -> None:
         """Hand *text* to this room's own input box in the running client.
@@ -1048,6 +1300,10 @@ class App:
             # Joined rather than indexed: a nickname routinely holds spaces,
             # and "Some Name (handle)" is one name, not two arguments.
             self._real(chat, " ".join(arguments))
+        elif name == "open":
+            self._open_beside(chat, " ".join(arguments))
+        elif name == "close":
+            self._leave_room(chat)
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name == "back":
@@ -1141,21 +1397,34 @@ class App:
                 continue
 
             now = time.monotonic()
-            if not _poll_due(now, due_at, last_key_at):
+            composing = self.chat is not None and bool(self.chat.draft)
+            if not _poll_due(now, due_at, last_key_at, composing):
                 continue
             self.refresh(width)
             due_at = _next_poll_at(time.monotonic(), time.monotonic() - now)
 
 
-def _poll_due(now: float, due_at: float, last_key_at: float) -> bool:
+def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) -> bool:
     """Whether to look for arrivals now.
 
-    Typing wins. A poll that finds something has to decrypt the room's whole
-    log — measured at 0.62 s and 0.94 s on two live rooms — and this loop is
-    single-threaded, so doing that between keystrokes is what makes input feel
-    stuck rather than slow.
+    Typing wins. A poll that finds something has to open the room — measured
+    at 171 ms to 355 ms on a live 33-member room, four times in 40 s, against
+    0.3 ms for a poll that finds nothing — and this loop is single-threaded,
+    so doing that between keystrokes is what makes input feel stuck rather
+    than slow.
+
+    The keystroke clock cannot see somebody writing Hangul. The IME keeps
+    every jamo and paints the half-made syllable at the terminal's own caret,
+    so nothing reaches this loop until the syllable commits and the grace
+    expires *inside* a word. Text already in the composer is the evidence the
+    clock is missing, and it buys the longer grace: long enough to cover the
+    pauses inside a sentence, short enough that a message left half-written
+    does not stop the room from moving. It is shorter than the macOS port it
+    came from, where the same poll costs 1.3 s to 1.9 s; here the log overlay
+    means there is less to hide.
     """
-    if now - last_key_at < TYPING_GRACE_SECONDS:
+    grace = COMPOSING_GRACE_SECONDS if composing else TYPING_GRACE_SECONDS
+    if now - last_key_at < grace:
         return False
     return now >= due_at
 

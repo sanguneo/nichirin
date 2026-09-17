@@ -27,6 +27,9 @@ from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
+DIGEST_LIMIT = 400
+"""How many of the newest messages a digest slices, matching the screen's /sum."""
+
 
 def _positive(value: str) -> int:
     parsed = int(value)
@@ -80,6 +83,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_room_selector(messages, required=True)
     messages.add_argument("--limit", type=_positive, default=DEFAULT_LIMIT)
     messages.add_argument("--before-id", type=int, help="Page backwards from this id")
+
+    digest = commands.add_parser(
+        "digest", help="Slice recent conversation into time windows and describe each"
+    )
+    _add_room_selector(digest, required=True)
+    digest.add_argument("--span", default="30m", help="Slice length such as 30m or 2h")
+    digest.add_argument(
+        "--limit",
+        type=_positive,
+        default=DIGEST_LIMIT,
+        help="How many of the newest messages to slice",
+    )
+    digest.add_argument(
+        "--highlights", type=_positive, default=3, help="Representative lines per slice"
+    )
 
     friends = commands.add_parser("friends", help="List the signed-in user's friends")
     friends.add_argument("--favorites", action="store_true", help="Only 즐겨찾기")
@@ -166,6 +184,37 @@ def _selected_room(reader: Reader, arguments: argparse.Namespace):
     return _resolve(reader, target)
 
 
+def _digest(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any]:
+    """Hand a caller the same extractive digest the screen's /sum builds.
+
+    Extractive, not generative: there is no model in this process, so nothing
+    here is invented. What comes back is the material a model would want —
+    how busy each window was, who carried it, which words it was about, and
+    the lines most likely to carry the point — rather than a page of raw
+    messages for the caller to chew through itself.
+    """
+    from .tui import digest as digest_module
+
+    try:
+        span = digest_module.parse_duration(arguments.span)
+    except digest_module.DurationError as error:
+        raise KanaoError(ErrorCode.INVALID_REQUEST, str(error)) from error
+    room = _selected_room(reader, arguments)
+    found = reader.messages(room.id, limit=arguments.limit)
+    slices = digest_module.slice_messages(found, span)
+    return success(
+        {
+            "room": room.as_json(),
+            "span": arguments.span,
+            "considered": len(found),
+            "slices": digest_module.as_json(slices, arguments.highlights),
+            "note": "Extractive, not generative: counts, speakers, keywords and "
+            "verbatim highlights from the newest messages only. Nothing here is a "
+            "summary; write one from it.",
+        }
+    )
+
+
 def run(arguments: argparse.Namespace, reader: Reader) -> int:
     """Execute one command and return its exit status."""
     if arguments.command == "status":
@@ -188,6 +237,10 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
     if arguments.command == "context":
         target = arguments.room_id if arguments.room_id is not None else arguments.room
         _emit(read_context(reader, target, arguments.limit))
+        return 0
+
+    if arguments.command == "digest":
+        _emit(_digest(reader, arguments))
         return 0
 
     if arguments.command == "messages":
@@ -398,6 +451,7 @@ def _tui(reader: Reader) -> int:
     """Hand the terminal to the browser, restoring it however it ends."""
     from .tui.app import App
     from .tui.console import Console, supports_tui
+    from .tui.theme import Theme, detect_dark_mode
 
     if not supports_tui():
         raise KanaoError(
@@ -405,8 +459,11 @@ def _tui(reader: Reader) -> int:
             "the terminal interface needs an interactive Windows console; "
             "run it directly rather than through a pipe",
         )
+    # Asked once, here, for the same reason the name ledger is opt-in: a
+    # default that reads the machine makes every test depend on the machine.
+    theme = Theme(dark=detect_dark_mode())
     with Console() as console:
-        App(reader).run(console)
+        App(reader, theme=theme).run(console)
     return 0
 
 

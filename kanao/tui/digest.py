@@ -148,6 +148,33 @@ def slice_messages(
     return slices
 
 
+def as_json(slices: Iterable[Slice], highlights: int = 3) -> list[dict[str, object]]:
+    """Render slices as data, for a caller that will reason over them.
+
+    Instants are explicit UTC and every identifier is a string, as everywhere
+    else on the boundary. What a slice carries is what the screen shows of it
+    — how busy, who, which words, which lines — and nothing is invented: a
+    highlight is a message that was really sent, id and all.
+    """
+    return [
+        {
+            "from": piece.start.isoformat(),
+            "to": piece.end.isoformat(),
+            "count": piece.count,
+            "speakers": [
+                {"name": name, "count": count} for name, count in piece.speakers
+            ],
+            "keywords": [
+                {"word": word, "count": count} for word, count in piece.keywords
+            ],
+            "highlights": [
+                message.as_json() for message in piece.highlights(highlights)
+            ],
+        }
+        for piece in slices
+    ]
+
+
 def as_text(slices: Iterable[Slice], zone: timezone) -> str:
     """Render slices as plain text, for handing to a model or to a file."""
     lines: list[str] = []

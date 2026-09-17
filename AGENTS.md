@@ -85,6 +85,13 @@ Every command pays discovery before it answers, and both halves were slow:
   to the full decryption** in both. The base pages are charged to the cache
   budget too, because an entry that quietly costs twice what the cache believes
   is how a budget stops meaning anything.
+- **The image reaches SQLite as memory, and that is worth a whole Python
+  version.** `_connect` hands the decrypted bytes to `sqlite3`'s `deserialize`,
+  which exists from 3.11; before that the image has to be written to a
+  temporary file and backed up into memory. On the 29.9 MB catalog that is
+  **5.4 ms against 240.9 ms**, per database opened, and a room log is larger
+  than the catalog. It is also the difference between the plaintext never
+  touching the disk and it being written and unlinked.
 - **The decryption is checked with `PRAGMA quick_check`, not `integrity_check`.**
   Both walk every page and every B-tree, which is what a wrong key fails; the
   full check additionally verifies index sort order against the rows indexed,
@@ -234,20 +241,67 @@ on a live client, newest 4,000 rows of each readable room.
 
 - The palette is OmO's `dark` theme, duplicated rather than imported, because
   this project must not read another program's install.
+- **The light palette is not the dark one inverted, and it is measured.** A
+  tint that reads as calm on a dark field is simply missing on a white one, so
+  the light speakers carry more saturation and far less lightness, and the
+  yellow-to-cyan arc is darkened again because those hues lose contrast first.
+  Every name and body colour clears **3.8:1** against `#eff1f5` and white — the
+  worst measured 4.11:1 — with all 40 still distinct. `success` and `warning`
+  are darker than the palette they came from (2.96:1 and 2.31:1 originally)
+  because they are not decoration: they are the `✓`, the `?` and the `@` that
+  say whether a message was delivered and whether it named you.
+- **Only `cli` asks what the terminal looks like.** `Theme(dark=True)` is the
+  default and `detect_dark_mode` is called once, in `_tui`, for the same
+  reason the name ledger is opt-in: a default that reads the machine makes
+  every test depend on the machine. Detection is `KANAO_THEME`, then
+  `COLORFGBG`, then the Windows app theme in the registry, then dark — nothing
+  can read Windows Terminal's actual background, which keeps its scheme to
+  itself and reports the legacy attribute table whatever the scheme says.
+- **A URL is clickable, and every line it reaches carries the whole target.**
+  `wrap_with_links` binds an OSC 8 hyperlink per line, so a link split across
+  two rows opens the same address from either half rather than a truncated one.
+  The pieces are matched back to the source **character by character**, not by
+  counting: wrapping drops the spaces it breaks on, so length arithmetic drifts
+  by however many it dropped and silently binds the target to the wrong letters
+  — a message with two spaces in it is enough. The escapes are zero-width and
+  `_ANSI` knows them, or every column after a link would move by the length of
+  the URL. Links are emitted only when the theme is enabled.
 - **Never measure text with `len()`.** Hangul is double-width and every line
   carries escape sequences; `layout.display_width` is the only correct ruler,
   and a mistake here silently shifts every column rather than raising.
 - The console must be switched to code page 65001 before drawing or Hangul is
   replaced, and virtual terminal processing must be enabled or escapes print
   literally. Both are restored on exit along with the alternate screen.
-- Frames are rebuilt whole and written once. Partial redraws flicker and strand
-  stale cells.
+- **Frames are rebuilt whole and written by the row that changed.** Every frame
+  is still composed in full — a caller never decides what to repaint, which is
+  what made partial redraws flicker and strand cells — but `Console.draw`
+  remembers the rows it painted and writes only the ones that now differ, at
+  absolute coordinates. A frame the screen already holds writes nothing. The
+  loop redraws after every keystroke and again each time the key wait expires,
+  so a whole frame meant 11 KB at 200x50 several times a second, each ending in
+  a cursor move; a Korean IME anchors its composition to that caret and redraws
+  it with the cells beneath, which is why typing Hangul lagged where ASCII did
+  not. Measured against the fixture room: one keystroke 11,175 B → 275 B, an
+  idle second 89,400 B → **0 B**. Replaying both paths through a terminal model
+  at 120x40, 200x50 and 80x24 left every cell and the caret identical, which is
+  the only thing that licenses writing less. The cache is given up on a resize
+  and on re-entering the alternate screen, and it is sound only because
+  `Console.draw` is the sole writer to that screen.
 - **The frame is cut and filled to the screen by `Console.draw`, not by its
   callers.** One line wider than the console wraps, and every row after it lands
   a row late and at the wrong column: driving a real console left 23 rows
   holding the previous frame where two were expected, which is exactly the chat
   remnants that showed under the room list. Narrow lines are padded, so no cell
   survives a frame it does not belong to.
+- **The minimum size is the layout's, not the paint's.** `Console.size` never
+  reports below 20x8 so producers always have room to lay something out, but a
+  window really can be smaller: at 30x5 it still answers 29x8. Painting eight
+  rows into five scrolls the screen, which moves both the caret and the rows
+  `draw` remembers, so the paint is clipped to `_visible_size` and the caret is
+  clamped into it. A `\r`, `\n` or `\t` in a line is replaced with a space for
+  the same reason at the other end: `layout.display_width` counts it as zero
+  columns, so it pads to exactly the right width and then renders as a break
+  that moves every row after it.
 - **Wrapping is turned off through the console mode, not the escape.**
   `\x1b[?7l` is accepted and ignored here — a 140-column line still wrapped on a
   120-column screen — so `_wrap_free_mode` clears `ENABLE_WRAP_AT_EOL_OUTPUT` while
@@ -305,6 +359,26 @@ on a live client, newest 4,000 rows of each readable room.
 - The composer keeps focus for the whole time a room is open, so no letter is
   a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
   used to do. `test_tui_send.py` pins that a typed `q` does not quit.
+- **Several conversations can be open, and only one has the keyboard.**
+  `App.chats` is the list and `App.chat` is a property over it, which is why
+  everything acting on "the" conversation still says `self.chat` and never had
+  to learn about panes. A pane needs `MIN_PANE_COLUMNS` (44) to read as a
+  conversation at all — Hangul is two columns a character — so the window
+  decides how many are drawn: two from 89 columns, three from 134. A room that
+  stops fitting is **hidden, not closed**, because the reader opened it and a
+  window getting smaller is not a decision to let one go; the header row then
+  appears even over a single pane, or nothing on screen would say there is
+  another room to `tab` to. `esc` closes the focused pane, not the screen.
+- **Each pane keeps its own watcher, unlike the macOS build.** There one
+  fingerprint covers the whole account, so sharing a watcher is what stops
+  panes multiplying the most expensive thing that build does. Here a room *is*
+  its own database and a poll is one stat of its log, so panes cost exactly
+  what they read — and an off-screen pane is still followed, or its unseen
+  count would start from whenever the window happened to get wider.
+- **A message belongs to the room it arrived in.** `_confirm_delivery` takes
+  the conversation as an argument rather than reading the focused one, or a
+  tick would land in whichever pane the keyboard was in when the client wrote
+  the message back.
 - **Console input comes from `ReadConsoleInputW`, never `msvcrt`.**
   `kbhit()` is true for key-up, focus, mouse and buffer-resize records while
   `getwch()` blocks on them, so the loop stalled until the next real key
@@ -334,13 +408,31 @@ on a live client, newest 4,000 rows of each readable room.
   when the snapshot had gone stale, and sending a message is exactly what
   makes it stale, so the duplicate-title census comes from the room list the
   screen already loaded rather than from a fresh read.
+- **A refusal for a duplicate title names the other room.** The way out of the
+  collision is in the client — a title is the only thing a window can be
+  addressed by, so one of the two rooms has to be renamed — and "there are 2"
+  does not say which one that is. The other room is described by kind, size
+  and last activity, from the list the screen already holds, so this costs
+  nothing the send was not already carrying. Three titles collide across 272
+  rooms on the account this was measured on, so it is not a hypothetical.
 - **Polling yields to typing.** A poll that finds something used to re-decrypt
   the room's whole log — 0.62 s and 0.94 s measured on two live rooms — and
   this loop is single-threaded, so `_poll_due` defers while keys are still
   arriving and `_next_poll_at` waits behind an expensive room instead of in
   front of it. The log-only overlay is what let `REFRESH_SECONDS` drop from
   0.35 to 0.15; the deferral stays, because an arrival is still the most
-  expensive thing that can happen between two keystrokes.
+  expensive thing that can happen between two keystrokes. Re-measured after
+  the overlay: a poll that opens the room costs 171–355 ms, four times in 40 s
+  on a live 33-member room, against 0.30 ms for one that finds nothing.
+- **The keystroke clock cannot see Hangul being typed, so the draft box
+  answers for it.** The IME holds every jamo and paints the half-made syllable
+  at the terminal's own caret, so nothing reaches the loop until the syllable
+  commits and `TYPING_GRACE_SECONDS` expires *inside* a word — which is why
+  typing stuttered where the same keys in ASCII did not. Text already in the
+  composer is the evidence the clock is missing, so it raises the grace to
+  `COMPOSING_GRACE_SECONDS`. That is 1.5 s rather than the macOS port's 3.0 s
+  because the hidden poll costs 171–355 ms here against 1.3–1.9 s there; a
+  message left half-written still lets the room move again 1.5 s later.
 - **The first frame is drawn before the first decryption.** Opening the
   interface means decrypting the catalog, which is the slowest thing this
   program does, and it used to happen before anything reached the screen — so
@@ -519,8 +611,134 @@ on a live client, newest 4,000 rows of each readable room.
 - When patching a module attribute, bind the original **before** patching or
   the wrapper will call itself.
 
+## What was taken from the macOS sister project, and what was not
+
+`kamado-cli` is the macOS port and the two repositories drift. Work crosses
+over by hand, so the reasons for *not* crossing something over are recorded
+here — otherwise the same question gets re-answered every time the gap is
+noticed again.
+
+Taken:
+
+- **Row-level repainting** (`kamado-cli#23`). Reviewed, merged there, ported
+  here with the Windows frame's own per-row `CLEAR_LINE` and trailing
+  `CLEAR_BELOW`, and re-measured on this side.
+- **Clipping the paint to the physical window**, and scrubbing `\r`, `\n` and
+  `\t` out of a line. Not a feature, a latent bug in both.
+- **Clickable URLs** (`kamado-cli#22`), reimplemented. The upstream version
+  maps wrapped lines back to the source with `len()` arithmetic, which drifts
+  by every space the wrapper dropped; here the characters are matched directly.
+- **The light palette and appearance detection** (`kamado-cli#20`), with the
+  macOS `defaults read` probe replaced by the Windows app-theme registry value
+  and the contrast re-measured rather than inherited.
+- **Holding the poll while a message is being written** (`kamado-cli#25`). The
+  IME is blind to the keystroke clock on both sides, so the mechanism crossed
+  over unchanged; the constant did not. 3.0 s there buys back a 1.3–1.9 s
+  poll, and the same poll measured 171–355 ms here, so it is 1.5 s.
+- **Naming the room an ambiguous send is torn between** (`kamado-cli#26`).
+  Ported as written — the census and the room list it describes from are the
+  same on both sides — and it is live here: three titles collide across the
+  272 rooms of the account it was checked against.
+
+Not taken, and why:
+
+- **Showing photos in the conversation** (`kamado-cli#32`, still open there).
+  Neither half of it exists on this side. The transport is the **kitty
+  graphics protocol**, which Windows Terminal does not implement — what it
+  gained in 1.22 is sixel, a different protocol — so the escape layer would be
+  written from scratch rather than ported. The conversion is `sips`, which is
+  a macOS binary, so WebP and JPEG would need another answer too. And the
+  feature is the first thing in either repo that makes the *tool* talk to the
+  network: a photo is a CDN address in the database, not pixels, so showing
+  one means fetching it. This repo's description is "네트워크 0회" and its
+  README says the client does the network talking, so that is a promise to
+  change deliberately rather than a detail to inherit.
+- **Opening a room through the client's search box** (`kamado-cli#29`). There
+  the fix works because accessibility hands over the *name* of every row: type
+  the room into the search field, read 648 row names, click the one that
+  matches. Both halves of that are missing here. The room list is owner-drawn,
+  so a row is neither a child window nor a UIA element and carries no name to
+  match — and the list reports no scroll state either (`GetScrollInfo` on both
+  `EVA_VH_ListControl_Dblclk` and its `_EVA_CustomScrollCtrl` answered
+  `min=0 max=0 page=0 pos=0`), so even *whether* a search narrowed the list is
+  unobservable. The main window does hold `Edit` controls that are plausibly
+  the search fields — two of them, visible and enabled but sized 0×0 until
+  search opens — so the typing half is probably reachable. It is the reading
+  half that is not: the only way to learn which room a filtered row holds is
+  to open it, which is the exact cost (a stranger's room opened and marked
+  read) the change exists to avoid. What is already done here instead is the
+  remembered row in `rows.json` plus closing a window whose title does not
+  match, which brought a measured four wrong rooms to none.
+- **Running through `uv` for speed**, which that README recommends. The
+  speedup it reports is not uv's: macOS ships Python 3.9, so `_connect` there
+  falls back to a temporary file, and `uv run --python 3.12` is simply the
+  easiest way to get a 3.11+ interpreter onto a Mac. Windows ships no Python
+  at all, so whatever is installed is what runs, and the fast path is already
+  taken on anything past 3.10. Measured here, the launcher is a cost rather
+  than a saving: `uv run --no-project python -c pass` 63.9 ms against 29.6 ms,
+  and `status` 313.1 ms against 253.3 ms. With no dependencies to resolve,
+  uv has nothing to win back — the README says "use 3.11+" instead, and names
+  uv only as one way to get it.
+- **Expiring the delivery tick after 1.6 s** (`kamado-cli#27`). There the tick
+  is a whole row above the composer, and that row is shared: `_status_line`
+  gives a delivery priority over the notice and the unseen count, so a tick
+  that never expires hides them. Here the mark is a single cell on the
+  composer's right border, where it displaces nothing and hides nothing —
+  `delivered` is read in exactly one place, the box. A ✓ still standing an
+  hour later is not stale either; it says the last thing sent did arrive,
+  which stays true until the next send, and typing already clears it. Adding
+  a clock would retire the one fact worth keeping for no room reclaimed.
+- **Waiting longer for a split escape sequence** (`kamado-cli#28`). A macOS
+  terminal delivers Escape and the arrow keys as bytes, so a lone `\x1b` is
+  only telling apart from `\x1b[D` by waiting — and 30 ms was too short when
+  the two halves arrived in separate reads, which quit the interface instead
+  of moving the caret. This console reads `ReadConsoleInputW` records, so an
+  arrow arrives as `VK_LEFT` and Escape as `VK_ESCAPE`: two different records,
+  nothing to disambiguate and no delay to tune.
+- **Parallel page decryption across cores** (`kamado-cli#21`). The expensive
+  case it speeds up barely happens here: the WAL overlay already means an
+  arriving message costs 100.2 ms rather than 431.5 ms on a 48.3 MB room, and
+  a full decryption is the rare path. Against that, Windows starts
+  subprocesses by spawning, and a `PreparedKey` wraps a CNG handle that cannot
+  cross a process boundary — so this is a redesign of the key handling, not a
+  port, and nothing measured here says it would pay for itself.
+- **Reading a room's name out of the meta table** (`kamado-cli#24`). On macOS a
+  rename leaves `NTChatRoom.chatName` null and writes the name to `NTChatMeta`
+  as `type = 3`, so the reader had to go and get it. The Windows client keeps
+  the same meta table — `chatMetas`, same `type = 3`, 7 named rooms of 59 rows
+  — but it also writes the name straight into `chatRoomList.chatRoomTitle`,
+  and that column is filled for **all 272** rooms. Checked room by room: the
+  title this reader composes differs from the stored one in exactly one room,
+  the self-chat, which is the deliberate disagreement `stored_title` already
+  documents. The meta name disagrees with the catalog in one room, where the
+  meta row is from 2018 and its revision is far below the room's
+  `lastSyncMetaRevision` — so on this side the meta table is the **stale**
+  copy, and preferring it would introduce the bug the macOS change removes.
+- **The resident daemon on a Unix domain socket.** There is no such socket to
+  bind; it would be a named pipe and a different program, and the command
+  costs that motivated it were already paid down by the context cache and the
+  `os.walk` change.
+- **The louder dark speaker tints** (`kamado-cli#19`, and the dark half of
+  `#20`). That palette raises name saturation to 0.75 and drops lightness to
+  0.72. This repo's dark tints are deliberately near-invisible — one base grey,
+  a slight tint — and `test_tui_layout.py` pins the subtlety and the
+  separability against each other on purpose. Taking the louder version would
+  fail those tests by design rather than by accident, so only the light half
+  crossed over. The dark tints are bit-identical to what they were: checked
+  across 63 speakers, names and bodies, before and after.
+- **The macOS window automation.** `winauto.py` is this side's equivalent and
+  solves the same problems differently; there is nothing to share.
+
 ## Deliberately absent
 
 Login automation, protocol reimplementation, history harvesting, attachment
 sending, automatic chat-window opening, and macOS support.
 The supported write operation is text sent through an existing client window.
+
+**Calling an agent from inside the interface.** `/ask` shipped in 0.9.0 and
+was removed in 0.10.0, on both sides. The direction was inverted: the agent
+drives this CLI — `context`, `digest`, `follow` are the interface built for it
+— rather than this tool driving an agent. Which agent, what it is shown and how
+it is asked are the agent's decisions, and a `/ask` inside the screen made the
+tool make all three. It also broke "no network" by proxy: the core opened no
+socket, but the `omo` it spawned did. This tool spawns no process.

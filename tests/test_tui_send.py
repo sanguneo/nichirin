@@ -15,6 +15,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from kanao.errors import ErrorCode, KanaoError
+from kanao.model import GROUP_CHAT
 from kanao.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
 from kanao.tui import console as console_module
 from kanao.tui.console import (
@@ -203,6 +204,34 @@ class ComposerTests(ComposerCase):
         self.assertEqual(self.sender.sent, [])
         self.assertIn("특정할 수 없습니다", self.chat.notice)
 
+    def test_the_refusal_names_the_room_it_is_torn_between(self) -> None:
+        """The collision is only resolved in the client, so say which room.
+
+        A title is the only thing a window can be addressed by, so the way
+        out is renaming one of the two rooms. Told only that there are two,
+        nobody can tell which one that is.
+        """
+        twin = replace(
+            self.chat.room,
+            id=self.chat.room.id + 1,
+            type=GROUP_CHAT,
+            member_count=2,
+            last_updated_at=1_700_000_000,
+        )
+        self.app.rooms = [*self.app.rooms, twin]
+        self.app.titles = [self.chat.room.title, twin.title]
+        self.type("안녕")
+        self.press_enter()
+        self.assertEqual(self.sender.sent, [])
+        self.assertIn("group", self.chat.notice)
+        self.assertIn("2명", self.chat.notice)
+
+    def test_the_room_being_sent_to_is_not_named_as_the_other_one(self) -> None:
+        self.app.titles = [self.chat.room.title, self.chat.room.title]
+        self.type("안녕")
+        self.press_enter()
+        self.assertNotIn("다른 방", self.chat.notice)
+
 
 class LeavingTests(ComposerCase):
     """Leaving a room keeps a draft; clearing one must stay cleared."""
@@ -329,13 +358,28 @@ class PollSchedulingTests(unittest.TestCase):
     """Polling must never sit in front of the person typing."""
 
     def test_a_recent_keystroke_defers_the_poll(self) -> None:
-        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=9.9))
+        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=9.9, composing=False))
 
     def test_a_pause_lets_the_poll_run(self) -> None:
-        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0))
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0, composing=False))
 
     def test_a_poll_that_is_not_due_yet_waits(self) -> None:
-        self.assertFalse(_poll_due(now=10.0, due_at=11.0, last_key_at=0.0))
+        self.assertFalse(_poll_due(now=10.0, due_at=11.0, last_key_at=0.0, composing=False))
+
+    def test_a_half_written_message_survives_an_ime_pause(self) -> None:
+        """A syllable being assembled reaches this loop as silence.
+
+        The jamo stay inside the IME, which paints the half-made syllable at
+        the terminal's own caret, so a second of nothing arriving is somebody
+        mid-word rather than somebody who stopped.
+        """
+        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0, composing=True))
+
+    def test_the_same_silence_with_an_empty_box_still_polls(self) -> None:
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0, composing=False))
+
+    def test_a_message_left_sitting_stops_holding_the_room_still(self) -> None:
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=8.0, composing=True))
 
     def test_a_cheap_poll_keeps_the_ordinary_interval(self) -> None:
         self.assertAlmostEqual(_next_poll_at(100.0, 0.0003), 100.0 + REFRESH_SECONDS)
@@ -464,7 +508,7 @@ class SentMarkTests(ComposerCase):
         self.chat.messages.append(
             replace(self.chat.messages[-1], id=99_999, text="보낸 말", from_me=True)
         )
-        self.app._confirm_delivery(self.chat.messages[-1:])
+        self.app._confirm_delivery(self.chat, self.chat.messages[-1:])
         box = self.composer()
         self.assertIn("✓", box)
         self.assertNotIn("*", box)
@@ -479,7 +523,7 @@ class SentMarkTests(ComposerCase):
         self.chat.messages.append(
             replace(self.chat.messages[-1], id=99_998, text="보낸 말", from_me=True)
         )
-        self.app._confirm_delivery(self.chat.messages[-1:])
+        self.app._confirm_delivery(self.chat, self.chat.messages[-1:])
         self.type("다")
         self.assertNotIn("✓", self.composer())
 
@@ -543,6 +587,7 @@ class DeliveryMarkTests(ComposerCase):
 
     def arrive(self, text: str) -> None:
         self.app._confirm_delivery(
+            self.chat,
             [replace(self.chat.messages[-1], id=90_001, text=text, from_me=True)]
         )
 

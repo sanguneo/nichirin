@@ -35,7 +35,7 @@ USER_MESSAGE_BG: Final = "#343541"
 CUSTOM_MESSAGE_BG: Final = "#2d2838"
 CUSTOM_MESSAGE_LABEL: Final = "#9575cd"
 
-TOKENS: Final[dict[str, str]] = {
+TOKENS_DARK: Final[dict[str, str]] = {
     "accent": ACCENT,
     "border": BLUE,
     "borderAccent": CYAN,
@@ -51,6 +51,42 @@ TOKENS: Final[dict[str, str]] = {
     "customMessageBg": CUSTOM_MESSAGE_BG,
     "customMessageLabel": CUSTOM_MESSAGE_LABEL,
 }
+
+# -- The same tokens for a light terminal ------------------------------------
+#
+# Every colour above is chosen to sit on a dark background: on a white one the
+# text greys out and the muted tokens disappear entirely. These are the same
+# roles at the other end of the scale.
+
+TOKENS_LIGHT: Final[dict[str, str]] = {
+    "accent": "#1e66f5",
+    "border": "#1e66f5",
+    # Darker than the palette these came from, because `success` and
+    # `warning` are not decoration here: they are the ✓, the ? and the @
+    # that say whether a message was delivered and whether it named you.
+    # At the original #40a02b and #df8e1d those measured 2.96:1 and 2.31:1
+    # against a light terminal, which is a mark you have to look for.
+    "borderAccent": "#00728f",
+    "borderMuted": "#9ca0b0",
+    "success": "#2f7d20",
+    "error": "#d20f39",
+    "warning": "#8f6200",
+    "muted": "#5c5f77",
+    "dim": "#7c7f93",
+    "text": "#3c3e4f",
+    "selectedBg": "#ccd0da",
+    "userMessageBg": "#dce0e8",
+    "customMessageBg": "#e6e9ef",
+    "customMessageLabel": "#8839ef",
+}
+
+TOKENS: Final = TOKENS_DARK
+"""The dark tokens under their old name; a `Theme` reads `self.tokens`."""
+
+THEME_VARIABLE: Final = "KANAO_THEME"
+LIGHT_BACKGROUND: Final = "#eff1f5"
+"""What a light palette is checked against: a shade off white, because white
+is the easiest background for dark text and proves the least."""
 
 RESET: Final = "\x1b[0m"
 BOLD: Final = "\x1b[1m"
@@ -97,9 +133,19 @@ def to_256(hex_colour: str) -> int:
 class Theme:
     """Renders colour for one terminal's capabilities."""
 
-    def __init__(self, truecolor: bool | None = None, enabled: bool | None = None) -> None:
+    def __init__(
+        self,
+        truecolor: bool | None = None,
+        enabled: bool | None = None,
+        dark: bool = True,
+    ) -> None:
         self.enabled = _colour_supported() if enabled is None else enabled
         self.truecolor = _truecolor_supported() if truecolor is None else truecolor
+        self.dark = dark
+        """Dark unless a caller says otherwise. `detect_dark_mode` is asked
+        once, by `cli`, for the same reason the name ledger is: a default that
+        reads the machine makes every test depend on the machine."""
+        self.tokens = TOKENS_DARK if dark else TOKENS_LIGHT
 
     def _sequence(self, hex_colour: str, background: bool) -> str:
         layer = 48 if background else 38
@@ -112,14 +158,14 @@ class Theme:
         """Paint *text* in a theme token or a literal hex colour."""
         if not self.enabled or not text:
             return text
-        colour = TOKENS.get(token_or_hex, token_or_hex)
+        colour = self.tokens.get(token_or_hex, token_or_hex)
         return f"{self._sequence(colour, False)}{text}{RESET_FG}"
 
     def bg(self, token_or_hex: str, text: str) -> str:
         """Fill the background of *text*, leaving any foreground runs intact."""
         if not self.enabled:
             return text
-        colour = TOKENS.get(token_or_hex, token_or_hex)
+        colour = self.tokens.get(token_or_hex, token_or_hex)
         # Existing foreground resets inside the run must not clear the fill.
         body = text.replace(RESET_BG, self._sequence(colour, True))
         return f"{self._sequence(colour, True)}{body}{RESET_BG}"
@@ -136,6 +182,52 @@ def _colour_supported() -> bool:
     return sys.stdout.isatty()
 
 
+def detect_dark_mode() -> bool:
+    """Whether the terminal is most likely showing light text on a dark field.
+
+    Nothing here can read the terminal's actual background: Windows Terminal
+    keeps its colour scheme to itself and reports the legacy attribute table
+    through the console API whatever the scheme says. So this is three
+    guesses in order of how much they know, and the answer is dark when none
+    of them do — which is both the common case and the one the palette was
+    built for.
+    """
+    wanted = os.environ.get(THEME_VARIABLE, "").strip().lower()
+    if wanted in ("light", "latte", "white"):
+        return False
+    if wanted in ("dark", "mocha", "black"):
+        return True
+
+    # Set by some terminals as "foreground;background" in palette indices.
+    foreground_background = os.environ.get("COLORFGBG", "")
+    if ";" in foreground_background:
+        try:
+            background = int(foreground_background.rsplit(";", 1)[1])
+        except ValueError:
+            background = -1
+        if background in (7, 15):
+            return False
+        if background in (0, 8):
+            return True
+
+    return not _apps_use_light_theme()
+
+
+def _apps_use_light_theme() -> bool:
+    """The Windows app theme, which a terminal following the OS will match."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return bool(value)
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def _truecolor_supported() -> bool:
     if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
         return True
@@ -148,12 +240,25 @@ def _truecolor_supported() -> bool:
 _BASE_LIGHTNESS: Final = 0.831  # #d4d4d4 expressed as HSL lightness.
 _NAME_SATURATION: Final = 0.46
 _BODY_SATURATION: Final = 0.10
-_GOLDEN_ANGLE: Final = 137.507764  # Spreads consecutive hues as far as possible.
 _LIGHTNESS_STEPS: Final = (0.0, -0.035, 0.035)
 """Hue alone stops separating once a room has many speakers, because a small
 saturation over a 360-degree circle rounds neighbours to the same byte. A
 three-step lightness cycle multiplies the usable slots without making any one
 speaker louder than another."""
+
+# The light end is not the dark end inverted. A tint that reads as subtle on
+# a dark field is nearly invisible on a white one, so the names carry more
+# saturation and far less lightness, and the yellow-to-cyan arc is darkened
+# again because those hues are naturally bright and lose contrast first.
+_LIGHT_BASE_LIGHTNESS: Final = 0.35
+_LIGHT_NAME_LIGHTNESS: Final = 0.28
+_LIGHT_NAME_SATURATION: Final = 0.85
+_LIGHT_BODY_SATURATION: Final = 0.15
+_LIGHT_LIGHTNESS_STEPS: Final = (0.0, -0.03, 0.03)
+_LIGHT_BRIGHT_HUES: Final = (40.0, 185.0)
+_LIGHT_BRIGHT_RELIEF: Final = 0.04
+
+_GOLDEN_ANGLE: Final = 137.507764  # Spreads consecutive hues as far as possible.
 
 
 def _hsl_to_hex(hue: float, saturation: float, lightness: float) -> str:
@@ -193,9 +298,10 @@ class SpeakerPalette:
     a speaker keeps the same tint for as long as the palette lives.
     """
 
-    def __init__(self, own_name: str | None = None) -> None:
+    def __init__(self, own_name: str | None = None, dark: bool = True) -> None:
         self._assigned: dict[str, int] = {}
         self._own_name = own_name
+        self.dark = dark
 
     def _slot(self, speaker: str) -> int:
         if speaker not in self._assigned:
@@ -207,15 +313,27 @@ class SpeakerPalette:
         return (self._slot(speaker) * _GOLDEN_ANGLE + _hue_for(speaker) * 0.02) % 360
 
     def _lightness(self, speaker: str) -> float:
-        return _BASE_LIGHTNESS + _LIGHTNESS_STEPS[self._slot(speaker) % len(_LIGHTNESS_STEPS)]
+        slot = self._slot(speaker)
+        if self.dark:
+            return _BASE_LIGHTNESS + _LIGHTNESS_STEPS[slot % len(_LIGHTNESS_STEPS)]
+        low, high = _LIGHT_BRIGHT_HUES
+        relief = _LIGHT_BRIGHT_RELIEF if low <= self.hue(speaker) <= high else 0.0
+        return (
+            _LIGHT_NAME_LIGHTNESS
+            - relief
+            + _LIGHT_LIGHTNESS_STEPS[slot % len(_LIGHT_LIGHTNESS_STEPS)]
+        )
 
     def name_colour(self, speaker: str) -> str:
         """A tint for the speaker's name: short enough to carry real colour."""
-        return _hsl_to_hex(self.hue(speaker), _NAME_SATURATION, self._lightness(speaker))
+        saturation = _NAME_SATURATION if self.dark else _LIGHT_NAME_SATURATION
+        return _hsl_to_hex(self.hue(speaker), saturation, self._lightness(speaker))
 
     def body_colour(self, speaker: str) -> str:
         """A far weaker tint for the message itself, so the text stays the text."""
-        return _hsl_to_hex(self.hue(speaker), _BODY_SATURATION, _BASE_LIGHTNESS)
+        saturation = _BODY_SATURATION if self.dark else _LIGHT_BODY_SATURATION
+        base = _BASE_LIGHTNESS if self.dark else _LIGHT_BASE_LIGHTNESS
+        return _hsl_to_hex(self.hue(speaker), saturation, base)
 
     def distinct_names(self, speakers: list[str]) -> int:
         """How many of *speakers* end up visually separable; used by tests."""

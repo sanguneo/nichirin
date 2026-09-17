@@ -63,6 +63,47 @@ class CommandTests(unittest.TestCase):
         self.assertIn("coverage", answer)
         self.assertTrue(answer["coverage"]["localOnly"])
 
+    def test_digest_slices_the_room_and_names_who_spoke(self) -> None:
+        code, answer = self.invoke("digest", "--room-id", str(DIRECT_ROOM), "--span", "2h")
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["room"]["id"], str(DIRECT_ROOM))
+        self.assertEqual(answer["span"], "2h")
+        self.assertTrue(answer["slices"])
+        first = answer["slices"][0]
+        self.assertEqual(
+            set(first), {"from", "to", "count", "speakers", "keywords", "highlights"}
+        )
+        self.assertEqual(
+            sum(piece["count"] for piece in answer["slices"]), answer["considered"]
+        )
+        self.assertIn("Peer Renamed", [who["name"] for who in first["speakers"]])
+
+    def test_digest_highlights_are_real_messages_with_string_ids(self) -> None:
+        """Nothing is invented: a highlight is a row that was actually sent."""
+        _code, answer = self.invoke("digest", "--room-id", str(DIRECT_ROOM), "--span", "2h")
+        _code, page = self.invoke("messages", "--room-id", str(DIRECT_ROOM), "--limit", "50")
+        sent = {message["id"]: message["text"] for message in page["messages"]}
+        for piece in answer["slices"]:
+            for line in piece["highlights"]:
+                self.assertIsInstance(line["id"], str)
+                self.assertEqual(sent[line["id"]], line["text"])
+
+    def test_digest_says_it_is_not_a_summary(self) -> None:
+        _code, answer = self.invoke("digest", "--room-id", str(DIRECT_ROOM))
+        self.assertIn("note", answer)
+
+    def test_digest_refuses_a_span_it_cannot_use(self) -> None:
+        reader = build_reader()
+        self.addCleanup(reader.close)
+        for span in ("soon", "0m", "13h"):
+            with self.subTest(span=span):
+                arguments = cli.build_parser().parse_args(
+                    ["digest", "--room-id", str(DIRECT_ROOM), "--span", span]
+                )
+                with self.assertRaises(KanaoError) as caught:
+                    cli.run(arguments, reader)
+                self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
+
     def test_messages_pages_backwards(self) -> None:
         _code, answer = self.invoke(
             "messages", "--room-id", str(DIRECT_ROOM), "--before-id", "5001"
@@ -191,7 +232,8 @@ class ParserTests(unittest.TestCase):
     def test_every_command_is_reachable(self) -> None:
         for command in (
             ["status"], ["verify"], ["rooms"], ["context", "--room-id", "1"],
-            ["messages", "--room-id", "1"], ["search", "x"], ["follow"],
+            ["messages", "--room-id", "1"], ["digest", "--room-id", "1"],
+            ["search", "x"], ["follow"],
             ["query", "SELECT 1"], ["schema"],
         ):
             with self.subTest(command=command[0]):

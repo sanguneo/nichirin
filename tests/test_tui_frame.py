@@ -10,6 +10,7 @@ here rather than trusted.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import unittest
 from unittest.mock import patch
@@ -76,6 +77,134 @@ class FrameWidthTests(unittest.TestCase):
     def test_the_whole_screen_is_covered(self) -> None:
         rows = painted(["one", "two"])
         self.assertEqual(len(rows), ROWS)
+
+
+class SmallScreenTests(unittest.TestCase):
+    """The layout keeps a minimum size; the paint may not.
+
+    ``Console.size`` never reports fewer than 20x8 so producers always have
+    room to lay something out, but a window really can be smaller than that.
+    Writing eight rows into a five-row screen scrolls it, and then the caret
+    and the remembered rows both describe a screen that has moved.
+    """
+
+    def written(self, size, lines, cursor=None) -> str:
+        console = Console()
+        buffer = io.StringIO()
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            with patch.object(console_module, "_visible_size", lambda: size):
+                console.draw(lines, cursor)
+        finally:
+            sys.stdout = original
+        return buffer.getvalue()
+
+    def test_a_frame_is_never_taller_than_the_window(self) -> None:
+        with patch.object(console_module, "_visible_size", lambda: (30, 5)):
+            self.assertEqual(Console().size[1], 8, "the minimum no longer forces this")
+        written = self.written((30, 5), ["row"] * 20)
+        self.assertEqual(written.count("\r\n"), 4, "the frame scrolled the screen")
+
+    def test_a_frame_is_never_wider_than_the_window(self) -> None:
+        written = self.written((10, 5), ["가" * 40] * 5)
+        # strip_ansi leaves the cursor escapes alone: they carry a "?".
+        for escape in (HOME, CLEAR_BELOW, HIDE_CURSOR, SHOW_CURSOR):
+            written = written.replace(escape, "")
+        for row in written.split("\r\n"):
+            body = strip_ansi(row).replace(CLEAR_LINE, "")
+            self.assertLessEqual(display_width(body), 10, repr(body))
+
+    def test_the_caret_is_kept_on_the_screen(self) -> None:
+        written = self.written((30, 5), ["row"] * 20, (19, 28))
+        self.assertIn("\x1b[5;", written)
+        self.assertNotIn("\x1b[20;", written)
+
+    def test_a_newline_in_a_line_cannot_break_the_frame(self) -> None:
+        """It measures zero columns and then renders as a row of its own."""
+        written = self.written((COLUMNS, ROWS), ["before\nafter"] + [""] * (ROWS - 1))
+        self.assertEqual(written.count("\r\n"), ROWS - 1)
+        first = strip_ansi(written.split("\r\n")[0]).replace(CLEAR_LINE, "")
+        self.assertIn("before after", first)
+        self.assertEqual(display_width(first), drawn_width())
+
+
+class RepaintTests(unittest.TestCase):
+    """A redraw must cost the rows that changed, not the screen.
+
+    The interface redraws after every keystroke and again whenever the key
+    wait expires, so a whole-screen frame was rewritten several times a second
+    whether or not anything moved. Each of those ends in a cursor move, and a
+    Korean IME draws its composition over that cursor: typing Hangul lagged
+    behind the keyboard while ASCII, which composes nothing, did not.
+    """
+
+    def captured(self, action, size: tuple[int, int] = (COLUMNS, ROWS)) -> str:
+        """Run *action* with a known screen and return what it wrote."""
+        buffer = io.StringIO()
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            with patch.object(console_module, "_visible_size", lambda: size):
+                action()
+        finally:
+            sys.stdout = original
+        return buffer.getvalue()
+
+    def test_a_frame_the_screen_already_holds_is_not_written_again(self) -> None:
+        console = Console()
+        lines = ["첫 줄", "둘째 줄"]
+        self.assertNotEqual(self.captured(lambda: console.draw(lines, (1, 2))), "")
+        self.assertEqual(self.captured(lambda: console.draw(lines, (1, 2))), "")
+
+    def test_only_the_row_that_changed_is_written(self) -> None:
+        console = Console()
+        self.captured(lambda: console.draw(["one", "two", "three"], (0, 0)))
+        written = self.captured(lambda: console.draw(["one", "둘", "three"], (0, 0)))
+        self.assertIn("둘", written)
+        self.assertNotIn("three", written)
+        self.assertIn("\x1b[2;1H", written)  # Addressed, not reached by wrapping.
+
+    def test_a_caret_that_moved_costs_only_its_own_escape(self) -> None:
+        console = Console()
+        lines = ["안녕하세요"]
+        self.captured(lambda: console.draw(lines, (0, 0)))
+        written = self.captured(lambda: console.draw(lines, (0, 4)))
+        self.assertEqual(written, "\x1b[1;5H" + SHOW_CURSOR)
+
+    def test_a_resized_screen_is_painted_in_full_again(self) -> None:
+        """Rows cut to the old width describe a screen that no longer exists."""
+        console = Console()
+        lines = ["one", "two"]
+        self.captured(lambda: console.draw(lines))
+        written = self.captured(lambda: console.draw(lines), size=(COLUMNS + 10, ROWS))
+        self.assertTrue(written.startswith(HOME), written[:20])
+        self.assertEqual(written.count("\r\n"), ROWS - 1)
+
+    def test_entering_the_alternate_screen_forgets_what_was_painted(self) -> None:
+        """The screen a fresh alternate buffer shows is blank, not the last frame."""
+        console = Console()
+        lines = ["one", "two"]
+        self.captured(lambda: console.draw(lines))
+
+        def cycle() -> None:
+            # The real console is left alone: with no mode and no code page to
+            # restore, entering and leaving only writes escapes to the buffer.
+            with patch.object(console_module, "_set_utf8", lambda: None):
+                with patch.object(console_module, "_enable_vt", lambda: None):
+                    with console:
+                        pass
+
+        self.captured(cycle)
+        self.assertTrue(self.captured(lambda: console.draw(lines)).startswith(HOME))
+
+    def test_an_incremental_row_still_covers_the_full_width(self) -> None:
+        """A rewritten row is padded like a whole frame, or it strands cells."""
+        console = Console()
+        self.captured(lambda: console.draw(["가" * 30, "b"]))
+        written = self.captured(lambda: console.draw(["짧음", "b"]))
+        row = strip_ansi(written).replace(CLEAR_LINE, "").replace(HIDE_CURSOR, "")
+        self.assertEqual(display_width(row), drawn_width(), repr(row))
 
 
 class WrapModeTests(unittest.TestCase):
@@ -148,6 +277,46 @@ class AddressedLinesTests(unittest.TestCase):
             with self.subTest(width=width):
                 for line in self.app._transcript_lines(width):
                     self.assertLessEqual(display_width(line), width)
+
+
+class FeedLabelTests(unittest.TestCase):
+    """A feed row is bookkeeping, and it can say which kind without shouting it.
+
+    Its JSON stays out of the transcript — read as words it buries the
+    conversation, and one live open chat had 364 feeds in its newest 400
+    records — but the placeholder standing in for it carries what the row
+    states plainly. That is what makes an open chat's SafeBot recognisable
+    instead of one more `[feed]`.
+    """
+
+    def transcript(self, payload: dict) -> str:
+        reader = build_reader(
+            messages=[(5100, PEER_ID, 0, json.dumps(payload), None, 1_700_000_900, 0)]
+        )
+        self.addCleanup(reader.close)
+        app = App(reader, theme=Theme(truecolor=True, enabled=False))
+        app.load_rooms()
+        app.open_room(next(room for room in app.rooms if room.id == DIRECT_ROOM))
+        return "\n".join(strip_ansi(line) for line in app._transcript_lines(60))
+
+    def test_a_covered_message_is_recognisable_by_what_covered_it(self) -> None:
+        body = self.transcript(
+            {
+                "feedType": 26,
+                "coverType": "openchat_blind",
+                "chatLogInfos": [{"logId": 5099, "type": 1}],
+            }
+        )
+        self.assertIn("[feed 26 openchat_blind]", body)
+
+    def test_a_feed_with_only_a_number_shows_the_number(self) -> None:
+        body = self.transcript({"feedType": 21, "logId": 5099, "hidden": True})
+        self.assertIn("[feed 21]", body)
+
+    def test_the_json_itself_never_reaches_the_transcript(self) -> None:
+        body = self.transcript({"feedType": 4, "members": [{"nickName": "합성 닉"}]})
+        self.assertNotIn("feedType", body)
+        self.assertIn("[feed 4 합성 닉]", body)
 
 
 class EveryViewFitsTests(unittest.TestCase):

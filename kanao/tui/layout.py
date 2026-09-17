@@ -18,7 +18,11 @@ from dataclasses import dataclass
 from typing import Final, Iterable, Optional, Sequence
 
 ELLIPSIS: Final = "…"
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# The second alternative is an OSC 8 hyperlink's opener or its terminator.
+# Both are zero-width, and a measurement that counts them shifts every column
+# after a link by the length of its target.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;;[^\x1b\x07]*(?:\x1b\\|\x07)")
+_URL: Final = re.compile(r"https?://[^\s<>\"'()\[\]]+")
 _WIDE: Final = frozenset({"W", "F"})
 
 
@@ -163,6 +167,55 @@ def wrap_to_width(text: str, width: int) -> list[str]:
 def _chunks(paragraph: str, width: int) -> Iterable[str]:
     for piece in paragraph.split(" "):
         yield piece
+
+
+def _hyperlink(url: str, text: str) -> str:
+    """Underlined *text* that a terminal will open *url* for when clicked."""
+    return f"\x1b]8;;{url}\x1b\\\x1b[4m{text}\x1b[24m\x1b]8;;\x1b\\"
+
+
+def wrap_with_links(text: str, width: int) -> list[str]:
+    """Wrap *text*, making every URL clickable on each line it reaches.
+
+    A URL is routinely wider than the body, so it is split, and each piece has
+    to carry the *whole* target or clicking the tail of a link opens something
+    that does not exist. Each line therefore opens and closes its own link.
+
+    The pieces are matched back to the source character by character rather
+    than by counting: wrapping drops the spaces it breaks on and rebuilds the
+    rest, so length arithmetic drifts by however many it dropped and binds the
+    target to the wrong letters — which looks right until a message has two
+    spaces in it.
+    """
+    lines = wrap_to_width(text, width)
+    spans = [(match.start(), match.end(), match.group()) for match in _URL.finditer(text)]
+    if not spans:
+        return lines
+
+    target: list[Optional[str]] = [None] * len(text)
+    for start, end, url in spans:
+        target[start:end] = [url] * (end - start)
+
+    linked: list[str] = []
+    cursor = 0
+    for line in lines:
+        pieces: list[str] = []
+        run = ""
+        run_url: Optional[str] = None
+        for character in line:
+            while cursor < len(text) and text[cursor] != character:
+                cursor += 1  # A space the wrapper broke on and did not keep.
+            url = target[cursor] if cursor < len(text) else None
+            cursor += 1
+            if run and url != run_url:
+                pieces.append(_hyperlink(run_url, run) if run_url else run)
+                run = ""
+            run_url = url
+            run += character
+        if run:
+            pieces.append(_hyperlink(run_url, run) if run_url else run)
+        linked.append("".join(pieces))
+    return linked
 
 
 @dataclass(frozen=True)
