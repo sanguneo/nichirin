@@ -87,7 +87,16 @@ Windows 갈래의 `serve`를 이 저장소로 옮겼다. 이식과 테스트는 
   `serve`와 무관하다.
 - `kamado serve --help`, 인자 기본값, 토큰 검증, `KAMADO_TOKEN` 우선순위.
 
-맥에서 확인해야 하는 것 — 여기서는 확인할 수 없다:
+맥에서 확인해야 하는 것은 이슈로 나눠 두었다. 순서대로 읽으면 된다.
+
+| 이슈 | 내용 |
+| --- | --- |
+| [#35](https://github.com/sanguneo/kamado-cli/issues/35) | 읽기 경로와 `/stream` 을 실제 데이터로 |
+| [#36](https://github.com/sanguneo/kamado-cli/issues/36) | `POST /send` — 나와의 채팅 먼저, 되읽어 확인 |
+| [#37](https://github.com/sanguneo/kamado-cli/issues/37) | 맥 전용 오류 코드가 상태 표에 없어 500 으로 나감 |
+| [#38](https://github.com/sanguneo/kamado-cli/issues/38) | Python 3.9 구동 확인 |
+
+아래는 그 이슈들의 요약이다:
 
 1. `python3 -m kamado serve` 기동 후 `GET /health` · `/rooms` · `/context` ·
    `/digest`가 실제 계정 데이터로 응답하는지. (Windows에서는 같은 순서로
