@@ -40,6 +40,11 @@ class WidthTests(unittest.TestCase):
     def test_escape_sequences_occupy_nothing(self) -> None:
         self.assertEqual(display_width(f"{RED}가나{OFF}"), 4)
 
+    def test_osc8_hyperlinks_occupy_no_columns(self) -> None:
+        link = "\x1b]8;;https://example.com\x1b\\링크\x1b]8;;\x1b\\"
+        self.assertEqual(display_width(link), 4)
+        self.assertEqual(strip_ansi(link), "링크")
+
     def test_stripping_escapes_leaves_the_text(self) -> None:
         self.assertEqual(strip_ansi(f"{RED}hello{OFF}"), "hello")
 
