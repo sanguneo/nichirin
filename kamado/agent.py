@@ -104,15 +104,15 @@ class Ask:
         so a question that was asked leaves nothing behind.
         """
         code = self.process.poll()
-        printed = ""
-        output = self._directory / "answer"
-        try:
-            printed = output.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            printed = ""
+        printed = self._read("answer")
+        complained = self._read("diagnostics")
         self._discard()
         if code != 0:
-            spoken = [line.strip() for line in printed.splitlines() if line.strip()]
+            spoken = [
+                line.strip()
+                for line in (complained or printed).splitlines()
+                if line.strip()
+            ]
             reason = spoken[-1][:_REASON_WIDTH] if spoken else ""
             raise KamadoError(
                 ErrorCode.INVALID_REQUEST,
@@ -120,6 +120,14 @@ class Ask:
                 + (f": {reason}" if reason else ""),
             )
         return printed
+
+    def _read(self, name: str) -> str:
+        try:
+            return (self._directory / name).read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+        except OSError:
+            return ""
 
     def _discard(self) -> None:
         shutil.rmtree(self._directory, ignore_errors=True)
@@ -138,12 +146,19 @@ def start(prompt: str, now: float) -> Ask:
     question = directory / "question"
     question.write_text(prompt, encoding="utf-8")
     try:
-        with question.open("rb") as stdin, (directory / "answer").open("wb") as stdout:
+        # Not a parenthesised with-block: that is 3.10 syntax and this runs on
+        # the 3.9 macOS ships.
+        with question.open("rb") as stdin, (directory / "answer").open(
+            "wb"
+        ) as stdout, (directory / "diagnostics").open("wb") as stderr:
             process = subprocess.Popen(
                 parts,
                 stdin=stdin,
                 stdout=stdout,
-                stderr=subprocess.STDOUT,
+                # Kept apart, not merged. An agent narrates on stderr while it
+                # works, and merging that into stdout puts the narration at the
+                # top of a draft that is about to be sent.
+                stderr=stderr,
                 # Run where it can invent nothing about this checkout: the
                 # material it needs is on its standard input.
                 cwd=str(directory),
