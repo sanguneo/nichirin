@@ -20,7 +20,7 @@ from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KamadoError
-from ..model import Friend, Message, Room, message_kind
+from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
 from .console import CLEAR_BOX, Console, Key, force_size
@@ -97,6 +97,8 @@ class ChatState:
     Read when the room is opened rather than when a message is sent: the
     catalog is rewritten constantly, and re-reading it cost 3.0 s per send.
     """
+    feeds: dict[int, str] = field(default_factory=dict)
+    """What each feed row in this window says about itself, asked once."""
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
 
@@ -537,6 +539,29 @@ class App:
         lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
 
+    def _feed_detail(self, chat: ChatState, message: Message) -> str:
+        """What a feed row says about itself, beside the kind it already shows.
+
+        Asked for the whole loaded window in one statement the first time one
+        of them is drawn, and topped up as more arrive: a room whose newest
+        four hundred records are mostly feeds would otherwise pay a query a
+        line. A feed with nothing to add is remembered as having nothing, so
+        it is not asked about again.
+        """
+        if message.type != FEED_MESSAGE:
+            return ""
+        if message.id not in chat.feeds:
+            missing = [
+                one.id
+                for one in chat.messages
+                if one.type == FEED_MESSAGE and one.id not in chat.feeds
+            ]
+            said = self.reader.feed_details(chat.room.id, missing)
+            for one in missing:
+                chat.feeds[one] = said.get(one, "")
+        detail = chat.feeds.get(message.id, "")
+        return f" {detail}" if detail else ""
+
     def _transcript_lines(self, width: int) -> list[str]:
         """Return the transcript, rebuilding it only when it could have changed.
 
@@ -579,7 +604,8 @@ class App:
             speaker = "나" if message.from_me else message.sender
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
-            text = message.text or self.theme.fg("dim", f"[{message_kind(message.type)}]")
+            label = message_kind(message.type) + self._feed_detail(chat, message)
+            text = message.text or self.theme.fg("dim", f"[{label}]")
             wrapped = (
                 self._wrap_body(message.text, body_width)
                 if message.text

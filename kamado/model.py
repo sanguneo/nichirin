@@ -66,6 +66,48 @@ _MESSAGE_KINDS: Final = {
 }
 
 
+def feed_detail(raw: object) -> str:
+    """Describe a feed row from what it carries, naming nothing it does not.
+
+    A feed's JSON is the client's own bookkeeping, and the meaning of its
+    ``feedType`` is not confirmed against a live client — so the number is
+    passed through as a number. What the row states plainly is quoted: the
+    ``coverType`` an open chat writes when its SafeBot covers a message
+    (``openchat_blind``, seen 8 times in one live room), and the nicknames a
+    membership row records. The rest, 6,300 rows of ``{"feedType": 21,
+    "logId": …, "hidden": true}`` in that same room, has nothing else to say.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    parts: list[str] = []
+    code = payload.get("feedType")
+    if isinstance(code, int):
+        parts.append(str(code))
+    cover = payload.get("coverType")
+    if isinstance(cover, str) and cover.strip():
+        parts.append(cover.strip())
+
+    listed = payload.get("members")
+    if not isinstance(listed, list):
+        alone = payload.get("member")
+        listed = [alone] if isinstance(alone, dict) else []
+    named = [
+        str(one.get("nickName")).strip()
+        for one in listed
+        if isinstance(one, dict) and str(one.get("nickName") or "").strip()
+    ]
+    if named:
+        parts.append("·".join(named[:3]))
+    return " ".join(parts)
+
+
 def message_kind(type_code: int) -> str:
     """Name the message kinds that are confirmed; leave the rest self-describing.
 
