@@ -14,6 +14,7 @@ from unittest import mock
 
 from kanao import cli
 from kanao.errors import ErrorCode, KanaoError
+from kanao.errors import ErrorCode, KanaoError
 
 
 class ServeArgumentTests(unittest.TestCase):
@@ -69,15 +70,15 @@ class ServeRuntimeTests(unittest.TestCase):
     def test_missing_token_fails_fast_with_invalid_request(self) -> None:
         arguments = self._args()
         with mock.patch.dict(os.environ, {}, clear=True):
-            envelope = cli.run(arguments)
-        self.assertFalse(envelope["ok"])
-        self.assertEqual(envelope["error"]["code"], "INVALID_REQUEST")
+            with self.assertRaises(KanaoError) as raised:  # main() wraps this in the envelope
+                cli.run(arguments, mock.Mock())  # serve never touches the reader
+        self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
 
     def test_short_token_fails_fast_with_invalid_request(self) -> None:
         arguments = self._args("--token", "too-short")
-        envelope = cli.run(arguments)
-        self.assertFalse(envelope["ok"])
-        self.assertEqual(envelope["error"]["code"], "INVALID_REQUEST")
+        with self.assertRaises(KanaoError) as raised:
+            cli.run(arguments, mock.Mock())
+        self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
 
     def test_kanao_token_env_var_is_used_when_flag_is_absent(self) -> None:
         arguments = self._args()
@@ -90,8 +91,8 @@ class ServeRuntimeTests(unittest.TestCase):
         with mock.patch.dict(os.environ,
                              {"KANAO_TOKEN": "from-environment-1234567890"}), \
                 mock.patch("kanao.serve.run", side_effect=fake_run):
-            envelope = cli.run(arguments)
-        self.assertTrue(envelope["ok"], envelope)
+            status = cli.run(arguments, mock.Mock())
+        self.assertEqual(status, 0)  # run() returns int; main() owns the envelope
         self.assertEqual(captured["token"], "from-environment-1234567890")
 
     def test_token_flag_wins_over_environment(self) -> None:
@@ -105,8 +106,8 @@ class ServeRuntimeTests(unittest.TestCase):
         with mock.patch.dict(os.environ,
                              {"KANAO_TOKEN": "from-environment-1234567890"}), \
                 mock.patch("kanao.serve.run", side_effect=fake_run):
-            envelope = cli.run(arguments)
-        self.assertTrue(envelope["ok"], envelope)
+            status = cli.run(arguments, mock.Mock())
+        self.assertEqual(status, 0)
         self.assertEqual(captured["token"], "flag-token-1234567890")
 
 

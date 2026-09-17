@@ -255,13 +255,32 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `GET /health` | 살아있는지 (토큰 불필요) |
 | `GET /rooms` | 읽을 수 있는 방 목록 |
 | `GET /context?roomId=…&limit=…` | 한 방의 최근 메시지 |
-| `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
-| `GET /stream` | **SSE** 실시간 새 메시지 (`event: message`, 하트비트 `event: ping`) |
+| `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로, `roomId` 지정도 됨 |
+| `GET /stream` | **SSE** 실시간 새 메시지 — 매 연결 따라잡기 후 `event: message`, 30초마다 `event: ping`, 실패 시 `event: error` |
 
-연속 전송은 서버에서 2초 간격 규칙을 강제합니다(429 `RATE_LIMITED`). 토큰은
-`--token`이나 `KANAO_TOKEN` 환경 변수로 주고, 바인딩은 기본 `127.0.0.1` 입니다.
+연속 전송은 서버에서 2초 간격 규칙을 강제합니다(429 `RATE_LIMITED`, `--min-interval`로
+조절·`0`이면 끔). 토큰은 `--token`이나 `KANAO_TOKEN` 환경 변수로 주고(없으면 서버가
+기동 거부), 16자 이상의 영숫자·`-._~+/=` 만 됩니다. 바인딩은 기본 `127.0.0.1` 이고
+`--port`(기본 8765)·`--poll-interval`(스트림 폴링, 기본 1초)이 있습니다.
 다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
 리버스 프록시 뒤에 두세요 — 평문 HTTP이므로 토큰이 그대로 노출됩니다.
+
+`/stream`이 끊기면 그냥 다시 붙으면 됩니다 — 매 연결마다 서버가 따라잡기부터 하므로
+끊긴 사이 도착한 메시지는 재접속 시 `event: message`로 따라옵니다. 30초마다
+`event: ping`이 오고, 폴링 실패는 `event: error` 한 줄 뒤 연결이 닫힙니다.
+
+| 무엇을 만났나 | 뜻 | 할 일 |
+| --- | --- | --- |
+| `401 INVALID_TOKEN` | 토큰이 틀림 | `Authorization: Bearer …` 확인 |
+| `429 RATE_LIMITED` | 2초 안에 또 보냄 | 잠깐 기다렸다 재시도 |
+| `503 KEY_UNAVAILABLE` | 카카오톡이 그 DB를 안 열어둠 | **채팅 탭·방 창을 한 번 띄우기** |
+| `status`에서 `decryptableDatabases: 0` | 힙 스캔이 빈손 | 아래 64비트 주의 |
+
+> [!IMPORTANT]
+> 카카오톡은 **64비트 빌드**로 쓰세요. 키를 찾는 `codec_ctx` 레이아웃은 64비트 실측값이라
+> 32비트 클라이언트(`KakaoTalk(32-bit)`)에서는 스캔이 통째로 빗나가 `status`가
+> `running: true, decryptableDatabases: 0`으로 나옵니다. 공식 다운로드에서 64비트를
+> 받고 방을 하나 열면 바로 풀립니다.
 
 쓰다 만 초안이 입력창에 남아 있으면 **지우고 보냅니다.** 보내는 사람은 이미 방과 할 말을
 정한 상태고, 클라이언트 앞까지 걸어가야만 풀리는 거절은 끝내지도 않은 한 줄보다 비쌉니다.
