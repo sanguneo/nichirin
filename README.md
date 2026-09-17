@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" alt="kanao-cli 로고" width="160">
+
 # kanao-cli
 
 **내 PC의 카카오톡을 읽고, 따라가고, 보내는 윈도우용 CLI**
