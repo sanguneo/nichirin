@@ -90,6 +90,8 @@ class StubWatcher:
         self._polls = 0
         self._fail_on_poll = fail_on_poll
         self.closed = False
+        self.shut = threading.Event()
+        """Set by close(), so a test waits on the event, not on a clock."""
 
     def prime(self) -> None:
         pass
@@ -106,6 +108,7 @@ class StubWatcher:
 
     def close(self) -> None:
         self.closed = True
+        self.shut.set()
 
 
 class ServedCase(unittest.TestCase):
@@ -130,22 +133,38 @@ class ServedCase(unittest.TestCase):
             server.server_close()
 
 
+class StubRoom:
+    """A room the way `reader.rooms()` hands one over: it serializes itself.
+
+    The handler takes a provider of these rather than a ready-made list, so a
+    test that wants to name the rooms wraps them here. The seam belongs in the
+    tests; a parameter that only tests pass is one the production signature
+    has to keep explaining.
+    """
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def as_json(self) -> dict:
+        return dict(self._payload)
+
+
 def _start_server(sender, *, rooms=None, watcher=None, token=TOKEN, min_interval=0.0,
                   rooms_provider=None, context_provider=None, poll_interval=0.05,
                   clock=None):
     from kanao import serve
 
+    if rooms_provider is None:
+        listed = [StubRoom(room) for room in (rooms or [])]
+        rooms_provider = lambda: listed  # noqa: E731 - one expression, read once
     kwargs: dict = {
         "token": token,
         "min_interval": min_interval,
-        "rooms": rooms if rooms_provider is None else None,
         "rooms_provider": rooms_provider,
         "context_provider": context_provider,
         "watcher_factory": (lambda: watcher) if watcher is not None else None,
         "poll_interval": poll_interval,
     }
-    if rooms is None and rooms_provider is None:
-        kwargs["rooms"] = []
     if clock is not None:
         kwargs["clock"] = clock
     return serve.build_handler(sender.send, **kwargs)
@@ -611,7 +630,7 @@ class ServeTests(ServedCase):
         from kanao import serve
 
         self.serve(serve.build_handler(StubSender().send, token=TOKEN,
-                                       rooms=[], poll_interval=0.05))
+                                       poll_interval=0.05))
         status, body, _ = _request(self.base, "GET", "/stream")
         self.assertEqual(status, 500)
         self.assertEqual(body["error"]["code"], "READ_FAILED")
@@ -635,10 +654,9 @@ class ServeTests(ServedCase):
         self.serve(_start_server(StubSender(), watcher=watcher, poll_interval=0.01))
         events = _read_sse(self.base, "/stream", timeout=1.0, max_events=2)
         self.assertTrue(events)
-        deadline = time.monotonic() + 5
-        while not watcher.closed and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(watcher.closed)
+        self.assertTrue(
+            watcher.shut.wait(5), "the watcher outlived the client that left"
+        )
 
     # ---- misc ----------------------------------------------------------
 

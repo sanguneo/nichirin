@@ -143,7 +143,6 @@ def build_handler(
     token: str,
     min_interval: float = DEFAULT_MIN_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
-    rooms: Optional[list[dict[str, Any]]] = None,
     rooms_provider: Optional[Callable[[], list[Any]]] = None,
     context_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     watcher_factory: Optional[Callable[[], Any]] = None,
@@ -302,9 +301,7 @@ def build_handler(
 
         def _handle_rooms(self) -> None:
             try:
-                if rooms is not None:
-                    entries = rooms
-                elif rooms_provider is not None:
+                if rooms_provider is not None:
                     entries = [r.as_json() for r in rooms_provider()]
                 else:
                     raise KanaoError(
@@ -554,12 +551,14 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
         aliases=(),
         hint=None,
     ) -> dict[str, Any]:
-        from . import cli as cli_module
+        from .context import _resolve
         from .winauto import make_sender
 
         with Reader(ledger=NameLedger()) as reader:
-            namespace = argparse.Namespace(room=room, room_id=None)
-            resolved = cli_module._selected_room(reader, namespace)
+            # cli._selected_room is this line plus an argparse namespace built
+            # to carry two values; importing cli from here is a cycle, and the
+            # cycle is the only thing that namespace was for.
+            resolved = _resolve(reader, room)
             catalogued = reader.rooms()
             duplicates = [
                 r for r in catalogued if r.title.casefold() == resolved.title.casefold()
