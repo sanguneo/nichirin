@@ -16,6 +16,10 @@ from unittest.mock import patch
 
 from kanao.errors import ErrorCode, KanaoError
 from kanao.model import GROUP_CHAT
+from tests.platform import require_windows_console
+
+require_windows_console()
+
 from kanao.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
 from kanao.tui import console as console_module
 from kanao.tui.console import (

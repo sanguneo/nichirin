@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import unittest
 
+from tests.platform import require_windows_crypto
+
+require_windows_crypto()
+
 from kanao.cng import AES_256_KEY_SIZE, PreparedKey, decrypt_cbc
 
 from tests.support import encrypt

@@ -10,6 +10,10 @@ from __future__ import annotations
 import unittest
 
 from kanao.model import Message
+from tests.platform import require_windows_console
+
+require_windows_console()
+
 from kanao.tui.app import MIN_PANE_COLUMNS, App, ChatState
 from kanao.tui.console import Key
 from kanao.tui.layout import display_width, strip_ansi

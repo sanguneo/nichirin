@@ -100,7 +100,9 @@ class FriendsCommandTests(unittest.TestCase):
 
 class FriendsTuiTests(unittest.TestCase):
     def render(self):
-        from kanao.tui.app import App
+        from tests.platform import import_app
+
+        App = import_app()
         from kanao.tui.layout import display_width, strip_ansi
         from kanao.tui.theme import Theme
 

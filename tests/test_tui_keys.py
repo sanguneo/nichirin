@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import unittest
 
+from tests.platform import require_windows_console
+
+require_windows_console()
+
 from kanao.tui.console import Console, Key, KeyEvent
 
 VK_BACK = 0x08

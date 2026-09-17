@@ -662,6 +662,17 @@ on a live client, newest 4,000 rows of each readable room.
   test pass against an error type production never produces.
 - When patching a module attribute, bind the original **before** patching or
   the wrapper will call itself.
+- **A test that needs Windows says so and is skipped elsewhere.** Most of this
+  suite is platform-neutral and gets run on the macOS sibling's machine while
+  shared code is written there; before `tests/platform.py` that run answered
+  with a wall of import errors, which says nothing except "not Windows" and
+  hides the one real failure somebody just introduced. `require_windows_console`,
+  `require_windows_crypto` and `import_app` guard the modules that reach for
+  `WinDLL`, and `tests/support.py` imports `ctypes.wintypes` **inside**
+  `encrypt` for the same reason — reading it off Windows raises and would take
+  down every module that imports the fixtures. On Windows nothing is skipped:
+  the suite is 753 tests with a skip count of zero, and that is the check that
+  a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not
 

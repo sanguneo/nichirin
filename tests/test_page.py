@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import unittest
 
+from tests.platform import require_windows_crypto
+
+require_windows_crypto()
+
 from kanao.cng import PreparedKey
 from kanao.page import (
     SALT_SIZE,

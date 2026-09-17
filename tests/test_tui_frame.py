@@ -15,6 +15,10 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from tests.platform import require_windows_console
+
+require_windows_console()
+
 from kanao.tui import console as console_module
 from kanao.tui.app import App
 from kanao.tui.console import (

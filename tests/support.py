@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import ctypes
 import struct
-from ctypes import wintypes
 from typing import Iterable, Sequence
 
 from kanao import cng, page as page_codec
+from tests.platform import require_windows_crypto
 
 PAGE_SIZE = 4096
 RESERVE = 80
@@ -22,7 +22,17 @@ SALT = b"synthetic-salt!!"
 
 
 def encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
-    """Encrypt with AES-256-CBC so fixtures are decryptable by the real code."""
+    """Encrypt with AES-256-CBC so fixtures are decryptable by the real code.
+
+    This is where a non-Windows host stops: the fixtures are built with the
+    same library the product reads with, so without CNG there is no data to
+    test against. `wintypes` is imported here rather than at the top for the
+    same reason — reading it off Windows raises, and that would take every
+    module that imports this one down with it.
+    """
+    require_windows_crypto()
+    from ctypes import wintypes
+
     library = cng._bcrypt()
     library.BCryptEncrypt.argtypes = library.BCryptDecrypt.argtypes
     library.BCryptEncrypt.restype = wintypes.LONG
