@@ -10,6 +10,7 @@ here rather than trusted.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import unittest
 from unittest.mock import patch
@@ -215,6 +216,51 @@ class AddressedLinesTests(unittest.TestCase):
             with self.subTest(width=width):
                 for line in self.app._transcript_lines(width):
                     self.assertLessEqual(display_width(line), width)
+
+
+class FeedLabelTests(unittest.TestCase):
+    """A feed row is the client's bookkeeping, and it can say which kind it is.
+
+    Its JSON stays out of the transcript — read as words it buries the
+    conversation — but the placeholder standing in for it can carry what the
+    row states plainly, which is how an open chat's SafeBot becomes
+    recognisable rather than just another `[feed]`.
+    """
+
+    def transcript(self, payload: dict) -> str:
+        reader = build_reader(
+            messages=[
+                (
+                    7002,
+                    DIRECT_ROOM,
+                    PEER_ID,
+                    0,
+                    json.dumps(payload),
+                    None,
+                    1_700_000_001,
+                    0,
+                )
+            ]
+        )
+        self.addCleanup(reader.close)
+        app = App(reader, theme=Theme(truecolor=True, enabled=False))
+        app.load_rooms()
+        app.open_room(next(room for room in app.rooms if room.id == DIRECT_ROOM))
+        return "\n".join(strip_ansi(line) for line in app._transcript_lines(60))
+
+    def test_a_covered_message_is_recognisable_by_what_covered_it(self) -> None:
+        body = self.transcript(
+            {
+                "feedType": 26,
+                "coverType": "openchat_blind",
+                "chatLogInfos": [{"logId": 7001, "type": 1}],
+            }
+        )
+        self.assertIn("[feed 26 openchat_blind]", body)
+
+    def test_a_feed_with_only_a_number_shows_the_number(self) -> None:
+        body = self.transcript({"feedType": 21, "logId": 7001, "hidden": True})
+        self.assertIn("[feed 21]", body)
 
 
 class EveryViewFitsTests(unittest.TestCase):

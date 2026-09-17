@@ -32,7 +32,7 @@ import json
 import plistlib
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional, Sequence
 
 from . import model, names as names_module, paths
 from .errors import ErrorCode, KamadoError
@@ -713,6 +713,34 @@ class Reader:
             reply=reply,
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
         )
+
+    def feed_details(self, room_id: int, log_ids: Sequence[int]) -> dict[int, str]:
+        """Describe each of these feeds from what its own row carries.
+
+        The JSON stays out of the message text, where it would be read as
+        words somebody typed; this is the short account of it, for the rows
+        being looked at rather than for a room's whole history. Parsing is
+        done here rather than in SQL because a row with no text is not always
+        a feed — a photo has none either — and asking SQLite's json_extract
+        about one of those fails the whole statement instead of that row.
+        """
+        if not log_ids:
+            return {}
+        columns = self.columns(MESSAGE_TABLE)
+        text = _first_present(columns, _MESSAGE_TEXT_COLUMNS)
+        if text is None or "logId" not in columns:
+            return {}
+        places = ",".join("?" for _ in log_ids)
+        found: dict[int, str] = {}
+        for log_id, body in self.connection().execute(
+            f"SELECT logId, {text} FROM {MESSAGE_TABLE} "
+            f"WHERE chatId = ? AND type = ? AND logId IN ({places})",
+            (room_id, model.FEED_MESSAGE, *log_ids),
+        ):
+            detail = model.feed_detail(body)
+            if detail:
+                found[int(log_id)] = detail
+        return found
 
     def feed_rows(self, room_id: int) -> Iterator[tuple[Optional[int], str]]:
         """Yield this room's membership bookkeeping rows as ``(sentAt, json)``."""

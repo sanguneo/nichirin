@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from kamado.errors import ErrorCode, KamadoError
@@ -133,6 +134,49 @@ class RoomTests(unittest.TestCase):
     def test_the_stored_title_falls_back_to_the_name_the_window_carries(self) -> None:
         with build_reader(metas=[(GROUP_ROOM, 3, 10, "합성 스터디방")]) as reader:
             self.assertEqual(reader.stored_title(GROUP_ROOM), "합성 스터디방")
+
+    def test_a_feed_says_what_its_own_row_carries(self) -> None:
+        """An open chat's SafeBot writes the reason it covered something.
+
+        The type number is not confirmed against a live client, so it stays a
+        number; the cover is a string the client wrote, so it is quoted.
+        """
+        covering = json.dumps(
+            {
+                "feedType": 26,
+                "coverType": "openchat_blind",
+                "chatLogInfos": [{"logId": 7001, "type": 1}],
+            }
+        )
+        messages = [(7002, DIRECT_ROOM, PEER_ID, 0, covering, None, 1_700_000_001, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(
+                reader.feed_details(DIRECT_ROOM, [7002]), {7002: "26 openchat_blind"}
+            )
+
+    def test_a_membership_feed_says_who_it_names(self) -> None:
+        joining = json.dumps(
+            {"feedType": 4, "members": [{"userId": PEER_ID, "nickName": "합성 닉"}]}
+        )
+        messages = [(7002, DIRECT_ROOM, PEER_ID, 0, joining, None, 1_700_000_001, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "4 합성 닉"})
+
+    def test_a_feed_with_nothing_to_add_adds_nothing(self) -> None:
+        hiding = json.dumps({"feedType": 21, "logId": 7001, "hidden": True})
+        messages = [(7002, DIRECT_ROOM, PEER_ID, 0, hiding, None, 1_700_000_001, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "21"})
+
+    def test_a_row_that_is_not_json_is_left_alone(self) -> None:
+        """A photo shows no text either, and what it stores is not JSON."""
+        messages = [(7002, DIRECT_ROOM, PEER_ID, 0, "not json", None, 1_700_000_001, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {})
+
+    def test_nothing_asked_about_is_nothing_read(self) -> None:
+        with build_reader() as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, []), {})
 
     def test_the_self_chat_is_named_as_such(self) -> None:
         with build_reader() as reader:
