@@ -734,3 +734,11 @@ Not taken, and why:
 Login automation, protocol reimplementation, history harvesting, attachment
 sending, automatic chat-window opening, and macOS support.
 The supported write operation is text sent through an existing client window.
+
+**Calling an agent from inside the interface.** `/ask` shipped in 0.9.0 and
+was removed in 0.10.0, on both sides. The direction was inverted: the agent
+drives this CLI — `context`, `digest`, `follow` are the interface built for it
+— rather than this tool driving an agent. Which agent, what it is shown and how
+it is asked are the agent's decisions, and a `/ask` inside the screen made the
+tool make all three. It also broke "no network" by proxy: the core opened no
+socket, but the `omo` it spawned did. This tool spawns no process.
