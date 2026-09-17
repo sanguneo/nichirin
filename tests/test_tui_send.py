@@ -299,13 +299,27 @@ class PollSchedulingTests(unittest.TestCase):
     """Polling must never sit in front of the person typing."""
 
     def test_a_recent_keystroke_defers_the_poll(self) -> None:
-        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=9.9))
+        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=9.9, composing=False))
 
     def test_a_pause_lets_the_poll_run(self) -> None:
-        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0))
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=9.0, composing=False))
 
     def test_a_poll_that_is_not_due_yet_waits(self) -> None:
-        self.assertFalse(_poll_due(now=10.0, due_at=11.0, last_key_at=0.0))
+        self.assertFalse(_poll_due(now=10.0, due_at=11.0, last_key_at=0.0, composing=False))
+
+    def test_a_half_written_message_survives_an_ime_pause(self) -> None:
+        """A syllable being assembled reaches the interface as silence.
+
+        The jamo stay inside the IME until the syllable commits, so a second
+        of nothing arriving is somebody mid-word, not somebody who stopped.
+        """
+        self.assertFalse(_poll_due(now=10.0, due_at=0.0, last_key_at=8.5, composing=True))
+
+    def test_the_same_silence_with_an_empty_box_still_polls(self) -> None:
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=8.5, composing=False))
+
+    def test_a_message_left_sitting_stops_holding_the_room_still(self) -> None:
+        self.assertTrue(_poll_due(now=10.0, due_at=0.0, last_key_at=6.0, composing=True))
 
     def test_a_cheap_poll_keeps_the_ordinary_interval(self) -> None:
         self.assertAlmostEqual(_next_poll_at(100.0, 0.0003), 100.0 + REFRESH_SECONDS)
