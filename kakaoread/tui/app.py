@@ -35,7 +35,7 @@ from .layout import (
     wrap_to_width,
 )
 from ..watch import Watcher
-from .theme import SpeakerPalette, Theme
+from .theme import SpeakerPalette, Theme, _detect_dark_mode
 
 if TYPE_CHECKING:
     from ..names import NameRecord
@@ -104,14 +104,14 @@ class App:
         sender: Optional["MessageSender"] = None,
     ) -> None:
         self.reader = reader
-        self.theme = theme if theme is not None else Theme()
+        self.theme = theme if theme is not None else Theme(dark=_detect_dark_mode())
         self._sender = sender
         """Built on the first send so browsing never touches the desktop."""
         self.rooms: list[Room] = []
         self.selected = 0
         self.scroll = 0
         self.chat: Optional[ChatState] = None
-        self.palette = SpeakerPalette()
+        self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
         self.running = True
         self.zone = KST
@@ -217,7 +217,7 @@ class App:
 
     def open_room(self, room: Room) -> None:
         messages = self.reader.messages(room.id, limit=HISTORY_WINDOW)
-        self.palette = SpeakerPalette()
+        self.palette = SpeakerPalette(dark=self.theme.dark)
         for message in messages:
             self.palette.hue(message.sender)
         watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)
