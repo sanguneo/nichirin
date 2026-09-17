@@ -78,6 +78,56 @@ class FrameWidthTests(unittest.TestCase):
         self.assertEqual(len(rows), ROWS)
 
 
+class SmallScreenTests(unittest.TestCase):
+    """The layout keeps a minimum size; the paint may not.
+
+    ``Console.size`` never reports fewer than 20x8 so producers always have
+    room to lay something out, but a window really can be smaller than that.
+    Writing eight rows into a five-row screen scrolls it, and then the caret
+    and the remembered rows both describe a screen that has moved.
+    """
+
+    def written(self, size, lines, cursor=None) -> str:
+        console = Console()
+        buffer = io.StringIO()
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            with patch.object(console_module, "_visible_size", lambda: size):
+                console.draw(lines, cursor)
+        finally:
+            sys.stdout = original
+        return buffer.getvalue()
+
+    def test_a_frame_is_never_taller_than_the_window(self) -> None:
+        with patch.object(console_module, "_visible_size", lambda: (30, 5)):
+            self.assertEqual(Console().size[1], 8, "the minimum no longer forces this")
+        written = self.written((30, 5), ["row"] * 20)
+        self.assertEqual(written.count("\r\n"), 4, "the frame scrolled the screen")
+
+    def test_a_frame_is_never_wider_than_the_window(self) -> None:
+        written = self.written((10, 5), ["가" * 40] * 5)
+        # strip_ansi leaves the cursor escapes alone: they carry a "?".
+        for escape in (HOME, CLEAR_BELOW, HIDE_CURSOR, SHOW_CURSOR):
+            written = written.replace(escape, "")
+        for row in written.split("\r\n"):
+            body = strip_ansi(row).replace(CLEAR_LINE, "")
+            self.assertLessEqual(display_width(body), 10, repr(body))
+
+    def test_the_caret_is_kept_on_the_screen(self) -> None:
+        written = self.written((30, 5), ["row"] * 20, (19, 28))
+        self.assertIn("\x1b[5;", written)
+        self.assertNotIn("\x1b[20;", written)
+
+    def test_a_newline_in_a_line_cannot_break_the_frame(self) -> None:
+        """It measures zero columns and then renders as a row of its own."""
+        written = self.written((COLUMNS, ROWS), ["before\nafter"] + [""] * (ROWS - 1))
+        self.assertEqual(written.count("\r\n"), ROWS - 1)
+        first = strip_ansi(written.split("\r\n")[0]).replace(CLEAR_LINE, "")
+        self.assertIn("before after", first)
+        self.assertEqual(display_width(first), drawn_width())
+
+
 class RepaintTests(unittest.TestCase):
     """A redraw must cost the rows that changed, not the screen.
 

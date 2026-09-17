@@ -325,11 +325,24 @@ class Console:
         did not. A keystroke now writes the composer's own rows. What the
         cache describes is the alternate screen this console owns and nothing
         else writes to; a resize and a re-entry both paint in full again.
+
+        The minimum layout size is kept for callers, but painting is clipped
+        to the physical window even when it shrinks below that minimum: a
+        frame taller than the screen scrolls it, which leaves the caret and
+        the cache describing rows that have moved.
         """
         columns, rows = self.size
+        physical = _visible_size()
+        if physical is not None:
+            columns = min(columns, max(1, physical[0] - right_margin()))
+            rows = min(rows, physical[1])
         painted = []
         for row in range(rows):
             body = lines[row] if row < len(lines) else ""
+            # A newline or a tab measures zero columns and then renders as a
+            # break, so one in a message would pad to the right width and
+            # still move every row after it.
+            body = body.replace("\r", " ").replace("\n", " ").replace("\t", " ")
             # Cut to the screen and filled out to it. A line wider than the
             # console wraps, and every row after it lands a row late and at
             # the wrong column; a line narrower than it leaves whatever the
@@ -358,6 +371,8 @@ class Console:
             frame.append(HIDE_CURSOR)
         else:
             row, column = cursor
+            row = max(0, min(rows - 1, row))
+            column = max(0, min(columns - 1, column))
             frame.append(f"\x1b[{row + 1};{column + 1}H" + SHOW_CURSOR)
         sys.stdout.write("".join(frame))
         sys.stdout.flush()

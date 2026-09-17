@@ -261,6 +261,15 @@ on a live client, newest 4,000 rows of each readable room.
   holding the previous frame where two were expected, which is exactly the chat
   remnants that showed under the room list. Narrow lines are padded, so no cell
   survives a frame it does not belong to.
+- **The minimum size is the layout's, not the paint's.** `Console.size` never
+  reports below 20x8 so producers always have room to lay something out, but a
+  window really can be smaller: at 30x5 it still answers 29x8. Painting eight
+  rows into five scrolls the screen, which moves both the caret and the rows
+  `draw` remembers, so the paint is clipped to `_visible_size` and the caret is
+  clamped into it. A `\r`, `\n` or `\t` in a line is replaced with a space for
+  the same reason at the other end: `layout.display_width` counts it as zero
+  columns, so it pads to exactly the right width and then renders as a break
+  that moves every row after it.
 - **Wrapping is turned off through the console mode, not the escape.**
   `\x1b[?7l` is accepted and ignored here — a 140-column line still wrapped on a
   120-column screen — so `_wrap_free_mode` clears `ENABLE_WRAP_AT_EOL_OUTPUT` while
