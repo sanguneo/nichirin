@@ -238,8 +238,6 @@ class ComposerTests(ComposerCase):
         self.assertNotIn("다른 방", self.chat.notice)
 
 
-
-
 class CostTests(ComposerCase):
     """Typing must not pay for the conversation it is typed into."""
 
