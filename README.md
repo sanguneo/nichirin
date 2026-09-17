@@ -14,6 +14,8 @@
 ![로컬 전용](https://img.shields.io/badge/network-none-2ea44f)
 ![MIT](https://img.shields.io/badge/license-MIT-blue)
 
+**맥이라면 → [kamado-cli](https://github.com/sanguneo/kamado-cli)** · 같은 명령과 같은 JSON 봉투를 쓰는 macOS용 자매 프로젝트
+
 <img src="demo/shots/chat.png" alt="대화 화면 — 답장 인용과 멘션 표시" width="900">
 
 <br><br>
