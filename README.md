@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" alt="kamado 로고" width="160">
+
 # kamado
 
 **내 Mac의 카카오톡을 읽고, 따라가고, 보내는 macOS용 CLI**
