@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="kamado-cli 로고" width="160">
+<img src="assets/og-kamado-cli.png" alt="kamado-cli — 맥의 카카오톡을 터미널에서 읽고, 따라가고, 보낸다" width="900">
 
 # kamado-cli
 
