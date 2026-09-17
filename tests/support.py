@@ -2,7 +2,7 @@
 
 Nothing here reads the machine's real KakaoTalk data.  Encryption goes through
 the same CommonCrypto provider the reader decrypts with, and the fixture key is
-derived from a passphrase exactly as :mod:`kakaoread.cipher` derives a real
+derived from a passphrase exactly as :mod:`kamado.cipher` derives a real
 one, so a round-trip test exercises the real code path rather than a mock of
 it — including the geometry detection, which only accepts a database whose own
 header agrees with the parameters used to read it.
@@ -15,7 +15,7 @@ import ctypes.util
 import struct
 from typing import Sequence
 
-from kakaoread import cipher, page as page_codec
+from kamado import cipher, page as page_codec
 
 PROFILE = cipher.PROFILES[0]
 """SQLCipher 4 parameters: SHA-512, 256,000 iterations, 80 reserved bytes."""

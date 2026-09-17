@@ -9,9 +9,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from unittest.mock import patch
 
-from kakaoread import cli
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.macauto import ChatWindow, Sender
+from kamado import cli
+from kamado.errors import ErrorCode, KamadoError
+from kamado.macauto import ChatWindow, Sender
 from tests.fixtures import DIRECT_ROOM, build_reader
 from tests.test_send import FakeWindows
 
@@ -23,7 +23,7 @@ class SendCommandTests(unittest.TestCase):
         self.backend = FakeWindows()
         self.backend.windows = [ChatWindow(42, "Peer Renamed")]
         self.sender = Sender(self.backend, running=lambda: True)
-        self.factory = patch("kakaoread.macauto.make_sender", return_value=self.sender)
+        self.factory = patch("kamado.macauto.make_sender", return_value=self.sender)
         self.factory.start()
         self.addCleanup(self.factory.stop)
 
@@ -67,7 +67,7 @@ class SendCommandTests(unittest.TestCase):
             ["send", "--room-id", str(DIRECT_ROOM), "synthetic"]
         )
         with patch.object(self.reader, "rooms", return_value=duplicates):
-            with self.assertRaises(KakaoReadError) as caught:
+            with self.assertRaises(KamadoError) as caught:
                 cli.run(arguments, self.reader)
         self.assertEqual(caught.exception.code, ErrorCode.AMBIGUOUS_CHAT)
         self.assertEqual(len(caught.exception.details["candidates"]), 2)
@@ -82,7 +82,7 @@ class SendCommandTests(unittest.TestCase):
         ]
         arguments = cli.build_parser().parse_args(["send", "--room", "room", "synthetic"])
         with patch.object(self.reader, "rooms", return_value=rooms):
-            with self.assertRaises(KakaoReadError) as caught:
+            with self.assertRaises(KamadoError) as caught:
                 cli.run(arguments, self.reader)
         self.assertEqual(caught.exception.code, ErrorCode.AMBIGUOUS_CHAT)
         self.assertGreater(len(caught.exception.details["candidates"]), 1)
@@ -93,7 +93,7 @@ class SendCommandTests(unittest.TestCase):
             ["send", "--room", "Peer Renamed", "synthetic"]
         )
         with patch.object(self.backend, "get_text", side_effect=OSError("timeout")):
-            with self.assertRaises(KakaoReadError) as caught:
+            with self.assertRaises(KamadoError) as caught:
                 cli.run(arguments, self.reader)
         self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
 
@@ -102,7 +102,7 @@ class SendCommandTests(unittest.TestCase):
         # A window whose message box cannot be found: a handled failure that
         # the envelope has to carry, now that a draft is simply overwritten.
         self.backend.control = 0
-        with patch("kakaoread.cli.Reader", return_value=self.reader), redirect_stdout(output):
+        with patch("kamado.cli.Reader", return_value=self.reader), redirect_stdout(output):
             result = cli.main(["send", "--room", "Peer Renamed", "synthetic"])
         body = json.loads(output.getvalue())
         self.assertEqual(result, 1)
@@ -112,7 +112,7 @@ class SendCommandTests(unittest.TestCase):
     def test_a_draft_in_the_way_is_cleared_and_reported(self) -> None:
         output = io.StringIO()
         self.backend.draft = "unfinished synthetic draft"
-        with patch("kakaoread.cli.Reader", return_value=self.reader), redirect_stdout(output):
+        with patch("kamado.cli.Reader", return_value=self.reader), redirect_stdout(output):
             result = cli.main(["send", "--room", "Peer Renamed", "synthetic"])
         body = json.loads(output.getvalue())
         self.assertEqual(result, 0)

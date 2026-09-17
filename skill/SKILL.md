@@ -1,5 +1,5 @@
 ---
-name: kakaoread
+name: kamado-cli
 description: "Read, search, and follow the user's local KakaoTalk conversations, list friends, draft replies, and send explicitly authorized text through the macOS client. Use for kakao, kakaotalk, katok, katalk, 카톡, 카카오톡, 대화 요약, 친구 목록, 답장 써줘, 메시지 보내줘. Ships a self-contained Python CLI; no account paths or keys need configuring."
 compatibility: "macOS only (tested on 15.7), Python 3.9+, no third-party runtime dependencies. Full Disk Access for reading; Accessibility and a running, signed-in KakaoTalk client for sending. Reading works with the client closed."
 ---
@@ -13,18 +13,18 @@ and content; `send` operates the real client.
 
 ## Locate the CLI
 
-Resolve `scripts/kakaoread.py` relative to **this SKILL.md**, not the working
+Resolve `scripts/kamado-cli.py` relative to **this SKILL.md**, not the working
 directory. Replace `<skill-dir>` below with that absolute path and quote it.
 No global command, checkout, `pip install`, or credentials are needed.
 
 ```bash
-python3 "<skill-dir>/scripts/kakaoread.py" context --room "Sample Contact"
+python3 "<skill-dir>/scripts/kamado-cli.py" context --room "Sample Contact"
 ```
 
 From a source checkout, the equivalent is:
 
 ```bash
-python3 -m kakaoread context --room "Sample Contact"
+python3 -m kamado context --room "Sample Contact"
 ```
 
 ## Permissions and local storage
@@ -157,19 +157,19 @@ The full parser surface is below. Positive limits and intervals are required.
 | `tui` | None | Interactive POSIX terminal UI using `termios` |
 
 ```bash
-python3 "<skill-dir>/scripts/kakaoread.py" rooms --readable-only --limit 50
-python3 "<skill-dir>/scripts/kakaoread.py" friends --favorites
-python3 "<skill-dir>/scripts/kakaoread.py" friends --with-phone
-python3 "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --limit 100
-python3 "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --before-id 9876
-python3 "<skill-dir>/scripts/kakaoread.py" search "meeting time" --limit 20
-python3 "<skill-dir>/scripts/kakaoread.py" names --room-id 12345
-python3 "<skill-dir>/scripts/kakaoread.py" names --room-id 12345 "Sample Nickname"
-python3 "<skill-dir>/scripts/kakaoread.py" names --room-id 12345 --user-id 98765
-python3 "<skill-dir>/scripts/kakaoread.py" status
-python3 "<skill-dir>/scripts/kakaoread.py" verify
-python3 "<skill-dir>/scripts/kakaoread.py" schema
-python3 "<skill-dir>/scripts/kakaoread.py" query "SELECT COUNT(*) AS count FROM NTChatMessage"
+python3 "<skill-dir>/scripts/kamado-cli.py" rooms --readable-only --limit 50
+python3 "<skill-dir>/scripts/kamado-cli.py" friends --favorites
+python3 "<skill-dir>/scripts/kamado-cli.py" friends --with-phone
+python3 "<skill-dir>/scripts/kamado-cli.py" messages --room-id 12345 --limit 100
+python3 "<skill-dir>/scripts/kamado-cli.py" messages --room-id 12345 --before-id 9876
+python3 "<skill-dir>/scripts/kamado-cli.py" search "meeting time" --limit 20
+python3 "<skill-dir>/scripts/kamado-cli.py" names --room-id 12345
+python3 "<skill-dir>/scripts/kamado-cli.py" names --room-id 12345 "Sample Nickname"
+python3 "<skill-dir>/scripts/kamado-cli.py" names --room-id 12345 --user-id 98765
+python3 "<skill-dir>/scripts/kamado-cli.py" status
+python3 "<skill-dir>/scripts/kamado-cli.py" verify
+python3 "<skill-dir>/scripts/kamado-cli.py" schema
+python3 "<skill-dir>/scripts/kamado-cli.py" query "SELECT COUNT(*) AS count FROM NTChatMessage"
 ```
 
 On macOS all stored rooms share one database key, so `readable` is true for
@@ -188,7 +188,7 @@ answer, not an ambiguity. `--user-id` selects one account and takes precedence
 over a nickname. Users have `userId`, `current`, and `history` fields. History
 combines membership feeds and names this tool has observed; ordinary renames
 are known only from the first read after they happen. The ledger contains
-**real nicknames** at `~/Library/Application Support/kakaoread/names.jsonl`.
+**real nicknames** at `~/Library/Application Support/kamado-cli/names.jsonl`.
 The sender's row-position cache is `rows.json` in the same directory; it stores
 hashed titles and row numbers, not plaintext titles or keys.
 
@@ -197,8 +197,8 @@ Phone numbers are omitted unless `friends --with-phone` is explicitly needed.
 ## Following live
 
 ```bash
-python3 "<skill-dir>/scripts/kakaoread.py" follow --interval 1
-python3 "<skill-dir>/scripts/kakaoread.py" follow --room-id 12345 --room-id 67890
+python3 "<skill-dir>/scripts/kamado-cli.py" follow --interval 1
+python3 "<skill-dir>/scripts/kamado-cli.py" follow --room-id 12345 --room-id 67890
 ```
 
 The stream starts with `{"ok":true,"event":"watching",...}`, then emits
@@ -215,9 +215,9 @@ its `AXValue`; `CGEventPostToPid` posts one Return to that process. It does not
 activate the app, take foreground, move the cursor, or touch the clipboard.
 
 ```bash
-python3 "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --dry-run "Approved text"
-python3 "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" "Approved text"
-python3 "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --open "Approved text"
+python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --dry-run "Approved text"
+python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" "Approved text"
+python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --open "Approved text"
 ```
 
 - Confirm recipient and content before sending to others. Existing explicit

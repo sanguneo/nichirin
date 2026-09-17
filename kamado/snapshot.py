@@ -41,7 +41,7 @@ from typing import Final, Optional
 
 from . import page as pages, wal as wal_format
 from .cipher import Geometry
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KamadoError
 
 _READ_ATTEMPTS: Final = 4
 _BACKOFF_SECONDS: Final = (0.05, 0.15, 0.4)
@@ -228,9 +228,9 @@ def build_image(database: Path, geometry: Geometry) -> DecryptedImage:
     encrypted = database.read_bytes()
 
     if not encrypted:
-        raise KakaoReadError(ErrorCode.READ_FAILED, f"{database.name} is empty")
+        raise KamadoError(ErrorCode.READ_FAILED, f"{database.name} is empty")
     if len(encrypted) % page_size:
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.READ_FAILED,
             f"{database.name} ends with a partial page ({len(encrypted) % page_size} bytes)",
         )
@@ -240,7 +240,7 @@ def build_image(database: Path, geometry: Geometry) -> DecryptedImage:
 
     missing = _undefined_pages(committed, base_pages)
     if missing:
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.READ_FAILED,
             f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
         )
@@ -351,7 +351,7 @@ def open_image(image: bytes, label: str) -> sqlite3.Connection:
     connection = _connect(image)
     try:
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.READ_FAILED, f"{label} did not decrypt to a valid database"
             )
     except BaseException:
@@ -468,7 +468,7 @@ class SnapshotCache:
                 raise
         except (
             ConsistencyError,
-            KakaoReadError,
+            KamadoError,
             wal_format.WalFormatError,
             sqlite3.DatabaseError,
         ):
@@ -481,7 +481,7 @@ class SnapshotCache:
     ) -> bytes:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
-            staging = Path(tempfile.mkdtemp(prefix="kakaoread-wal-"))
+            staging = Path(tempfile.mkdtemp(prefix="kamado-wal-"))
             try:
                 frozen = clone_snapshot(database, staging)
                 return update_image_with_wal(base, frozen, geometry)
@@ -501,7 +501,7 @@ class SnapshotCache:
     def _decrypt_with_retry(self, database: Path, geometry: Geometry) -> bytes:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
-            staging = Path(tempfile.mkdtemp(prefix="kakaoread-"))
+            staging = Path(tempfile.mkdtemp(prefix="kamado-"))
             try:
                 # Read a copy-on-write clone rather than the live file: the
                 # account is one large database a running client rewrites
@@ -514,16 +514,16 @@ class SnapshotCache:
                 if attempt < len(_BACKOFF_SECONDS):
                     time.sleep(_BACKOFF_SECONDS[attempt])
             except FileNotFoundError as error:
-                raise KakaoReadError(
+                raise KamadoError(
                     ErrorCode.READ_FAILED, f"{database.name} no longer exists"
                 ) from error
             except wal_format.WalFormatError as error:
-                raise KakaoReadError(
+                raise KamadoError(
                     ErrorCode.READ_FAILED, f"{database.name}: {error}"
                 ) from error
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.BUSY,
             f"KakaoTalk kept writing {database.name} during "
             f"{_READ_ATTEMPTS} read attempts; try again in a moment",

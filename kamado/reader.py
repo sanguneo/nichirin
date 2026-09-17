@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
 from . import model, names as names_module, paths
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KamadoError
 from .keyring import Account, Keyring
 from .model import Friend, Message, Room
 from .names import NameLedger, NameRecord
@@ -167,7 +167,7 @@ class Reader:
     def _require_table(self, table: str) -> set[str]:
         columns = self.columns(table)
         if not columns:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.READ_FAILED,
                 f"this database has no {table} table, so the client's schema has "
                 "changed in a way this build does not understand",
@@ -181,7 +181,7 @@ class Reader:
         """Describe access without requiring any of it to be working."""
         try:
             ring = self.keyring
-        except KakaoReadError as error:
+        except KamadoError as error:
             return {
                 "ready": False,
                 "account": None,
@@ -217,7 +217,7 @@ class Reader:
         try:
             rooms = self.count_rooms()
             self._save_status_rooms(ring.account.database, rooms)
-        except KakaoReadError as error:
+        except KamadoError as error:
             return {
                 "ready": False,
                 "account": ring.account.user,
@@ -765,6 +765,6 @@ class Reader:
         try:
             cursor = connection.execute(sql)
         except sqlite3.Error as error:
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, str(error)) from error
+            raise KamadoError(ErrorCode.INVALID_REQUEST, str(error)) from error
         columns = [description[0] for description in (cursor.description or ())]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]

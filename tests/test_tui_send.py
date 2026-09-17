@@ -14,10 +14,10 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
-from kakaoread.tui import console as console_module
-from kakaoread.tui.console import (
+from kamado.errors import ErrorCode, KamadoError
+from kamado.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
+from kamado.tui import console as console_module
+from kamado.tui.console import (
     AUTOWRAP_OFF,
     AUTOWRAP_ON,
     HIDE_CURSOR,
@@ -25,9 +25,9 @@ from kakaoread.tui.console import (
     Console,
     Key,
 )
-from kakaoread.tui.layout import display_width, strip_ansi
-from kakaoread.tui.theme import Theme
-from kakaoread.macauto import SendResult
+from kamado.tui.layout import display_width, strip_ansi
+from kamado.tui.theme import Theme
+from kamado.macauto import SendResult
 
 from tests.fixtures import DIRECT_ROOM, build_reader
 
@@ -172,7 +172,7 @@ class ComposerTests(ComposerCase):
         self.assertNotEqual(self.chat.notice, "")
 
     def test_a_refused_send_is_reported_and_keeps_the_room_open(self) -> None:
-        self.sender.failure = KakaoReadError(ErrorCode.WINDOW_NOT_FOUND, "창이 없습니다")
+        self.sender.failure = KamadoError(ErrorCode.WINDOW_NOT_FOUND, "창이 없습니다")
         self.type("안녕")
         self.press_enter()
         self.assertIn("창이 없습니다", self.chat.notice)

@@ -1,10 +1,10 @@
-# AGENTS.md — working on kakaoread-mac
+# AGENTS.md — working on kamado-cli
 
 macOS-only KakaoTalk reader, friend browser and sender in zero-dependency
 Python 3.9+. Reads stay local; the explicit send command drives the client.
 This file is about *changing* the tool; `skill/SKILL.md` is about using it.
 
-Forked from the Windows-only `kakaoread`. Every macOS fact below was
+Forked from the Windows-only `kanao-cli`. Every macOS fact below was
 established against a live client rather than inherited; the Windows platform
 layer (CNG, the heap scan, `winauto`) is gone, and reading and sending are
 both verified working on this machine.
@@ -13,7 +13,7 @@ both verified working on this machine.
 
 ```bash
 python3 -m unittest discover -t . -s tests    # the whole suite
-python3 -m kakaoread status                   # does anything work right now
+python3 -m kamado status                      # does anything work right now
 python3 install.py --target <dir> --force     # install the skill
 ```
 

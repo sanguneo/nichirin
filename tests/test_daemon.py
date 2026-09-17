@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread import daemon
-from kakaoread.reader import Reader
+from kamado import daemon
+from kamado.reader import Reader
 from tests.fixtures import StubCache, build_database, build_keyring
 
 
@@ -37,7 +37,7 @@ class DaemonTests(unittest.TestCase):
             time.sleep(0.01)
 
         try:
-            with patch("kakaoread.daemon.socket_path", return_value=server.sock_path):
+            with patch("kamado.daemon.socket_path", return_value=server.sock_path):
                 ping_res = daemon.send_to_daemon("ping", {})
                 self.assertEqual(ping_res, {"ok": True, "status": "pong"})
 

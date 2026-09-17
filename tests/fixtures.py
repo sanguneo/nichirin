@@ -22,10 +22,10 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from kakaoread.cipher import Geometry
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.keyring import Account, Keyring
-from kakaoread.reader import Reader
+from kamado.cipher import Geometry
+from kamado.errors import ErrorCode, KamadoError
+from kamado.keyring import Account, Keyring
+from kamado.reader import Reader
 
 from . import support
 
@@ -124,7 +124,7 @@ class StubCache:
             # Match what the real cache raises when a database cannot be
             # opened, so tests cannot pass against an error type production
             # never produces.
-            raise KakaoReadError(ErrorCode.KEY_UNAVAILABLE, f"no key for {path}")
+            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {path}")
         self.opened.append(Path(path).name)
         return self.database
 

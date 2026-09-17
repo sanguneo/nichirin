@@ -1,5 +1,5 @@
 [project]
-name = "kakaoread"
+name = "kamado-cli"
 version = "0.6.0"
 description = "Zero-dependency KakaoTalk reader, TUI, and text sender for macOS and AI agents"
 readme = "README.md"
@@ -13,16 +13,17 @@ classifiers = [
 ]
 
 [project.scripts]
-kakaoread = "kakaoread.cli:main"
+kamado = "kamado.cli:main"
+kakaoread = "kakaoread.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["kakaoread*"]
+include = ["kamado*", "kakaoread*"]
 
 [tool.pyright]
-include = ["kakaoread", "tests"]
+include = ["kamado", "kakaoread", "tests"]
 pythonVersion = "3.9"
 typeCheckingMode = "standard"

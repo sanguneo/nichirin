@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.tui.console import Key
-from kakaoread.tui.layout import display_width, strip_ansi, window_around
+from kamado.tui.console import Key
+from kamado.tui.layout import display_width, strip_ansi, window_around
 
 from tests.test_tui_send import HEIGHT, WIDTH, ComposerCase
 

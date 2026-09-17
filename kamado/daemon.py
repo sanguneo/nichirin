@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from . import paths
 from .context import DEFAULT_LIMIT, read_context
-from .errors import ErrorCode, KakaoReadError, as_envelope, success
+from .errors import ErrorCode, KamadoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
 
@@ -229,7 +229,7 @@ class DaemonServer:
     def _dispatch(self, command: str, args: dict[str, Any]) -> dict[str, Any]:
         reader = self._reader
         if reader is None:
-            raise KakaoReadError(ErrorCode.KEY_UNAVAILABLE, "daemon reader is not initialized")
+            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, "daemon reader is not initialized")
 
         if command == "status":
             return success(reader.status())
@@ -257,7 +257,7 @@ class DaemonServer:
             if room_id is None and args.get("room") is not None:
                 rooms = reader.rooms(name=args.get("room"))
                 if not rooms:
-                    raise KakaoReadError(ErrorCode.WINDOW_NOT_FOUND, f"No room matches {args.get('room')!r}")
+                    raise KamadoError(ErrorCode.WINDOW_NOT_FOUND, f"No room matches {args.get('room')!r}")
                 room_id = rooms[0].id
             found = reader.messages(room_id, limit=args.get("limit", DEFAULT_LIMIT), before_id=args.get("before_id"))
             return success({"messages": [msg.as_json() for msg in found], "count": len(found)})
@@ -275,4 +275,4 @@ class DaemonServer:
             rows = reader.query(args["sql"], room_id=args.get("room_id"))
             return success({"rows": rows, "count": len(rows)})
 
-        raise KakaoReadError(ErrorCode.INVALID_REQUEST, f"unknown daemon command: {command}")
+        raise KamadoError(ErrorCode.INVALID_REQUEST, f"unknown daemon command: {command}")

@@ -36,7 +36,7 @@ New-Item -ItemType Directory -Force -Path $shots | Out-Null
 $target = Join-Path $shots "$Scene.png"
 # Unique per run, so a window left open from an earlier scene is never the one
 # that gets photographed.
-$title = "kakaoread-$Scene-$([guid]::NewGuid().ToString('N').Substring(0, 6))"
+$title = "kamado-cli-$Scene-$([guid]::NewGuid().ToString('N').Substring(0, 6))"
 
 Add-Type -AssemblyName System.Drawing
 Add-Type @"

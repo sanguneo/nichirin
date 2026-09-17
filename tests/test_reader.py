@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.keyring import Keyring
-from kakaoread.reader import Reader
+from kamado.errors import ErrorCode, KamadoError
+from kamado.keyring import Keyring
+from kamado.reader import Reader
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -300,7 +300,7 @@ class StatusTests(unittest.TestCase):
     def test_an_unresolved_account_names_the_reason_a_read_fails(self) -> None:
         with build_reader() as reader:
             reader._keyring = Keyring(CONTAINER, [DATABASE], None)
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 reader.rooms()
         self.assertEqual(raised.exception.code, ErrorCode.KEY_UNAVAILABLE)
 

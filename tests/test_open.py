@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.macauto import ChatWindow, RoomOpener, Sender
+from kamado.errors import ErrorCode, KamadoError
+from kamado.macauto import ChatWindow, RoomOpener, Sender
 
 
 class FakeDesktop:
@@ -127,7 +127,7 @@ class OpeningTests(DesktopTests):
 
     def test_an_absent_room_is_a_typed_failure(self) -> None:
         desktop = FakeDesktop([])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             self.opener(desktop).open("absent")
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(desktop.clicks, list(range(8)))
@@ -137,7 +137,7 @@ class OpeningTests(DesktopTests):
         desktop = FakeDesktop(["target"])
         desktop.appears = False
         desktop.main = "minimized"
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             self.opener(desktop).open("target")
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertGreaterEqual(desktop.elapsed, 6)
@@ -161,7 +161,7 @@ class SendWithOpeningTests(DesktopTests):
 
     def test_without_the_flag_a_closed_room_is_refused_without_touching_the_list(self) -> None:
         desktop = FakeDesktop(["target"])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             self.sender(desktop).send("target", "hello")
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(desktop.log, [])
@@ -181,7 +181,7 @@ class SendWithOpeningTests(DesktopTests):
 
     def test_failure_to_open_never_writes_or_submits(self) -> None:
         desktop = FakeDesktop([])
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KamadoError):
             self.sender(desktop).send("absent", "hello", open_if_needed=True)
         self.assertEqual(desktop.actions, [])
 
@@ -199,7 +199,7 @@ class AliasTests(DesktopTests):
 
     def test_an_alias_never_turns_a_substring_into_a_match(self) -> None:
         desktop = FakeDesktop(["target extra"])
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KamadoError):
             self.opener(desktop).open("target", aliases=["extra"])
 
 
@@ -223,7 +223,7 @@ class TidinessTests(DesktopTests):
         desktop = FakeDesktop(["target"])
         desktop.main = "hidden"
         desktop.restorable = False
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             self.opener(desktop).open("target")
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(desktop.clicks, [])
@@ -231,7 +231,7 @@ class TidinessTests(DesktopTests):
     def test_a_missing_main_window_is_not_touched(self) -> None:
         desktop = FakeDesktop(["target"])
         desktop.main = "missing"
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             self.opener(desktop).open("target")
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(desktop.restored, 0)

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional, Protocol, TypedDict
 
 from . import ax, paths
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KamadoError
 
 BUNDLE_ID = paths.BUNDLE_ID
 EXECUTABLE = "/Applications/KakaoTalk.app/Contents/MacOS/KakaoTalk"
@@ -275,7 +275,7 @@ class RoomOpener:
         wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
         state = self._backend.main_state()
         if state == "missing":
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 "KakaoTalk's main window is not available, so no room can be opened. "
                 "If KakaoTalk is running, ensure its window is on the current desktop/Space "
@@ -285,7 +285,7 @@ class RoomOpener:
         if already_open is not None:
             return already_open
         if state != "visible" and not self._backend.show_main_window():
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 "KakaoTalk's main window could not be brought back to open the room",
             )
@@ -303,7 +303,7 @@ class RoomOpener:
                     # parked the moment it exists.
                     self._backend.minimize_window(window.handle)
                     return window
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"could not open a chat window for {room!r} from the room list",
                 room=room,
@@ -371,9 +371,9 @@ class Sender:
         must never substitute for an unopened, already-resolved room.
         """
         if not room.strip():
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+            raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
         if not self._running():
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.KAKAO_NOT_RUNNING,
                 "KakaoTalk is not running; start it and open the conversation first",
             )
@@ -384,14 +384,14 @@ class Sender:
         if not matches:
             if open_if_needed and self._opener is not None:
                 return self._opener.open(room, aliases, hint)
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
                 "KakaoTalk (double-click it so it pops out) and try again. "
                 "If already open, ensure the window is on the current desktop/Space",
             )
         if len(matches) > 1:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.AMBIGUOUS_CHAT,
                 f"{len(matches)} open chat windows match {room!r}; use a more specific name",
                 candidates=[window.title for window in matches],
@@ -413,16 +413,16 @@ class Sender:
         written. Queue acceptance is not proof of network delivery.
         """
         if not text or not text.strip():
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
+            raise KamadoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
         if "\x00" in text:
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, "message contains a null character")
+            raise KamadoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
         window = self.resolve(
             room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
         )
         control = self._backend.input_handle(window.handle)
         if control is None:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.INPUT_NOT_FOUND,
                 f"found the window for {window.title!r} but not its message box; "
                 "the client version may differ",
@@ -448,7 +448,7 @@ class Sender:
             self._backend.set_text(control, text)
             self._backend.submit(control)
         except (OSError, ax.AccessibilityDenied) as error:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.SEND_FAILED, f"could not send to {window.title!r}: {error}",
                 room=window.title,
             ) from error
@@ -490,7 +490,7 @@ class AXBackend:
     def _element(self, handle: int) -> ax.Element:
         element = self._registry.get(handle)
         if element is None:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND, "that window is no longer being tracked"
             )
         return element
@@ -787,7 +787,7 @@ class AXBackend:
 def make_sender() -> Sender:
     """Build the sender this machine can actually use, or explain what is missing."""
     if not ax.is_trusted():
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.PERMISSION_REQUIRED,
             "macOS has not granted this terminal permission to control other "
             "applications. Add it under System Settings › Privacy & Security › "
@@ -796,7 +796,7 @@ def make_sender() -> Sender:
         )
     pid = client_pid()
     if pid is None:
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.KAKAO_NOT_RUNNING,
             "KakaoTalk is not running; start it and sign in first",
         )

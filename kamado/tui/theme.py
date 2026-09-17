@@ -116,7 +116,7 @@ def to_256(hex_colour: str) -> int:
 
 
 def _detect_dark_mode() -> bool:
-    env = os.environ.get("KAKAOREAD_THEME", "").lower()
+    env = os.environ.get("KAMADO_THEME", "").lower()
     if env in ("light", "latte", "white"):
         return False
     if env in ("dark", "mocha", "black"):
@@ -191,7 +191,7 @@ class Theme:
 def _colour_supported() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
-    if os.environ.get("KAKAOREAD_FORCE_COLOR"):
+    if os.environ.get("KAMADO_FORCE_COLOR"):
         return True
     return sys.stdout.isatty()
 

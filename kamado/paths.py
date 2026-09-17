@@ -21,7 +21,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Final, Optional, TypeVar
 
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KamadoError
 
 BUNDLE_ID: Final = "com.kakao.KakaoTalkMac"
 
@@ -61,18 +61,18 @@ def guarded(operation: Callable[[], _T], what: str) -> _T:
         except BaseException as error:  # noqa: BLE001 - re-raised on the caller's thread
             failure.append(error)
 
-    worker = threading.Thread(target=run, daemon=True, name=f"kakaoread-{what}")
+    worker = threading.Thread(target=run, daemon=True, name=f"kamado-{what}")
     worker.start()
     worker.join(ACCESS_TIMEOUT_SECONDS)
 
     if worker.is_alive():
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.PERMISSION_REQUIRED, _PERMISSION_MESSAGE, permission="fullDiskAccess"
         )
     if failure:
         error = failure[0]
         if isinstance(error, PermissionError):
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.PERMISSION_REQUIRED, _PERMISSION_MESSAGE, permission="fullDiskAccess"
             ) from error
         raise error
@@ -162,7 +162,7 @@ def state_directory(
     here that cannot be rebuilt by re-reading the client, so it must not be a
     file the system is entitled to delete.
     """
-    return home(environment) / "Library" / "Application Support" / "kakaoread"
+    return home(environment) / "Library" / "Application Support" / "kamado-cli"
 
 
 def wal_path(database: Path) -> Path:

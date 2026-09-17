@@ -15,9 +15,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from kakaoread import derive, keyring, paths
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.reader import Reader
+from kamado import derive, keyring, paths
+from kamado.errors import ErrorCode, KamadoError
+from kamado.reader import Reader
 from tests.fixtures import OWN_ID, PEER_ID, build_keyring
 
 UUID = "00000000-1111-2222-3333-444444444444"
@@ -105,7 +105,7 @@ class MachineAndMemoizationTests(unittest.TestCase):
         for runner in (Mock(return_value=subprocess.CompletedProcess([], 0, "")),
                        Mock(side_effect=OSError("missing")),
                        Mock(side_effect=subprocess.TimeoutExpired("ioreg", 10))):
-            with self.subTest(runner=runner), self.assertRaises(KakaoReadError) as raised:
+            with self.subTest(runner=runner), self.assertRaises(KamadoError) as raised:
                 derive.platform_uuid(runner)
             self.assertEqual(raised.exception.code, ErrorCode.NO_USER_DATA)
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.commoncrypto import PreparedKey
-from kakaoread import cipher
-from kakaoread.cipher import read_salt
-from kakaoread.page import (
+from kamado.commoncrypto import PreparedKey
+from kamado import cipher
+from kamado.cipher import read_salt
+from kamado.page import (
     SALT_SIZE,
     SQLITE_HEADER,
     reconstruct_page,

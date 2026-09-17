@@ -12,9 +12,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread import derive, paths
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.keyring import Keyring
+from kamado import derive, paths
+from kamado.errors import ErrorCode, KamadoError
+from kamado.keyring import Keyring
 from tests import support
 from tests.fixtures import OWN_ID, PEER_ID
 
@@ -44,7 +44,7 @@ class DiscoveryTests(unittest.TestCase):
         preferences = paths.preference_paths(self.env)[-1]
         preferences.parent.mkdir(parents=True)
         preferences.write_bytes(plistlib.dumps({"AlertKakaoIDsList": [PEER_ID, OWN_ID]}))
-        uuid = patch("kakaoread.keyring.derive.platform_uuid", return_value=UUID)
+        uuid = patch("kamado.keyring.derive.platform_uuid", return_value=UUID)
         self.uuid = uuid.start()
         self.addCleanup(uuid.stop)
 
@@ -59,8 +59,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(account.geometry.page_size, support.PAGE_SIZE)
 
     def test_only_the_filename_matched_candidate_is_decrypted(self) -> None:
-        from kakaoread.cipher import detect_file
-        with patch("kakaoread.keyring.cipher.detect_file", wraps=detect_file) as detect:
+        from kamado.cipher import detect_file
+        with patch("kamado.keyring.cipher.detect_file", wraps=detect_file) as detect:
             ring = Keyring.discover(self.env)
         self.assertTrue(ring.readable)
         detect.assert_called_once_with(self.database, self.passphrase)
@@ -72,11 +72,11 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(Keyring.discover(self.env).require().database, suffixed)
 
     def test_a_filename_match_does_not_make_a_wrong_passphrase_valid(self) -> None:
-        with patch("kakaoread.keyring.derive.passphrase", return_value="wrong synthetic passphrase"):
+        with patch("kamado.keyring.derive.passphrase", return_value="wrong synthetic passphrase"):
             ring = Keyring.discover(self.env)
         self.assertFalse(ring.readable)
         self.assertIsNone(ring.account)
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             ring.require()
         self.assertEqual(raised.exception.code, ErrorCode.KEY_UNAVAILABLE)
 
@@ -93,7 +93,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(ring.databases, [])
         self.assertFalse(ring.readable)
         self.uuid.assert_not_called()
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             ring.require()
         self.assertEqual(raised.exception.code, ErrorCode.NO_USER_DATA)
         self.assertEqual(raised.exception.details["container"], str(self.container))
@@ -104,7 +104,7 @@ class DiscoveryTests(unittest.TestCase):
                 preference.unlink()
         ring = Keyring.discover(self.env)
         self.assertEqual(ring.databases, [self.database])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             ring.require()
         self.assertEqual(raised.exception.code, ErrorCode.KEY_UNAVAILABLE)
         self.assertEqual(raised.exception.details["databases"], 1)

@@ -14,9 +14,9 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from kakaoread.tui import console as console_module
-from kakaoread.tui.app import App
-from kakaoread.tui.console import (
+from kamado.tui import console as console_module
+from kamado.tui.app import App
+from kamado.tui.console import (
     CLEAR_BELOW,
     CLEAR_LINE,
     HIDE_CURSOR,
@@ -24,8 +24,8 @@ from kakaoread.tui.console import (
     SHOW_CURSOR,
     Console,
 )
-from kakaoread.tui.layout import display_width, strip_ansi
-from kakaoread.tui.theme import Theme
+from kamado.tui.layout import display_width, strip_ansi
+from kamado.tui.theme import Theme
 
 from tests.fixtures import DIRECT_ROOM, GROUP_ROOM, PEER_ID, build_reader
 

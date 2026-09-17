@@ -23,7 +23,7 @@ from typing import Iterable, Optional
 
 from . import cipher, derive, paths
 from .cipher import Geometry
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KamadoError
 
 _ACCOUNT_CACHE = "account.json"
 """Where a resolved account id is remembered, so recovery runs once.
@@ -188,13 +188,13 @@ class Keyring:
         if self.account is not None:
             return self.account
         if not self.databases:
-            raise KakaoReadError(
+            raise KamadoError(
                 ErrorCode.NO_USER_DATA,
                 "no KakaoTalk database was found in this machine's container; "
                 "sign in to the KakaoTalk desktop client at least once",
                 container=str(self.container),
             )
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.KEY_UNAVAILABLE,
             "a KakaoTalk database is present but no account on this machine derives "
             "a passphrase that opens it; the database may belong to a different "

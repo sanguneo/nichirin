@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.snapshot import Fingerprint
+from kamado.errors import ErrorCode, KamadoError
+from kamado.snapshot import Fingerprint
 
-from kakaoread.watch import Watcher
+from kamado.watch import Watcher
 
 from tests.fixtures import (
     DATABASE_NAME,
@@ -181,7 +181,7 @@ class CostTests(WatcherTests):
         self.cache.opened.clear()
         self.arrive(DIRECT_ROOM, 5105)
         real_fingerprint = Fingerprint.of
-        with patch("kakaoread.watch.Fingerprint.of", wraps=real_fingerprint) as sampled:
+        with patch("kamado.watch.Fingerprint.of", wraps=real_fingerprint) as sampled:
             found = watcher.poll()
         sampled.assert_called_once_with(self.reader.database)
         self.assertEqual([message.id for message in found], [5105])
@@ -204,7 +204,7 @@ class ResilienceTests(WatcherTests):
 
         def read(room_id, **kwargs):
             if room_id == GROUP_ROOM:
-                raise KakaoReadError(ErrorCode.READ_FAILED, "synthetic query failure")
+                raise KamadoError(ErrorCode.READ_FAILED, "synthetic query failure")
             return real_messages(room_id, **kwargs)
 
         with patch.object(self.reader, "messages", side_effect=read):
@@ -225,7 +225,7 @@ class ResilienceTests(WatcherTests):
 
         def read(room_id, **kwargs):
             if room_id == GROUP_ROOM:
-                raise KakaoReadError(ErrorCode.READ_FAILED, "synthetic query failure")
+                raise KamadoError(ErrorCode.READ_FAILED, "synthetic query failure")
             return real_messages(room_id, **kwargs)
 
         with patch.object(self.reader, "messages", side_effect=read):

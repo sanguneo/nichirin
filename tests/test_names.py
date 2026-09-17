@@ -18,9 +18,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from kakaoread import cli, names
-from kakaoread.names import NameLedger, NameRecord
-from kakaoread.reader import Reader
+from kamado import cli, names
+from kamado.names import NameLedger, NameRecord
+from kamado.reader import Reader
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -110,7 +110,7 @@ class FeedTests(unittest.TestCase):
 class LedgerTests(unittest.TestCase):
     def test_default_ledger_path_uses_application_support(self) -> None:
         with TemporaryDirectory() as directory:
-            with patch("kakaoread.names.paths.state_directory", return_value=Path(directory)):
+            with patch("kamado.names.paths.state_directory", return_value=Path(directory)):
                 self.assertEqual(names.ledger_path(), Path(directory) / "names.jsonl")
 
     def ledger(self) -> NameLedger:
@@ -312,8 +312,8 @@ class RealCommandTests(unittest.TestCase):
     """`/real` in the browser, driven the way a reader drives it: by typing."""
 
     def app_with(self, rows: list[tuple], ledger: NameLedger | None = None):
-        from kakaoread.tui.app import App
-        from kakaoread.tui.theme import Theme
+        from kamado.tui.app import App
+        from kamado.tui.theme import Theme
 
         reader = reader_with(rows, ledger=ledger)
         self.addCleanup(reader.close)

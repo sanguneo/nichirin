@@ -101,7 +101,7 @@ _BY_ESCAPE_FINAL: Final = {
 }
 _BY_TILDE: Final = {1: 0x24, 3: 0x2E, 4: 0x23, 5: 0x21, 6: 0x22, 7: 0x24, 8: 0x23}
 
-RIGHT_MARGIN_VARIABLE: Final = "KAKAOREAD_TUI_MARGIN"
+RIGHT_MARGIN_VARIABLE: Final = "KAMADO_TUI_MARGIN"
 DEFAULT_RIGHT_MARGIN: Final = 0
 """Terminal.app and iTerm reserve scrollbar space outside the cell grid."""
 
@@ -404,7 +404,7 @@ def terminal_size() -> tuple[int, int]:
 
 def force_size() -> Optional[tuple[int, int]]:
     """Honour an explicit size, which is how the UI is captured for review."""
-    raw = os.environ.get("KAKAOREAD_TUI_SIZE")
+    raw = os.environ.get("KAMADO_TUI_SIZE")
     if not raw or "x" not in raw:
         return None
     columns, _, rows = raw.partition("x")

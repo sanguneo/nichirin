@@ -33,7 +33,7 @@ import subprocess
 from pathlib import Path
 from typing import Final, Iterator, Optional
 
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KamadoError
 
 _ITERATIONS: Final = 100_000
 _DERIVED_BYTES: Final = 128
@@ -69,14 +69,14 @@ def platform_uuid(runner=subprocess.run) -> str:
             timeout=_IOREG_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.NO_USER_DATA,
             f"could not run {_IOREG} to read this machine's hardware identifier",
         ) from error
 
     found = _UUID_PATTERN.search(completed.stdout or "")
     if found is None:
-        raise KakaoReadError(
+        raise KamadoError(
             ErrorCode.NO_USER_DATA,
             "this machine reported no IOPlatformUUID, so no KakaoTalk key can be derived",
         )

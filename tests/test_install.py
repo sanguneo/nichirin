@@ -15,13 +15,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LAUNCHER = Path("scripts/kakaoread.py")
+LAUNCHER = Path("scripts/kamado-cli.py")
+LEGACY_LAUNCHER = Path("scripts/kakaoread.py")
 KOREAN = "\ud55c\uae00"
 
 
 class InstallerTests(unittest.TestCase):
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory(prefix="kakaoread-test-")
+        directory = tempfile.TemporaryDirectory(prefix="kamado-cli-test-")
         self.addCleanup(directory.cleanup)
         self.work = Path(directory.name)
         self.cwd = self.work / "unrelated cwd"
@@ -62,14 +63,14 @@ class PayloadTests(InstallerTests):
     def test_installs_to_the_standard_agent_directory_by_default(self) -> None:
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.home / ".agents/skills/kakaoread" / LAUNCHER).is_file())
+        self.assertTrue((self.home / ".agents/skills/kamado-cli" / LAUNCHER).is_file())
 
     def test_installs_exactly_where_asked_without_appending_a_subdirectory(self) -> None:
-        target = self.home / ".claude/skills/kakaoread"
+        target = self.home / ".claude/skills/kamado-cli"
         result = self.install("--target", str(target))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((target / LAUNCHER).is_file())
-        self.assertFalse((target / "kakaoread").exists())
+        self.assertFalse((target / "kamado").exists())
 
     def test_ships_the_documented_payload_and_nothing_else(self) -> None:
         target = self.installed()
@@ -78,9 +79,14 @@ class PayloadTests(InstallerTests):
             for path in target.rglob("*")
             if path.is_file()
         }
-        expected = {"SKILL.md", "LICENSE", LAUNCHER.as_posix()} | {
-            f"scripts/kakaoread/{source.relative_to(ROOT / 'kakaoread').as_posix()}"
-            for source in (ROOT / "kakaoread").rglob("*.py")
+        expected = {
+            "SKILL.md",
+            "LICENSE",
+            LAUNCHER.as_posix(),
+            LEGACY_LAUNCHER.as_posix(),
+        } | {
+            f"scripts/kamado/{source.relative_to(ROOT / 'kamado').as_posix()}"
+            for source in (ROOT / "kamado").rglob("*.py")
         }
         self.assertEqual(installed, expected)
 
@@ -111,7 +117,7 @@ class SafetyTests(InstallerTests):
     def test_force_replaces_shipped_files_and_leaves_others_alone(self) -> None:
         target = self.installed()
         (target / LAUNCHER).write_bytes(b"STALE")
-        extras = (target / "notes.txt", target / "scripts/kakaoread/custom.py")
+        extras = (target / "notes.txt", target / "scripts/kamado/custom.py")
         for path in extras:
             path.write_bytes(b"USER_CONTENT")
 
@@ -154,7 +160,7 @@ class PortabilityTests(InstallerTests):
             "try: runpy.run_path(sys.argv[0], run_name='__main__')\n"
             "except SystemExit as stop: assert stop.code == 0\n"
             "for name, module in sys.modules.items():\n"
-            " if name == 'kakaoread' or name.startswith('kakaoread.'):\n"
+            " if name == 'kamado' or name.startswith('kamado.'):\n"
             "  print('ORIGIN', name, module.__file__, sep='\\t')\n"
         )
         result = self.python("-S", "-c", probe, str(moved / LAUNCHER))
@@ -165,12 +171,12 @@ class PortabilityTests(InstallerTests):
             for line in result.stdout.decode("utf-8").splitlines()
             if line.startswith("ORIGIN\t")
         ]
-        self.assertTrue(any(name == "kakaoread.cli" for _tag, name, _file in origins))
+        self.assertTrue(any(name == "kamado.cli" for _tag, name, _file in origins))
         for _tag, _name, filename in origins:
             # macOS aliases /var through /private/var; compare canonical paths
             # because the launcher resolves its own directory before importing.
             self.assertTrue(
-                Path(filename).resolve().is_relative_to((moved / "scripts/kakaoread").resolve()),
+                Path(filename).resolve().is_relative_to((moved / "scripts/kamado").resolve()),
                 filename,
             )
 

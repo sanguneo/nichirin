@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.tui.app import App
-from kakaoread.tui.console import Key
-from kakaoread.tui.layout import strip_ansi
-from kakaoread.tui.theme import Theme
+from kamado.tui.app import App
+from kamado.tui.console import Key
+from kamado.tui.layout import strip_ansi
+from kamado.tui.theme import Theme
 
 from tests.fixtures import DIRECT_ROOM, build_reader
 from tests.test_tui_send import FakeSender

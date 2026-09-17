@@ -8,8 +8,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from kakaoread import cli
-from kakaoread.errors import ErrorCode, KakaoReadError
+from kamado import cli
+from kamado.errors import ErrorCode, KamadoError
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -92,7 +92,7 @@ class CommandTests(unittest.TestCase):
         reader = build_reader()
         self.addCleanup(reader.close)
         arguments = cli.build_parser().parse_args(["query", "SELECT nope FROM nowhere"])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             cli.run(arguments, reader)
         self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
 
@@ -115,7 +115,7 @@ class FailureTests(unittest.TestCase):
     def run_main(self, *argv: str) -> tuple[int, str]:
         reader = build_reader()
         output = io.StringIO()
-        with patch("kakaoread.cli.Reader", return_value=reader), redirect_stdout(output):
+        with patch("kamado.cli.Reader", return_value=reader), redirect_stdout(output):
             code = cli.main(list(argv))
         return code, output.getvalue()
 
@@ -139,7 +139,7 @@ class FailureTests(unittest.TestCase):
             container=reader.keyring.container, databases=reader.keyring.databases, account=None
         )
         output = io.StringIO()
-        with patch("kakaoread.cli.Reader", return_value=reader), redirect_stdout(output):
+        with patch("kamado.cli.Reader", return_value=reader), redirect_stdout(output):
             code = cli.main(["context", "--room-id", str(NAMED_ROOM)])
         answer = json.loads(output.getvalue())
         self.assertEqual(code, 1)
@@ -150,7 +150,7 @@ class FailureTests(unittest.TestCase):
         self.addCleanup(reader.close)
         output = io.StringIO()
         with (
-            patch("kakaoread.cli.Reader", return_value=reader),
+            patch("kamado.cli.Reader", return_value=reader),
             patch.object(type(reader), "status", side_effect=RuntimeError("boom")),
             redirect_stdout(output),
         ):

@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread import paths
-from kakaoread.errors import ErrorCode, KakaoReadError
+from kamado import paths
+from kamado.errors import ErrorCode, KamadoError
 
 
 class HomePathsTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class HomePathsTests(unittest.TestCase):
 
     def test_state_is_outside_the_container_and_is_not_created_by_lookup(self) -> None:
         state = paths.state_directory(self.env)
-        self.assertEqual(state, self.home / "Library/Application Support/kakaoread")
+        self.assertEqual(state, self.home / "Library/Application Support/kamado-cli")
         self.assertFalse(state.exists())
 
     def test_preferences_prefer_suffixed_container_copies_then_plain_then_global(self) -> None:
@@ -101,7 +101,7 @@ class GuardedTests(unittest.TestCase):
     def test_permission_error_becomes_a_typed_permission_failure(self) -> None:
         def denied():
             raise PermissionError("synthetic denial")
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             paths.guarded(denied, "fixture")
         self.assertEqual(raised.exception.code, ErrorCode.PERMISSION_REQUIRED)
         self.assertEqual(raised.exception.details["permission"], "fullDiskAccess")
@@ -119,7 +119,7 @@ class GuardedTests(unittest.TestCase):
         # Time is the behavior under test. No real I/O or scheduling race can
         # make this callable finish; the worker is intentionally abandoned.
         with patch.object(paths, "ACCESS_TIMEOUT_SECONDS", 0.01):
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 paths.guarded(never_returns, "fixture-timeout")
         self.assertEqual(raised.exception.code, ErrorCode.PERMISSION_REQUIRED)
         self.assertTrue(entered.wait(timeout=1))

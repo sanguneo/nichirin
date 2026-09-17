@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from kakaoread.context import read_context
-from kakaoread.errors import ErrorCode, KakaoReadError
+from kamado.context import read_context
+from kamado.errors import ErrorCode, KamadoError
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -91,7 +91,7 @@ class SuccessTests(unittest.TestCase):
 class RefusalTests(unittest.TestCase):
     def test_an_ambiguous_title_returns_candidates_instead_of_a_guess(self) -> None:
         with build_reader() as reader:
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 read_context(reader, "e")
         failure = raised.exception
         self.assertEqual(failure.code, ErrorCode.AMBIGUOUS_CHAT)
@@ -100,13 +100,13 @@ class RefusalTests(unittest.TestCase):
 
     def test_an_unknown_title_is_reported_as_not_found(self) -> None:
         with build_reader() as reader:
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 read_context(reader, "no such conversation anywhere")
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_NOT_FOUND)
 
     def test_an_unknown_id_is_reported_as_not_found(self) -> None:
         with build_reader() as reader:
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 read_context(reader, 999999)
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_NOT_FOUND)
 
@@ -117,7 +117,7 @@ class RefusalTests(unittest.TestCase):
                 databases=reader.keyring.databases,
                 account=None,
             )
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 read_context(reader, NAMED_ROOM)
         self.assertEqual(raised.exception.code, ErrorCode.KEY_UNAVAILABLE)
         self.assertEqual(raised.exception.details["databases"], 1)
@@ -125,13 +125,13 @@ class RefusalTests(unittest.TestCase):
     def test_a_non_positive_limit_is_rejected(self) -> None:
         with build_reader() as reader:
             for limit in (0, -5):
-                with self.subTest(limit=limit), self.assertRaises(KakaoReadError) as raised:
+                with self.subTest(limit=limit), self.assertRaises(KamadoError) as raised:
                     read_context(reader, DIRECT_ROOM, limit=limit)
                 self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
 
     def test_every_failure_renders_the_same_envelope(self) -> None:
         with build_reader() as reader:
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 read_context(reader, 999999)
         envelope = raised.exception.envelope()
         self.assertIs(envelope["ok"], False)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.tui.layout import (
+from kamado.tui.layout import (
     ELLIPSIS,
     Segment,
     display_width,
@@ -21,7 +21,7 @@ from kakaoread.tui.layout import (
     truncate_to_width,
     wrap_to_width,
 )
-from kakaoread.tui.theme import TEXT, SpeakerPalette, Theme, to_256
+from kamado.tui.theme import TEXT, SpeakerPalette, Theme, to_256
 
 RED = "\x1b[38;2;204;102;102m"
 OFF = "\x1b[39m"

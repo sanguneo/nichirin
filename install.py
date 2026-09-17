@@ -5,9 +5,9 @@
 """Install the macOS skill and its runtime into an agent's skill directory.
 
 Run with Python 3.9+; no third-party packages are needed. The default is
-~/.agents/skills/kakaoread. Use --target to choose an exact skill directory,
-for example ~/.claude/skills/kakaoread, and --force to update an installation.
-The payload contains SKILL.md, a launcher, the Python runtime, and LICENSE;
+~/.agents/skills/kamado-cli. Use --target to choose an exact skill directory,
+for example ~/.claude/skills/kamado-cli, and --force to update an installation.
+The payload contains SKILL.md, both launchers, the Python runtime, and LICENSE;
 it does not copy account data or grant macOS permissions.
 
 Only files this project ships are written.  An existing installation is
@@ -29,21 +29,23 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_TARGET = Path.home() / ".agents" / "skills" / "kakaoread"
-LAUNCHER = Path("scripts/kakaoread.py")
+DEFAULT_TARGET = Path.home() / ".agents" / "skills" / "kamado-cli"
+LAUNCHER = Path("scripts/kamado-cli.py")
+LEGACY_LAUNCHER = Path("scripts/kakaoread.py")
 
 
 def shipped_files(root: Path) -> dict[Path, Path]:
     """Map each installed path to the source file it comes from."""
-    package = root / "kakaoread"
+    package = root / "kamado"
     payload: dict[Path, Path] = {
         Path("SKILL.md"): root / "skill" / "SKILL.md",
         Path("LICENSE"): root / "LICENSE",
         LAUNCHER: root / "skill" / LAUNCHER,
+        LEGACY_LAUNCHER: root / "skill" / LEGACY_LAUNCHER,
     }
     payload.update(
         {
-            Path("scripts/kakaoread") / source.relative_to(package): source
+            Path("scripts/kamado") / source.relative_to(package): source
             for source in sorted(package.rglob("*.py"))
             if "__pycache__" not in source.relative_to(package).parts
         }
@@ -92,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise IsADirectoryError(destination)
 
         target.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".kakaoread-install-", dir=target) as staging:
+        with tempfile.TemporaryDirectory(prefix=".kamado-cli-install-", dir=target) as staging:
             staged_root = Path(staging)
             for relative, source in payload.items():
                 staged = staged_root / relative
@@ -106,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Installation failed: {error}", file=sys.stderr)
         return 1
 
-    print(f"Installed kakaoread skill: {target}")
+    print(f"Installed kamado-cli skill: {target}")
     print(f"Run it with: python3 \"{target / LAUNCHER}\" status")
     return 0
 

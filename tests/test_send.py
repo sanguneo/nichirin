@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread import ax
-from kakaoread.macauto import AXBackend, ChatWindow, Sender
+from kamado.errors import ErrorCode, KamadoError
+from kamado import ax
+from kamado.macauto import AXBackend, ChatWindow, Sender
 
 
 class FakeWindows:
@@ -43,7 +43,7 @@ class SendTests(unittest.TestCase):
         self.sender = Sender(self.backend, running=lambda: True)
 
     def test_empty_target_cannot_resolve_the_only_window(self) -> None:
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KamadoError) as caught:
             self.sender.send("  ", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, [])
@@ -82,7 +82,7 @@ class SendTests(unittest.TestCase):
 
     def test_duplicate_exact_titles_are_refused(self) -> None:
         self.backend.windows.append(ChatWindow(43, "Synthetic room"))
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KamadoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.AMBIGUOUS_CHAT)
         self.assertEqual(self.backend.actions, [])
@@ -93,7 +93,7 @@ class SendTests(unittest.TestCase):
 
     def test_unopened_exact_room_cannot_target_a_longer_title(self) -> None:
         self.backend.windows = [ChatWindow(43, "Synthetic room extra")]
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KamadoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(self.backend.actions, [])
@@ -101,27 +101,27 @@ class SendTests(unittest.TestCase):
     def test_invalid_message_is_refused_without_writes(self) -> None:
         for text in ("", " \n", "hello\x00world"):
             with self.subTest(text=text):
-                with self.assertRaises(KakaoReadError) as caught:
+                with self.assertRaises(KamadoError) as caught:
                     self.sender.send("Synthetic room", text)
                 self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, [])
 
     def test_closed_client_is_a_typed_failure(self) -> None:
         sender = Sender(self.backend, running=lambda: False)
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KamadoError) as caught:
             sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.KAKAO_NOT_RUNNING)
 
     def test_missing_input_is_a_typed_failure(self) -> None:
         self.backend.control = 0
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KamadoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.INPUT_NOT_FOUND)
         self.assertEqual(self.backend.actions, [])
 
     def test_submit_failure_does_not_retry_or_erase_draft(self) -> None:
         self.backend.fail_submit = True
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KamadoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
         self.assertEqual(self.backend.actions, ["fill", "submit"])
@@ -134,7 +134,7 @@ class AXMessageTests(unittest.TestCase):
         # Nothing here stubs activation, because the send path never activates.
         self.element = Mock()
         self.element.value = "draft"
-        with patch("kakaoread.macauto.ax.application", return_value=Mock()):
+        with patch("kamado.macauto.ax.application", return_value=Mock()):
             self.backend = AXBackend(99)
         self.control = self.backend._register(self.element)
 
@@ -145,7 +145,7 @@ class AXMessageTests(unittest.TestCase):
         text = "synthetic \uac00\U0001f642\nnext"
         self.element.set_attribute.return_value = True
         self.element.value = text  # the write sticks
-        with patch("kakaoread.macauto.subprocess.run") as run:
+        with patch("kamado.macauto.subprocess.run") as run:
             self.backend.set_text(self.control, text)
         self.element.set_attribute.assert_called_once_with("AXValue", text)
         run.assert_not_called()  # the client is never brought forward
@@ -187,7 +187,7 @@ class AXMessageTests(unittest.TestCase):
         # not because the press call says so (this client lies about that).
         button = self._window_with_send_button(press_returns=False)
         self.element.value = ""  # the box emptied → sent
-        with patch("kakaoread.macauto.subprocess.run") as run:
+        with patch("kamado.macauto.subprocess.run") as run:
             self.backend.submit(self.control)
         button.perform.assert_called_once_with("AXPress")
         run.assert_not_called()  # sending never activates the client
@@ -211,7 +211,7 @@ class AXMessageTests(unittest.TestCase):
         # With no send button, submit falls back to a Return aimed at the
         # process — not at the session, so it cannot land in another app.
         self.element.value = ""
-        with patch("kakaoread.macauto.ax.post_key") as post_key:
+        with patch("kamado.macauto.ax.post_key") as post_key:
             self.backend.submit(self.control)
         post_key.assert_called_once_with(99, ax.KEY_RETURN)
 
@@ -226,6 +226,6 @@ class AXMessageTests(unittest.TestCase):
     def test_accessibility_denial_is_reported_as_a_send_failure(self) -> None:
         backend = FakeWindows()
         with patch.object(backend, "submit", side_effect=ax.AccessibilityDenied("synthetic denial")):
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 Sender(backend, running=lambda: True).send("Synthetic room", "text")
         self.assertEqual(raised.exception.code, ErrorCode.SEND_FAILED)

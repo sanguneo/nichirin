@@ -1,6 +1,6 @@
 <div align="center">
 
-# kakaoread
+# kamado
 
 **내 Mac의 카카오톡을 읽고, 따라가고, 보내는 macOS용 CLI**
 
@@ -48,8 +48,8 @@ macOS 15.7에서 확인했습니다. 저장소 디렉터리에서 실행하세�
 > SQLite 메모리 직렬화(`deserialize`) 지원 덕분에 실행 속도가 **3배 이상 단축**되며(약 1.6s)
 > 디스크 임시 파일도 생성되지 않습니다:
 > ```bash
-> uv run --python 3.12 -m kakaoread status
-> uv run --python 3.12 -m kakaoread tui
+> uv run --python 3.12 -m kamado status
+> uv run --python 3.12 -m kamado tui
 > ```
 
 먼저 **시스템 설정 → 개인정보 보호 및 보안**에서 도구를 실행하는 **터미널 앱**
@@ -66,12 +66,12 @@ macOS 15.7에서 확인했습니다. 저장소 디렉터리에서 실행하세�
 `ok: true`, `ready: false`, `detail`로 현재 상태를 설명할 수 있습니다.
 
 ```bash
-python3 -m kakaoread status                      # 지금 무엇이 되는지
-python3 -m kakaoread context --room "이름"        # 방 하나를 통째로 이해하기
-python3 -m kakaoread follow --interval 1          # 새 메시지를 NDJSON으로
-python3 -m kakaoread names --room-id 123 "닉"     # 그 이름을 쓴 계정 전부
-python3 -m kakaoread send --room "이름" --dry-run "안녕"  # 보내기 전 확인
-python3 -m kakaoread tui                         # 터미널에서 직접 읽기
+python3 -m kamado status                      # 지금 무엇이 되는지
+python3 -m kamado context --room "이름"        # 방 하나를 통째로 이해하기
+python3 -m kamado follow --interval 1          # 새 메시지를 NDJSON으로
+python3 -m kamado names --room-id 123 "닉"     # 그 이름을 쓴 계정 전부
+python3 -m kamado send --room "이름" --dry-run "안녕"  # 보내기 전 확인
+python3 -m kamado tui                         # 터미널에서 직접 읽기
 ```
 
 **읽을 때는 카카오톡을 꺼도 됩니다.** 새 메시지가 로컬에 동기화되거나 실제로 전송되려면
@@ -153,12 +153,12 @@ macOS에서는 한 열쇠로 모든 저장된 방을 엽니다. `readable`은 �
 **SQL을 그 방으로 제한하지 않습니다.** 직접 `WHERE chatId = ...`를 쓰세요.
 
 ```bash
-python3 -m kakaoread messages --room-id 123 --before-id 9876 --limit 100
-python3 -m kakaoread friends --favorites
-python3 -m kakaoread search "회의 시간" --limit 20
-python3 -m kakaoread schema
-python3 -m kakaoread query 'SELECT COUNT(*) AS count FROM NTChatMessage'
-python3 -m kakaoread follow --room-id 123 --room-id 456
+python3 -m kamado messages --room-id 123 --before-id 9876 --limit 100
+python3 -m kamado friends --favorites
+python3 -m kamado search "회의 시간" --limit 20
+python3 -m kamado schema
+python3 -m kamado query 'SELECT COUNT(*) AS count FROM NTChatMessage'
+python3 -m kamado follow --room-id 123 --room-id 456
 ```
 
 `follow`는 시작 시 `event: "watching"`, 이후 `event: "message"`를 한 줄씩 내보냅니다.
@@ -168,7 +168,7 @@ python3 -m kakaoread follow --room-id 123 --room-id 456
 ## 터미널에서 직접
 
 ```bash
-python3 -m kakaoread tui
+python3 -m kamado tui
 ```
 
 `termios`를 쓰는 POSIX 터미널 UI입니다. 파이프로 연결하지 말고 Terminal이나 iTerm에서
@@ -213,9 +213,9 @@ python3 -m kakaoread tui
 화자를 구분할 때는 이름이 아니라 아이디를 보세요.
 
 ```bash
-python3 -m kakaoread names --room-id 123             # 관측한 개명 이력이 있는 계정
-python3 -m kakaoread names --room-id 123 "닉네임"     # 그 이름을 쓴 계정 전부
-python3 -m kakaoread names --room-id 123 --user-id 456
+python3 -m kamado names --room-id 123             # 관측한 개명 이력이 있는 계정
+python3 -m kamado names --room-id 123 "닉네임"     # 그 이름을 쓴 계정 전부
+python3 -m kamado names --room-id 123 --user-id 456
 ```
 
 이력은 입장·퇴장·초대 피드와 도구가 읽으며 관측한 이름을 합칩니다. 클라이언트의 모든
@@ -225,7 +225,7 @@ python3 -m kakaoread names --room-id 123 --user-id 456
 ![합성 데이터의 같은 이름을 쓰는 계정 두 개](demo/shots/real.png)
 
 > [!IMPORTANT]
-> 이름 이력은 `~/Library/Application Support/kakaoread/names.jsonl`에 남습니다.
+> 이름 이력은 `~/Library/Application Support/kamado-cli/names.jsonl`에 남습니다.
 > **실제 닉네임이 들어가는 파일입니다.** DB 원본은 읽기 전용이어도 이 관측 이력은
 > 도구가 직접 저장합니다. 방 목록 위치 캐시는 같은 디렉터리의 `rows.json`이며 제목의
 > 해시와 행 번호를 저장합니다. 열쇠나 프로세스 메모리 주소를 저장하는 캐시는 없습니다.
@@ -238,9 +238,9 @@ python3 -m kakaoread names --room-id 123 --user-id 456
 포커스를 가져오지 않고, 마우스 커서와 클립보드도 건드리지 않습니다.
 
 ```bash
-python3 -m kakaoread send --room "이름" --dry-run "확인만"
-python3 -m kakaoread send --room "이름" "보낼 말"
-python3 -m kakaoread send --room "이름" --open "창이 닫혀 있어도"
+python3 -m kamado send --room "이름" --dry-run "확인만"
+python3 -m kamado send --room "이름" "보낼 말"
+python3 -m kamado send --room "이름" --open "창이 닫혀 있어도"
 ```
 
 기본값은 이미 열린 채팅 창을 찾습니다. `--open`은 닫힌 방을 목록에서 열도록 허용합니다.
@@ -272,10 +272,10 @@ python3 -m kakaoread send --room "이름" --open "창이 닫혀 있어도"
 
 ```bash
 python3 install.py
-python3 install.py --target "$HOME/.claude/skills/kakaoread" --force
+python3 install.py --target "$HOME/.claude/skills/kamado-cli" --force
 ```
 
-기본 위치는 `~/.agents/skills/kakaoread`입니다. `SKILL.md`, 런처, 파이썬 런타임 소스,
+기본 위치는 `~/.agents/skills/kamado-cli`입니다. `SKILL.md`, 런처, 파이썬 런타임 소스,
 라이선스를 복사합니다. 설치본은 자립형이라 원본 체크아웃을 옮기거나 지워도 됩니다.
 기존 디렉터리는 `--force`가 있어야 갱신하며, 배포 파일 외의 사용자 파일은 남깁니다.
 

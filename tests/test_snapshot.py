@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread import snapshot
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.snapshot import (
+from kamado import snapshot
+from kamado.errors import ErrorCode, KamadoError
+from kamado.snapshot import (
     ConsistencyError,
     Fingerprint,
     SnapshotCache,
@@ -113,13 +113,13 @@ class BuildImageTests(_Fixture):
 
     def test_rejects_a_database_ending_in_a_partial_page(self) -> None:
         self.database.write_bytes(self.database.read_bytes()[:-1])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             build_image(self.database, geometry())
         self.assertEqual(raised.exception.code, ErrorCode.READ_FAILED)
 
     def test_rejects_an_empty_database(self) -> None:
         self.database.write_bytes(b"")
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KamadoError):
             build_image(self.database, geometry())
 
     def test_rejects_a_commit_that_leaves_pages_undefined(self) -> None:
@@ -128,7 +128,7 @@ class BuildImageTests(_Fixture):
         # base file or the log.
         body = self.encrypted(self.pages_b, 2)
         self.log.write_bytes(make_wal([(2, 0, body), (4, 4, body)]))
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KamadoError) as raised:
             build_image(self.database, geometry())
         self.assertEqual(raised.exception.code, ErrorCode.READ_FAILED)
 
@@ -156,9 +156,9 @@ class BuildImageTests(_Fixture):
         self.assertEqual(len(encrypt_pages(self.pages_b)), len(self.database.read_bytes()))
 
         with (
-            patch("kakaoread.snapshot.Fingerprint.of", return_value=frozen),
+            patch("kamado.snapshot.Fingerprint.of", return_value=frozen),
             patch(
-                "kakaoread.snapshot.pages.reconstruct_page", side_effect=self._rewriting()
+                "kamado.snapshot.pages.reconstruct_page", side_effect=self._rewriting()
             ),
         ):
             with self.assertRaises(ConsistencyError):
@@ -170,13 +170,13 @@ class BuildImageTests(_Fixture):
 
         # Bind the real function before patching, or the wrapper would look up
         # its own replacement and recurse.
-        from kakaoread.page import reconstruct_page as real_reconstruct
+        from kamado.page import reconstruct_page as real_reconstruct
 
         def swap_log(prepared, number, page, page_size=PAGE_SIZE, reserve=80):
             self.log.write_bytes(replacement)
             return real_reconstruct(prepared, number, page, page_size, reserve)
 
-        with patch("kakaoread.snapshot.pages.reconstruct_page", side_effect=swap_log):
+        with patch("kamado.snapshot.pages.reconstruct_page", side_effect=swap_log):
             with self.assertRaises(ConsistencyError):
                 build_image(self.database, geometry())
 
@@ -186,7 +186,7 @@ class BuildImageTests(_Fixture):
         The real function is captured here, before any patching, so the
         wrapper cannot end up calling itself.
         """
-        from kakaoread.page import reconstruct_page as real_reconstruct
+        from kamado.page import reconstruct_page as real_reconstruct
 
         state = {"done": False}
 
@@ -303,7 +303,7 @@ class CacheTests(_Fixture):
         os.utime(wal_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
 
         # Re-connecting should call _update_wal_with_retry without invoking build_image
-        with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("called full build_image")):
+        with patch("kamado.snapshot.build_image", side_effect=AssertionError("called full build_image")):
             second = self.cache.connect(self.database, geometry())
         self.assertIsNotNone(second)
 
@@ -326,7 +326,7 @@ class CacheTests(_Fixture):
 
     def test_an_unchanged_database_is_not_decrypted_twice(self) -> None:
         first = self.cache.connect(self.database, geometry())
-        with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):
+        with patch("kamado.snapshot.build_image", side_effect=AssertionError("decrypted")):
             second = self.cache.connect(self.database, geometry())
         self.assertIs(first, second)
 
@@ -350,12 +350,12 @@ class CacheTests(_Fixture):
         naps: list[float] = []
         with (
             patch(
-                "kakaoread.snapshot.build_image",
+                "kamado.snapshot.build_image",
                 side_effect=ConsistencyError("still moving"),
             ),
-            patch("kakaoread.snapshot.time.sleep", naps.append),
+            patch("kamado.snapshot.time.sleep", naps.append),
         ):
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KamadoError) as raised:
                 self.cache.connect(self.database, geometry())
 
         self.assertEqual(raised.exception.code, ErrorCode.BUSY)
@@ -372,8 +372,8 @@ class CacheTests(_Fixture):
             return real(*args, **kwargs)
 
         with (
-            patch("kakaoread.snapshot.build_image", side_effect=flaky),
-            patch("kakaoread.snapshot.time.sleep", lambda _seconds: None),
+            patch("kamado.snapshot.build_image", side_effect=flaky),
+            patch("kamado.snapshot.time.sleep", lambda _seconds: None),
         ):
             connection = self.cache.connect(self.database, geometry())
         self.assertEqual(attempts["count"], 2)
@@ -428,8 +428,8 @@ class CacheTests(_Fixture):
             return bytes(image)
 
         with (
-            patch("kakaoread.snapshot._connect", side_effect=recording),
-            patch("kakaoread.snapshot.update_image_with_wal", side_effect=malformed),
+            patch("kamado.snapshot._connect", side_effect=recording),
+            patch("kamado.snapshot.update_image_with_wal", side_effect=malformed),
         ):
             second = self.cache.connect(self.database, geometry())
 
@@ -465,8 +465,8 @@ class CacheTests(_Fixture):
             return build_image(*args, **kwargs)
 
         with (
-            patch("kakaoread.snapshot.build_image", side_effect=counting),
-            patch("kakaoread.snapshot.time.sleep", naps.append),
+            patch("kamado.snapshot.build_image", side_effect=counting),
+            patch("kamado.snapshot.time.sleep", naps.append),
         ):
             second = self.cache.connect(self.database, geometry())
 
@@ -519,7 +519,7 @@ class CacheTests(_Fixture):
             decryptions.append(args)
             return build_image(*args, **kwargs)
 
-        with patch("kakaoread.snapshot.build_image", side_effect=counting):
+        with patch("kamado.snapshot.build_image", side_effect=counting):
             cache.connect(self.database, geometry())
         self.assertEqual(
             len(decryptions),

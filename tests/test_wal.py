@@ -11,7 +11,7 @@ from __future__ import annotations
 import struct
 import unittest
 
-from kakaoread.wal import WAL_HEADER_SIZE, WalFormatError, parse
+from kamado.wal import WAL_HEADER_SIZE, WalFormatError, parse
 
 from tests.support import PAGE_SIZE, make_wal
 

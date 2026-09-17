@@ -4,6 +4,16 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [Unreleased]
+
+### 변경
+
+- **이름이 `kamado-cli` 가 되었습니다.** 패키지는 `kamado`, 명령은 `kamado`,
+  예외는 `KamadoError`, 환경변수는 `KAMADO_*` 입니다. 상태 디렉터리는
+  `~/Library/Application Support/kamado-cli/` 로 옮겨 갑니다.
+- **옛 이름은 계속 동작합니다.** `python3 -m kakaoread`, `scripts/kakaoread.py`,
+  `import kakaoread` 가 모두 같은 객체를 돌려주고, 새 이름을 stderr 에 알립니다.
+
 ## [0.6.0] — 2026-09-17
 
 읽기가 몇 초에서 몇십 밀리초로 내려왔고, 그 속도를 만들다 생긴 구멍들을 메웠습니다.
