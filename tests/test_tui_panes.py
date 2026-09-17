@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import unittest
 
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.tui.app import MIN_PANE_COLUMNS, App
 from kamado.tui.console import Key
 from kamado.tui.layout import display_width, strip_ansi

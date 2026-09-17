@@ -16,6 +16,10 @@ from unittest.mock import patch
 
 from kamado.errors import ErrorCode, KamadoError
 from kamado.model import GROUP_CHAT
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
 from kamado.tui import console as console_module
 from kamado.tui.console import (
@@ -180,10 +184,12 @@ class ComposerTests(ComposerCase):
         self.assertIsNotNone(self.app.chat)
 
     def test_a_native_failure_is_reported_rather_than_raised(self) -> None:
-        self.sender.failure = OSError("PostMessage failed")
+        # An accessibility call can fail for reasons this side cannot name, and
+        # the screen has to say so rather than unwind.
+        self.sender.failure = OSError("AXUIElementSetAttributeValue failed")
         self.type("안녕")
         self.press_enter()
-        self.assertIn("PostMessage failed", self.chat.notice)
+        self.assertIn("AXUIElementSetAttributeValue failed", self.chat.notice)
 
     def test_sending_never_re_reads_the_catalog(self) -> None:
         # Re-reading it cost up to 3.0 s per send once the snapshot was stale,

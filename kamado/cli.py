@@ -16,17 +16,24 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 from typing import Any, Optional, Sequence
 
 from . import __version__
+from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KamadoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
-DIGEST_LIMIT = 400
+DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
+"""How many of the newest messages a digest slices, matching the screen's /sum.
+
+Taken from :mod:`kamado.digest` rather than repeated, so the flag's default and
+the server's default cannot drift apart.
+"""
 """How many of the newest messages a digest slices, matching the screen's /sum."""
 
 
@@ -41,6 +48,13 @@ def _interval(value: str) -> float:
     parsed = float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _non_negative_interval(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0 or parsed != parsed or parsed == float("inf"):
+        raise argparse.ArgumentTypeError("must be 0 or a positive finite number")
     return parsed
 
 
@@ -145,6 +159,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("tui", help="Browse conversations in a terminal interface")
 
+    serve = commands.add_parser(
+        "serve",
+        help="Expose send, rooms, context, and a message stream over HTTP + SSE",
+    )
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--token",
+        default=None,
+        help="Bearer token (defaults to the KAMADO_TOKEN environment variable)",
+    )
+    serve.add_argument(
+        "--min-interval",
+        type=_non_negative_interval,
+        default=2.0,
+        help="Minimum seconds between two sends; 0 disables (default %(default)s)",
+    )
+    serve.add_argument(
+        "--poll-interval",
+        type=_interval,
+        default=1.0,
+        help="Seconds between watcher polls on /stream (default %(default)s)",
+    )
+
     return parser
 
 
@@ -155,31 +193,21 @@ def _emit(payload: dict[str, Any]) -> None:
 def _digest(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any]:
     """Hand a caller the same extractive digest the screen's /sum builds.
 
-    Extractive, not generative: there is no model in this process, so nothing
-    here is invented. What comes back is the material a model would want —
-    how busy each window was, who carried it, which words it was about, and
-    the lines most likely to carry the point — rather than a page of raw
-    messages for the caller to chew through itself.
+    The digest itself is :func:`kamado.digest.build`, so the command and the
+    HTTP server ask one implementation the same question; this is the argument
+    handling around it.
     """
-    from .tui import digest as digest_module
+    from .digest import build
 
-    try:
-        span = digest_module.parse_duration(arguments.span)
-    except digest_module.DurationError as error:
-        raise KamadoError(ErrorCode.INVALID_REQUEST, str(error)) from error
-    room = _selected_room(reader, arguments)
-    found = reader.messages(room.id, limit=arguments.limit)
-    slices = digest_module.slice_messages(found, span)
+    target = arguments.room_id if arguments.room_id is not None else arguments.room
     return success(
-        {
-            "room": room.as_json(),
-            "span": arguments.span,
-            "considered": len(found),
-            "slices": digest_module.as_json(slices, arguments.highlights),
-            "note": "Extractive, not generative: counts, speakers, keywords and "
-            "verbatim highlights from the newest messages only. Nothing here is a "
-            "summary; write one from it.",
-        }
+        build(
+            reader,
+            target,
+            span=arguments.span,
+            limit=arguments.limit,
+            highlights=arguments.highlights,
+        )
     )
 
 
@@ -249,6 +277,41 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "send":
         return _send(reader, arguments)
+
+    if arguments.command == "serve":
+        from .serve import (
+            make_live_context_provider,
+            make_live_digest_provider,
+            make_live_rooms_provider,
+            make_live_send,
+            make_live_watcher_factory,
+            run as serve_run,
+            validate_token,
+        )
+
+        token = validate_token(arguments.token or os.environ.get("KAMADO_TOKEN"))
+        if arguments.host in ("0.0.0.0", "::", ""):
+            print(
+                "warning: serving on a wildcard address exposes the bearer "
+                "token to every machine that can reach this port. Put a "
+                "reverse proxy in front or use SSH port forwarding.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return serve_run(
+            host=arguments.host,
+            port=arguments.port,
+            send=make_live_send(),
+            token=token,
+            min_interval=arguments.min_interval,
+            rooms_provider=make_live_rooms_provider(lambda: Reader()),
+            context_provider=make_live_context_provider(lambda: Reader()),
+            digest_provider=make_live_digest_provider(lambda: Reader()),
+            watcher_factory=make_live_watcher_factory(
+                lambda: Reader(), interval=arguments.poll_interval
+            ),
+            poll_interval=arguments.poll_interval,
+        )
 
     if arguments.command == "search":
         rooms = reader.rooms()
@@ -476,7 +539,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = build_parser().parse_args(argv)
 
     # If the background daemon is running and this is a query command, forward it!
-    if arguments.command not in ("tui", "follow", "daemon", "send"):
+    # ``serve`` joins this list for the same reason ``follow`` is on it: the
+    # daemon answers one query and returns, and a server that is supposed to
+    # hold a socket open would exit having printed the daemon's answer.
+    if arguments.command not in ("tui", "follow", "daemon", "send", "serve"):
         from .daemon import is_daemon_running, send_to_daemon
 
         if is_daemon_running():

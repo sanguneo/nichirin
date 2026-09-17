@@ -178,6 +178,72 @@ keystrokes. Everything below is what it took to get there.
 - Shots are committed as **lossless WebP**; the same nine frames as PNG weigh
   four times as much.
 
+### The remote server (`kamado serve`)
+
+Ported from the Windows branch, where it grew to 760 lines in one module before
+being split. It arrived here already split, so the layout below is the shape to
+keep rather than one to rediscover.
+
+| Module | Responsibility |
+| --- | --- |
+| `digest.py` | The digest the command and the server both ask for |
+| `serve/config.py` | Constants, token and interval validation, error-to-status map |
+| `serve/handler.py` | Auth, routing, and every route that answers and closes |
+| `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
+| `serve/backends.py` | Reader, Sender and Watcher wiring for a live host |
+| `serve/server.py` | Binding the socket and serving until interrupted |
+
+- **`serve` must never be forwarded to the daemon.** `cli.main` hands query
+  commands to a running daemon, which answers one request and returns — a
+  server that is supposed to hold a socket open would print that answer and
+  exit. It is on the exclusion list beside `tui`, `follow` and `send`.
+- **SSE, not WebSockets.** This is a one-way push of small JSON payloads, so
+  `curl -N` is a complete client and no dependency is needed for either side.
+- **Sends are serialized under one lock and spaced by the server**, because the
+  client's composer is a single shared resource and a remote caller may be
+  several callers. The local CLI still only asks callers to wait two seconds;
+  here it is enforced.
+- **The HTTP layer is proven by stubs on any platform; the live wiring is not.**
+  `tests/serve/` stands a stub sender, watcher and reader in front of the same
+  handler, which is why those tests run on a machine with no KakaoTalk at all.
+  What they do not touch is `backends.make_live_send` — the path that resolves
+  a room, refuses a duplicate title and types into a real window. That one
+  needs a Mac with the client running, and until it has had one, the route is
+  unproven however green the suite is.
+- **A remote caller is not a person typing, so the reads are bounded.** The
+  commands cap nothing because whoever runs one is the cap. Over HTTP `limit`
+  reaches SQLite, where a **negative limit means no limit at all**, so
+  `limit` is 1–1000 and `highlights` 1–20, checked in `serve/config.py`
+  **before the reader is opened**; a `roomId` outside the 64-bit range is a 400
+  rather than an `OverflowError` out of the driver.
+- **The stream's cursor names every room, because one id cannot stand for an
+  account.** `/stream` follows every room, so the last message it sent says
+  nothing about where the others had reached — standard SSE `Last-Event-ID`
+  would silently resume the wrong ones. The server emits `event: cursor` with
+  `{roomId: logId}` *after* the messages it covers, and a client hands it back
+  as repeated `since=<roomId>:<logId>`. `Watcher.resume` seeds `_seen` and
+  leaves the account fingerprint unset, so the first poll goes through and
+  pages each named room forward. A room the cursor does not name starts from
+  now; that is a gap, and it is documented rather than papered over. A watcher
+  that cannot resume answers 500 rather than quietly starting over.
+- **The connection has a deadline and the streams have a count.** A client may
+  otherwise promise a body in `Content-Length` and hold a thread indefinitely;
+  it now answers `408` after 30 s. Each SSE connection owns a reader and a
+  watcher for its whole life, so eight is the most that may be open and the
+  ninth is `503 BUSY`. `QuietDisconnects` swallows the four ordinary
+  disconnect errors, because a reader closing `curl -N` is SSE's success case
+  and `socketserver` would print a traceback for each one.
+- **The status map carries the macOS-only codes, which the Windows table had
+  no reason to.** `PERMISSION_REQUIRED`, `NO_USER_DATA` and `INPUT_NOT_FOUND`
+  all left as a 500 when this arrived. The first is the one that mattered: it
+  is the failure a user fixes in half a minute by granting Accessibility or
+  Full Disk Access, and an internal-server-error tells a remote caller there is
+  nothing to be done. It is 503 with the other two "the host cannot answer
+  yet"; `INPUT_NOT_FOUND` is 404 beside `WINDOW_NOT_FOUND`.
+- **The digest is `digest.py`, not `cli._digest`.** The server wanted what the
+  command does, and reaching into `cli` for it meant assembling an
+  `argparse.Namespace` and pointing `serve` at the layer above it.
+
 ## Conventions
 
 - Every command returns `{"ok": true, ...}` or
@@ -200,6 +266,16 @@ keystrokes. Everything below is what it took to get there.
 - Stubs must fail the way production fails.
 - When patching a module attribute, bind the original **before** patching or
   the wrapper will call itself.
+- **A test that needs macOS says so and is skipped elsewhere.** Most of this
+  suite is platform-neutral and gets run on the Windows sibling's machine while
+  shared code is written there; before `tests/platform.py` that run answered
+  `FAILED (errors=62)`, which says nothing except "not a Mac" and hides the one
+  real failure somebody just introduced. The three real reasons are named
+  rather than counted: `require_posix_console` (the interface needs `fcntl`),
+  `require_commoncrypto` (the fixtures encrypt through Apple's library, which
+  was 44 of them), and `require_unix_sockets` (the daemon's transport). Off
+  platform that run is now `OK (skipped=63)`; on a Mac nothing is skipped, and
+  a skip count above zero there means a guard is wrong.
 
 ## Deliberately absent
 

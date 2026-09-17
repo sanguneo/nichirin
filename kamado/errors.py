@@ -61,6 +61,12 @@ class ErrorCode(str, Enum):
     SEND_FAILED = "SEND_FAILED"
     """The message could not be handed to the client's input for another reason."""
 
+    UNAUTHORIZED = "UNAUTHORIZED"
+    """The remote caller did not present a valid bearer token."""
+
+    RATE_LIMITED = "RATE_LIMITED"
+    """The send rate limiter refused a request because another send ran too recently."""
+
 
 class KamadoError(Exception):
     """A failure that already knows how it should be reported to an agent."""

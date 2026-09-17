@@ -312,7 +312,9 @@ class RealCommandTests(unittest.TestCase):
     """`/real` in the browser, driven the way a reader drives it: by typing."""
 
     def app_with(self, rows: list[tuple], ledger: NameLedger | None = None):
-        from kamado.tui.app import App
+        from tests.platform import import_app
+
+        App = import_app()
         from kamado.tui.theme import Theme
 
         reader = reader_with(rows, ledger=ledger)
