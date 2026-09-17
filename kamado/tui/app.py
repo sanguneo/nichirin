@@ -56,6 +56,8 @@ REFRESH_SECONDS = 0.15
 """How often to look for arrivals. A poll that finds nothing costs one stat."""
 TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
+COMPOSING_GRACE_SECONDS = 3.0
+"""How long a half-written message holds a poll off, IME pauses included."""
 
 
 @dataclass
@@ -1320,21 +1322,33 @@ class App:
                 continue
 
             now = time.monotonic()
-            if not _poll_due(now, due_at, last_key_at):
+            composing = self.chat is not None and bool(self.chat.draft)
+            if not _poll_due(now, due_at, last_key_at, composing):
                 continue
             self.refresh(width)
             due_at = _next_poll_at(time.monotonic(), time.monotonic() - now)
 
 
-def _poll_due(now: float, due_at: float, last_key_at: float) -> bool:
+def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) -> bool:
     """Whether to look for arrivals now.
 
     Typing wins. A poll that finds something has to decrypt the room's whole
     log — measured at 0.62 s and 0.94 s on two live rooms — and this loop is
     single-threaded, so doing that between keystrokes is what makes input feel
     stuck rather than slow.
+
+    The keystroke clock cannot see somebody writing Hangul. An IME keeps every
+    jamo until the syllable commits, so nothing reaches the interface while a
+    word is being assembled and this grace expires inside it — measured on a
+    live account, the poll that lands in that gap costs 1.3 s to 1.9 s and
+    returns nothing, because the running client rewrites the shared database
+    every second or so whether or not the watched room moved. Text already in
+    the composer is the evidence the clock is missing, and it buys the longer
+    grace: long enough to cover the pauses inside a sentence, short enough
+    that a message left sitting does not stop the room from moving.
     """
-    if now - last_key_at < TYPING_GRACE_SECONDS:
+    grace = COMPOSING_GRACE_SECONDS if composing else TYPING_GRACE_SECONDS
+    if now - last_key_at < grace:
         return False
     return now >= due_at
 
