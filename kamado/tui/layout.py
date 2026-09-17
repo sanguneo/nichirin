@@ -18,7 +18,13 @@ from dataclasses import dataclass
 from typing import Final, Iterable, Optional, Sequence
 
 ELLIPSIS: Final = "…"
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_ANSI = re.compile(
+    r"("
+    r"\x1b\[[0-9;]*[A-Za-z]"
+    r"|\x1b\]8;;[^\x1b\x07]*(\x1b\\|\x07)"
+    r"|\x1b\]8;;(\x1b\\|\x07)"
+    r")"
+)
 _WIDE: Final = frozenset({"W", "F"})
 
 

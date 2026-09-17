@@ -12,6 +12,7 @@ key is imperceptible and removes a whole class of stale-cell bugs.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -572,7 +573,11 @@ class App:
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
             text = message.text or self.theme.fg("dim", f"[{message_kind(message.type)}]")
-            wrapped = wrap_to_width(message.text, body_width) if message.text else [text]
+            wrapped = (
+                self._wrap_body(message.text, body_width)
+                if message.text
+                else [text]
+            )
 
             head = (
                 self.theme.fg("dim", stamp)
@@ -594,6 +599,63 @@ class App:
                     truncate_to_width(" " * indent + self.theme.fg(body_colour, continuation), width)
                 )
         return lines
+
+    def _wrap_body(self, text: str, width: int) -> list[str]:
+        """Wrap body text while preserving full target URLs across split lines."""
+        if not self.theme.enabled or "http" not in text:
+            return wrap_to_width(text, width)
+
+        url_pattern = re.compile(r"(https?://[^\s<>\"'()]+)")
+        urls = [(m.start(), m.end(), m.group(0)) for m in url_pattern.finditer(text)]
+        if not urls:
+            return wrap_to_width(text, width)
+
+        char_map: list[Optional[str]] = [None] * len(text)
+        for start, end, url in urls:
+            for idx in range(start, end):
+                char_map[idx] = url
+
+        wrapped_lines = wrap_to_width(text, width)
+        result: list[str] = []
+        text_pos = 0
+
+        for line in wrapped_lines:
+            while text_pos < len(text) and text[text_pos].isspace() and not line.startswith(text[text_pos]):
+                text_pos += 1
+
+            line_start = text_pos
+            text_pos += len(line)
+
+            out_segments: list[str] = []
+            curr_url: Optional[str] = None
+            curr_text = ""
+
+            for char_idx, ch in enumerate(line):
+                orig_idx = line_start + char_idx
+                u = char_map[orig_idx] if orig_idx < len(char_map) else None
+                if u == curr_url:
+                    curr_text += ch
+                else:
+                    if curr_text:
+                        if curr_url:
+                            out_segments.append(
+                                f"\x1b]8;;{curr_url}\x1b\\\x1b[4m{curr_text}\x1b[24m\x1b]8;;\x1b\\"
+                            )
+                        else:
+                            out_segments.append(curr_text)
+                    curr_url = u
+                    curr_text = ch
+
+            if curr_text:
+                if curr_url:
+                    out_segments.append(
+                        f"\x1b]8;;{curr_url}\x1b\\\x1b[4m{curr_text}\x1b[24m\x1b]8;;\x1b\\"
+                    )
+                else:
+                    out_segments.append(curr_text)
+
+            result.append("".join(out_segments))
+        return result
 
     def _quoted(self, message: Message, body_width: int) -> str:
         """Render what a reply is answering, to sit beside the replier's name.
