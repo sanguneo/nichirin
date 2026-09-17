@@ -70,6 +70,7 @@ CREATE TABLE NTUser (
     directChatId INTEGER, favorite INTEGER
 );
 CREATE TABLE NTOpenLink (linkId INTEGER, linkName TEXT);
+CREATE TABLE NTChatMeta (chatId INTEGER, type INTEGER, revision INTEGER, content TEXT);
 CREATE TABLE NTChatContext (userId INTEGER);
 """
 
@@ -133,7 +134,10 @@ class StubCache:
 
 
 def build_database(
-    *, with_self_room: bool = True, messages: Optional[list[tuple]] = None
+    *,
+    with_self_room: bool = True,
+    messages: Optional[list[tuple]] = None,
+    metas: Optional[list[tuple]] = None,
 ) -> sqlite3.Connection:
     """Return one synthetic database holding every room and message."""
     users = [
@@ -196,6 +200,9 @@ def build_database(
             "NTChatRoom": rooms,
             "NTChatMessage": messages,
             "NTOpenLink": [(OPEN_LINK_ID, OPEN_LINK_NAME)],
+            # Empty unless a test names a room: the client writes a meta row
+            # only for a room somebody renamed.
+            "NTChatMeta": list(metas or []),
             "NTChatContext": [(OWN_ID,)],
         }
     )
