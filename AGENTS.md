@@ -359,20 +359,6 @@ on a live client, newest 4,000 rows of each readable room.
 - The composer keeps focus for the whole time a room is open, so no letter is
   a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
   used to do. `test_tui_send.py` pins that a typed `q` does not quit.
-- **`/ask` hands the conversation to a command, and three Windows details
-  decide whether it comes back as words.** The command line is split with
-  `shlex` in **non-POSIX** mode: POSIX mode reads a backslash as an escape, so
-  `C:\tools\omo.exe` comes back as `C:toolsomo.exe` and the failure claims the
-  program is missing rather than that its name was eaten. What it printed is
-  decoded UTF-8 first and **`mbcs`** second — a child writing to a file gets
-  the locale encoding unless it says otherwise, and
-  `locale.getpreferredencoding` is no help because UTF-8 mode makes it answer
-  "utf-8" whatever the machine is set to. And stdout and stderr are **separate
-  files**: an agent narrates while it works, and merged streams put that
-  narration at the top of a draft that is about to be sent. What cannot be
-  fixed here is a command that logs to stdout itself — measured, `omo -p`
-  prints two lines about skipped continuations before its answer, and those
-  land in the draft where they are read and deleted before Enter.
 - **Several conversations can be open, and only one has the keyboard.**
   `App.chats` is the list and `App.chat` is a property over it, which is why
   everything acting on "the" conversation still says `self.chat` and never had
