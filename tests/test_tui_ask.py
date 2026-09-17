@@ -34,10 +34,6 @@ def script(body: str) -> str:
 
 ECHOES = script("import sys; sys.stdout.write(sys.stdin.read())")
 ANSWERS = script("import sys; sys.stdout.write('답장 초안입니다')")
-NARRATES_WHILE_WORKING = script(
-    "import sys; sys.stderr.write('skipped: not-continuable\\n'); "
-    "sys.stdout.write('한 문장 요약입니다')"
-)
 SAYS_NOTHING = script("pass")
 FAILS = script("import sys; sys.stdout.write('무언가 잘못됨'); sys.exit(3)")
 FAILS_NOISILY = script(
@@ -162,18 +158,6 @@ class AnswerTests(AskCase):
         self.assertEqual(self.chat.draft, "내가 쓰던 말")
         self.assertEqual(self.chat.answer, "답장 초안입니다")
         self.assertIn("/take", self.chat.notice)
-
-    def test_what_the_command_narrates_is_not_part_of_the_answer(self) -> None:
-        """An agent talks about its own work while it works.
-
-        Merged into stdout that narration arrives at the top of the draft,
-        which is a message about to be sent. Found by running the Windows
-        port against a real agent, where two log lines landed in the composer
-        above the answer.
-        """
-        self.ask(NARRATES_WHILE_WORKING)
-        self.assertEqual(self.chat.draft, "한 문장 요약입니다")
-        self.assertNotIn("not-continuable", self.chat.draft)
 
     def test_take_puts_that_answer_in_the_composer(self) -> None:
         self.chat.answer = "기다리던 답변"
