@@ -508,7 +508,7 @@ class SentMarkTests(ComposerCase):
         self.chat.messages.append(
             replace(self.chat.messages[-1], id=99_999, text="보낸 말", from_me=True)
         )
-        self.app._confirm_delivery(self.chat.messages[-1:])
+        self.app._confirm_delivery(self.chat, self.chat.messages[-1:])
         box = self.composer()
         self.assertIn("✓", box)
         self.assertNotIn("*", box)
@@ -523,7 +523,7 @@ class SentMarkTests(ComposerCase):
         self.chat.messages.append(
             replace(self.chat.messages[-1], id=99_998, text="보낸 말", from_me=True)
         )
-        self.app._confirm_delivery(self.chat.messages[-1:])
+        self.app._confirm_delivery(self.chat, self.chat.messages[-1:])
         self.type("다")
         self.assertNotIn("✓", self.composer())
 
@@ -587,6 +587,7 @@ class DeliveryMarkTests(ComposerCase):
 
     def arrive(self, text: str) -> None:
         self.app._confirm_delivery(
+            self.chat,
             [replace(self.chat.messages[-1], id=90_001, text=text, from_me=True)]
         )
 

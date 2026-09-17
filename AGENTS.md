@@ -359,6 +359,26 @@ on a live client, newest 4,000 rows of each readable room.
 - The composer keeps focus for the whole time a room is open, so no letter is
   a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
   used to do. `test_tui_send.py` pins that a typed `q` does not quit.
+- **Several conversations can be open, and only one has the keyboard.**
+  `App.chats` is the list and `App.chat` is a property over it, which is why
+  everything acting on "the" conversation still says `self.chat` and never had
+  to learn about panes. A pane needs `MIN_PANE_COLUMNS` (44) to read as a
+  conversation at all — Hangul is two columns a character — so the window
+  decides how many are drawn: two from 89 columns, three from 134. A room that
+  stops fitting is **hidden, not closed**, because the reader opened it and a
+  window getting smaller is not a decision to let one go; the header row then
+  appears even over a single pane, or nothing on screen would say there is
+  another room to `tab` to. `esc` closes the focused pane, not the screen.
+- **Each pane keeps its own watcher, unlike the macOS build.** There one
+  fingerprint covers the whole account, so sharing a watcher is what stops
+  panes multiplying the most expensive thing that build does. Here a room *is*
+  its own database and a poll is one stat of its log, so panes cost exactly
+  what they read — and an off-screen pane is still followed, or its unseen
+  count would start from whenever the window happened to get wider.
+- **A message belongs to the room it arrived in.** `_confirm_delivery` takes
+  the conversation as an argument rather than reading the focused one, or a
+  tick would land in whichever pane the keyboard was in when the client wrote
+  the message back.
 - **Console input comes from `ReadConsoleInputW`, never `msvcrt`.**
   `kbhit()` is true for key-up, focus, mouse and buffer-resize records while
   `getwch()` blocks on them, so the loop stalled until the next real key
@@ -622,6 +642,22 @@ Taken:
 
 Not taken, and why:
 
+- **Opening a room through the client's search box** (`kamado-cli#29`). There
+  the fix works because accessibility hands over the *name* of every row: type
+  the room into the search field, read 648 row names, click the one that
+  matches. Both halves of that are missing here. The room list is owner-drawn,
+  so a row is neither a child window nor a UIA element and carries no name to
+  match — and the list reports no scroll state either (`GetScrollInfo` on both
+  `EVA_VH_ListControl_Dblclk` and its `_EVA_CustomScrollCtrl` answered
+  `min=0 max=0 page=0 pos=0`), so even *whether* a search narrowed the list is
+  unobservable. The main window does hold `Edit` controls that are plausibly
+  the search fields — two of them, visible and enabled but sized 0×0 until
+  search opens — so the typing half is probably reachable. It is the reading
+  half that is not: the only way to learn which room a filtered row holds is
+  to open it, which is the exact cost (a stranger's room opened and marked
+  read) the change exists to avoid. What is already done here instead is the
+  remembered row in `rows.json` plus closing a window whose title does not
+  match, which brought a measured four wrong rooms to none.
 - **Running through `uv` for speed**, which that README recommends. The
   speedup it reports is not uv's: macOS ships Python 3.9, so `_connect` there
   falls back to a temporary file, and `uv run --python 3.12` is simply the
