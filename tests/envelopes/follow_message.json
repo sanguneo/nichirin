@@ -1,0 +1,12 @@
+{
+  "event": "message",
+  "fromMe": false,
+  "id": "5003",
+  "kind": "text",
+  "ok": true,
+  "roomId": "1001",
+  "sender": "Peer Renamed",
+  "senderId": "111222333",
+  "sentAt": "2023-11-14T22:18:20+00:00",
+  "text": "third"
+}

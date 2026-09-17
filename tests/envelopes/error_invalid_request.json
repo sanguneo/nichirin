@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_REQUEST",
+    "message": "a slice cannot exceed 12h"
+  },
+  "ok": false
+}

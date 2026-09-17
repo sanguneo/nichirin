@@ -1,6 +1,6 @@
 [project]
 name = "kamado-cli"
-version = "0.10.0"
+version = "0.10.1"
 description = "Zero-dependency KakaoTalk reader, TUI, and text sender for macOS and AI agents"
 readme = "README.md"
 requires-python = ">=3.9"

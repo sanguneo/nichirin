@@ -1,0 +1,78 @@
+{
+  "count": 6,
+  "ok": true,
+  "rooms": [
+    {
+      "id": "1001",
+      "kind": "direct",
+      "lastActivityAt": "1970-01-01T00:50:00+00:00",
+      "lastMessageId": "5003",
+      "memberCount": 2,
+      "readable": true,
+      "title": "Peer Renamed",
+      "type": "DirectChat",
+      "typeCode": 0,
+      "unread": 0
+    },
+    {
+      "id": "1002",
+      "kind": "group",
+      "lastActivityAt": "1970-01-01T00:33:20+00:00",
+      "lastMessageId": "6005",
+      "memberCount": 3,
+      "readable": true,
+      "title": "Peer Renamed, Friend Nick",
+      "type": "MultiChat",
+      "typeCode": 1,
+      "unread": 2
+    },
+    {
+      "id": "1004",
+      "kind": "group",
+      "lastActivityAt": "1970-01-01T00:25:00+00:00",
+      "lastMessageId": "7001",
+      "memberCount": 4,
+      "readable": true,
+      "title": "Named Group",
+      "type": "MultiChat",
+      "typeCode": 1,
+      "unread": 0
+    },
+    {
+      "id": "1005",
+      "kind": "open-group",
+      "lastActivityAt": "1970-01-01T00:20:00+00:00",
+      "lastMessageId": "9001",
+      "memberCount": 9,
+      "readable": true,
+      "title": "합성 오픈채팅",
+      "type": "OM",
+      "typeCode": 2,
+      "unread": 0
+    },
+    {
+      "id": "9007199254740993",
+      "kind": "direct",
+      "lastActivityAt": "1970-01-01T00:16:40+00:00",
+      "lastMessageId": "9007199254740993",
+      "memberCount": 2,
+      "readable": true,
+      "title": "Huge Id User",
+      "type": "DirectChat",
+      "typeCode": 0,
+      "unread": 0
+    },
+    {
+      "id": "1003",
+      "kind": "self",
+      "lastActivityAt": "1970-01-01T00:08:20+00:00",
+      "lastMessageId": "8001",
+      "memberCount": 1,
+      "readable": true,
+      "title": "나와의 채팅",
+      "type": "MemoChat",
+      "typeCode": 5,
+      "unread": 0
+    }
+  ]
+}

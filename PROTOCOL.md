@@ -1,0 +1,133 @@
+# PROTOCOL — what this CLI promises a consumer
+
+Every command prints one JSON document to standard output and exits. That
+document, not this file, is the interface: an agent, a script or a wrapper
+reads it and never imports `kamado`. `skill/SKILL.md` is how an agent *uses*
+the commands; this is what their output is guaranteed to look like.
+
+`kanao-cli`, the Windows sibling, emits the same shapes. A consumer written
+against this document runs against either by changing which binary it starts.
+
+## The envelope
+
+Success:
+
+```json
+{ "ok": true, "...": "command-specific keys" }
+```
+
+Failure:
+
+```json
+{ "ok": false, "error": { "code": "CHAT_NOT_FOUND", "message": "…" } }
+```
+
+`ok` is always present and always a boolean. An error carries `code` and
+`message`, and may carry more — `candidates` on an ambiguous room, for
+instance. **`message` is written for a person and its wording may change at
+any time; branch on `code`, never on `message`.**
+
+## Exit status
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success. Standard output holds an `ok: true` envelope |
+| 1 | A handled failure. Standard output holds an `ok: false` envelope |
+| 2 | The command line itself was wrong. Argparse wrote to standard error |
+
+Exit 2 prints usage to **standard error**, not an envelope. A consumer that
+parses standard output must treat empty output as a malformed call rather than
+as an empty result.
+
+## Values that cross the boundary
+
+- **Every identifier is a string.** KakaoTalk ids exceed 2^53 and ordinary
+  JSON parsing would corrupt them. `id`, `roomId`, `senderId`,
+  `lastMessageId`, and the ids inside `attention` are all strings.
+- **Every instant is ISO-8601 with an explicit offset** — `sentAt`,
+  `lastActivityAt`, and a digest slice's `from` and `to`. Convert to the
+  user's zone and label it; never print an offset as though it were local.
+- **Messages are oldest-first**, in every command that returns a list of them.
+- **A missing key is a negative.** `replyTo`, `mentions`, `mentionsMe`,
+  `mentionsAll` and `repliesToMe` appear only when they apply. Absence means
+  no, and denying five things on every line would triple the payload.
+- `text` may be empty with a non-`text` `kind`: that is an attachment this
+  tool can name but not read.
+
+## Streaming: `follow`
+
+`follow` writes **newline-delimited JSON** — one complete object per line,
+flushed as it happens, until interrupted. The first line states what is being
+watched; each later line is one message.
+
+```json
+{"ok": true, "event": "watching", "rooms": ["1001"], "intervalSeconds": 1.0}
+{"ok": true, "event": "message", "id": "5003", "roomId": "1001", "...": "…"}
+```
+
+A `message` event is the same object `messages` and `context` put in their
+lists, with `ok` and `event` added. A consumer reads a line at a time and must
+not assume the stream ends.
+
+## Compatibility
+
+- **Adding a key is not a breaking change.** A consumer must ignore keys it
+  does not know. This build carries one the Windows sibling does not (`typeCode` on a
+  room) and one more error code (`PERMISSION_REQUIRED`).
+- **Removing a key, renaming one, or changing what an existing one means is
+  breaking**, and lands in a minor version with the reason in `CHANGELOG.md`.
+- **Adding an error code is not breaking.** A consumer must have a default
+  branch for a code it does not recognise, because the sibling's set and this
+  one's are not identical and both may grow.
+
+## Error codes
+
+| Code | What it means |
+| --- | --- |
+| `AMBIGUOUS_CHAT` | Several rooms matched. `candidates` is attached; retry with `--room-id` |
+| `CHAT_NOT_FOUND` | No room by that title |
+| `KEY_UNAVAILABLE` | KakaoTalk has not opened that room this session, so its key is not in memory |
+| `KAKAO_NOT_RUNNING` | The client is not running or not signed in |
+| `NO_USER_DATA` | No signed-in profile directory was found |
+| `READ_FAILED` | A database could not be read or decrypted |
+| `BUSY` | A concurrent write while reading; retry once |
+| `INVALID_REQUEST` | The arguments were understood but unusable (a span the slicer cannot take, say) |
+| `WINDOW_NOT_FOUND` | The room's chat window is not open in the client |
+| `INPUT_NOT_FOUND` | The window was found but its input box was not |
+| `SEND_FAILED` | The client refused or the write could not be verified |
+
+`PERMISSION_REQUIRED` is this build's own: Full Disk Access or Accessibility
+has not been granted to the terminal running this tool. `kanao-cli` has no
+equivalent and does not emit it.
+
+## Sending
+
+`send` returns `submitted: true` when the client **accepted** the text, which
+is queue acceptance and not confirmed delivery. A caller that needs proof
+reads the room back and looks for a new `fromMe` message. `clearedDraft`
+reports that an unfinished line was in the box and is now gone — it is
+reported rather than refused, so a caller can say so.
+
+Keep at least two seconds between sends.
+
+## The samples are the normative copy
+
+`tests/envelopes/*.json` holds one real sample of each shape, generated from
+the synthetic fixtures in `tests/fixtures.py` — **never from a real account**.
+`tests/test_protocol.py` regenerates them and fails when they differ, so a
+change to any envelope is a failing test in this repository before it is a
+surprise in a consumer. A consumer's own conformance tests should read these
+files rather than hand-written literals.
+
+Regenerate after an intended change:
+
+```bash
+python3 -m tests.test_protocol --write
+```
+
+One sample is assembled rather than captured: the two `follow` lines, because
+capturing them means running a loop that does not end. They are built exactly
+as `cli._follow` builds them and the `message` line reuses the same
+`Message.as_json()` the other commands use, but a change to the `watching`
+line's own keys would not fail this test. Everything else is the command's
+real output.
