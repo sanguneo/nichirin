@@ -816,12 +816,15 @@ class AXBackend:
         drawn = len(self._room_rows())
         if not field.set_attribute("AXValue", sorted(wanted)[0]):
             return None
-        rows = []
+        rows = self._room_rows()
         deadline = time.monotonic() + _SEARCH_SECONDS
-        while time.monotonic() < deadline:
+        # Paced like every other wait here: each pass is a round trip per row,
+        # so spinning on the list asks the client thousands of times for an
+        # answer it is still computing, and asks hardest exactly when it is
+        # slowest to reply.
+        while len(rows) <= drawn and time.monotonic() < deadline:
+            time.sleep(_POLL_SECONDS)
             rows = self._room_rows()
-            if len(rows) > drawn:
-                break
         for index, row in enumerate(rows[:_SEARCH_ROW_LIMIT]):
             if self._row_title(row).strip().casefold() in wanted:
                 return index
