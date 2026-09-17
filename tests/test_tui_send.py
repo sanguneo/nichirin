@@ -16,6 +16,10 @@ from unittest.mock import patch
 
 from kamado.errors import ErrorCode, KamadoError
 from kamado.model import GROUP_CHAT
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
 from kamado.tui import console as console_module
 from kamado.tui.console import (

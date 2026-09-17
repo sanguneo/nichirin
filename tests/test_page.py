@@ -14,6 +14,7 @@ from kamado.page import (
     validate_geometry,
 )
 
+from tests.platform import require_commoncrypto
 from tests.support import KEY, PAGE_SIZE, RESERVE, SALT, PASSPHRASE, encrypted_page, geometry
 
 _MARKER_OFFSET = 24
@@ -36,6 +37,12 @@ def _plaintext_page(filler: bytes = b"\xab") -> bytes:
 
 
 class RoundTripTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Every test in this class is a real round trip through the product's
+        # own CommonCrypto binding, so there is nothing here to run without it.
+        # The geometry tests below need no crypto and keep running anywhere.
+        require_commoncrypto()
+
     def test_page_one_comes_back_with_the_sqlite_header_restored(self) -> None:
         plaintext = _plaintext_page()
         page = encrypted_page(plaintext, number=1)

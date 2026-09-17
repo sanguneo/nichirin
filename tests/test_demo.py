@@ -27,6 +27,10 @@ mockup = importlib.util.module_from_spec(_spec)
 sys.modules["demo_mockup"] = mockup
 _spec.loader.exec_module(mockup)
 
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.tui.app import App  # noqa: E402
 from kamado.tui.layout import display_width, strip_ansi  # noqa: E402
 from kamado.tui.theme import Theme  # noqa: E402

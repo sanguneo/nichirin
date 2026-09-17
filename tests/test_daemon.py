@@ -7,6 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.platform import require_unix_sockets
+
+require_unix_sockets()
+
 from kamado import daemon
 from kamado.reader import Reader
 from tests.fixtures import StubCache, build_database, build_keyring

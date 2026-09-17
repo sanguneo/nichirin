@@ -266,6 +266,16 @@ keep rather than one to rediscover.
 - Stubs must fail the way production fails.
 - When patching a module attribute, bind the original **before** patching or
   the wrapper will call itself.
+- **A test that needs macOS says so and is skipped elsewhere.** Most of this
+  suite is platform-neutral and gets run on the Windows sibling's machine while
+  shared code is written there; before `tests/platform.py` that run answered
+  `FAILED (errors=62)`, which says nothing except "not a Mac" and hides the one
+  real failure somebody just introduced. The three real reasons are named
+  rather than counted: `require_posix_console` (the interface needs `fcntl`),
+  `require_commoncrypto` (the fixtures encrypt through Apple's library, which
+  was 44 of them), and `require_unix_sockets` (the daemon's transport). Off
+  platform that run is now `OK (skipped=63)`; on a Mac nothing is skipped, and
+  a skip count above zero there means a guard is wrong.
 
 ## Deliberately absent
 

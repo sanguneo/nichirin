@@ -17,6 +17,10 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.tui import console as console_module
 from kamado.tui.console import Console, Key, KeyEvent
 

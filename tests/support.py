@@ -16,6 +16,7 @@ import struct
 from typing import Sequence
 
 from kamado import cipher, page as page_codec
+from tests.platform import require_commoncrypto
 
 PROFILE = cipher.PROFILES[0]
 """SQLCipher 4 parameters: SHA-512, 256,000 iterations, 80 reserved bytes."""
@@ -32,7 +33,14 @@ _kCCAlgorithmAES = 0
 
 
 def encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
-    """Encrypt with AES-256-CBC so fixtures are decryptable by the real code."""
+    """Encrypt with AES-256-CBC so fixtures are decryptable by the real code.
+
+    This is where a non-Mac stops: the fixtures are built with the same library
+    the product reads with, so a host without CommonCrypto cannot make the data
+    it is about to test. The test is skipped with that reason rather than
+    erroring with a `WinError 5` from `LoadLibrary`.
+    """
+    require_commoncrypto()
     library = ctypes.CDLL(ctypes.util.find_library("System") or "/usr/lib/libSystem.B.dylib")
     library.CCCrypt.argtypes = (
         ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,

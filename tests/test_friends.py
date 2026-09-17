@@ -100,7 +100,9 @@ class FriendsCommandTests(unittest.TestCase):
 
 class FriendsTuiTests(unittest.TestCase):
     def render(self):
-        from kamado.tui.app import App
+        from tests.platform import import_app
+
+        App = import_app()
         from kamado.tui.layout import display_width, strip_ansi
         from kamado.tui.theme import Theme
 
