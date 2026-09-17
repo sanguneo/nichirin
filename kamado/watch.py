@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Mapping, Optional, Sequence
 
 from .errors import KamadoError
 from .model import Message
@@ -89,6 +89,25 @@ class Watcher:
 
     def _database(self):
         return self._reader.database
+
+    def resume(self, cursor: Mapping[object, object]) -> None:
+        """Start from what a caller has already seen rather than from now.
+
+        *cursor* maps room id to the last log id that reader received. Priming
+        would make the watcher agree that everything up to this instant is old,
+        which is exactly wrong for somebody reconnecting: the messages they
+        missed are the ones between their cursor and now.
+
+        The account fingerprint is deliberately left unset, so the first poll
+        goes through and pages each cursored room forward from where its reader
+        stopped. A room the cursor does not name is started from now, because a
+        caller that never saw a message from it has no place to be resumed to;
+        that is a gap, and it is the caller's to close with ``context`` if it
+        matters.
+        """
+        for room, log in cursor.items():
+            self._seen[int(room)] = int(log)
+        self._primed = True
 
     def prime(self) -> None:
         """Record the current state so existing history is not replayed as new."""

@@ -285,10 +285,16 @@ token, and `429 RATE_LIMITED` when a send arrives less than two seconds after
 the last one. Unlike the local CLI, **the server enforces that interval**, so a
 429 is the answer to retry after — not a reason to send again immediately.
 
-- `/stream` reports from the moment it connects. Messages that arrived while a
-  client was disconnected are **not** replayed, so close the gap with
-  `/context` or `messages` from the last `logId` seen rather than assuming the
-  stream caught up.
+- **Resume a dropped stream with its cursor, do not just reconnect.** The
+  stream emits `event: cursor` carrying `{roomId: logId}` after the messages it
+  covers; hand it back as repeated `since=<roomId>:<logId>` parameters and the
+  server pages each named room forward from there before going live
+  (`ready` then says `resumed: true`). A room the cursor does not name starts
+  from the moment of connection, so close that gap with `/context` if it
+  matters.
+- **Reads are bounded**: `limit` 1–1000 and `highlights` 1–20, outside which
+  the answer is `400 INVALID_REQUEST`. At most eight streams may be open at
+  once; the ninth is `503 BUSY`.
 - `/digest` exists because paging a busy room over a link is wasteful: it is
   the same extractive material the `digest` command returns, and it is far
   smaller than the messages it describes.

@@ -186,6 +186,7 @@ keep rather than one to rediscover.
 
 | Module | Responsibility |
 | --- | --- |
+| `digest.py` | The digest the command and the server both ask for |
 | `serve/config.py` | Constants, token and interval validation, error-to-status map |
 | `serve/handler.py` | Auth, routing, and every route that answers and closes |
 | `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
@@ -204,15 +205,44 @@ keep rather than one to rediscover.
   here it is enforced.
 - **The HTTP layer is proven by stubs on any platform; the live wiring is not.**
   `tests/serve/` stands a stub sender, watcher and reader in front of the same
-  handler, which is why those 46 tests run on a machine with no KakaoTalk at
-  all. What they do not touch is `backends.make_live_send` — the path that
-  resolves a room, refuses a duplicate title and types into a real window.
-  That one needs a Mac with the client running, and until it has had one, the
-  route is unproven however green the suite is.
-- **`/stream` reports from the moment it connects.** Whatever arrived while a
-  caller was disconnected is not replayed, so a client that cares about the gap
-  re-reads it with `/context` from the last `logId` it saw. Do not document it
-  as a catch-up until it is one.
+  handler, which is why those tests run on a machine with no KakaoTalk at all.
+  What they do not touch is `backends.make_live_send` — the path that resolves
+  a room, refuses a duplicate title and types into a real window. That one
+  needs a Mac with the client running, and until it has had one, the route is
+  unproven however green the suite is.
+- **A remote caller is not a person typing, so the reads are bounded.** The
+  commands cap nothing because whoever runs one is the cap. Over HTTP `limit`
+  reaches SQLite, where a **negative limit means no limit at all**, so
+  `limit` is 1–1000 and `highlights` 1–20, checked in `serve/config.py`
+  **before the reader is opened**; a `roomId` outside the 64-bit range is a 400
+  rather than an `OverflowError` out of the driver.
+- **The stream's cursor names every room, because one id cannot stand for an
+  account.** `/stream` follows every room, so the last message it sent says
+  nothing about where the others had reached — standard SSE `Last-Event-ID`
+  would silently resume the wrong ones. The server emits `event: cursor` with
+  `{roomId: logId}` *after* the messages it covers, and a client hands it back
+  as repeated `since=<roomId>:<logId>`. `Watcher.resume` seeds `_seen` and
+  leaves the account fingerprint unset, so the first poll goes through and
+  pages each named room forward. A room the cursor does not name starts from
+  now; that is a gap, and it is documented rather than papered over. A watcher
+  that cannot resume answers 500 rather than quietly starting over.
+- **The connection has a deadline and the streams have a count.** A client may
+  otherwise promise a body in `Content-Length` and hold a thread indefinitely;
+  it now answers `408` after 30 s. Each SSE connection owns a reader and a
+  watcher for its whole life, so eight is the most that may be open and the
+  ninth is `503 BUSY`. `QuietDisconnects` swallows the four ordinary
+  disconnect errors, because a reader closing `curl -N` is SSE's success case
+  and `socketserver` would print a traceback for each one.
+- **The status map carries the macOS-only codes, which the Windows table had
+  no reason to.** `PERMISSION_REQUIRED`, `NO_USER_DATA` and `INPUT_NOT_FOUND`
+  all left as a 500 when this arrived. The first is the one that mattered: it
+  is the failure a user fixes in half a minute by granting Accessibility or
+  Full Disk Access, and an internal-server-error tells a remote caller there is
+  nothing to be done. It is 503 with the other two "the host cannot answer
+  yet"; `INPUT_NOT_FOUND` is 404 beside `WINDOW_NOT_FOUND`.
+- **The digest is `digest.py`, not `cli._digest`.** The server wanted what the
+  command does, and reaching into `cli` for it meant assembling an
+  `argparse.Namespace` and pointing `serve` at the layer above it.
 
 ## Conventions
 

@@ -141,6 +141,30 @@ class SendTests(ServedCase):
         self.assertEqual(body["error"]["code"], "AMBIGUOUS_CHAT")
         self.assertEqual(len(body["candidates"]), 2)
 
+    def test_every_macos_failure_has_a_status_of_its_own(self) -> None:
+        """The three codes Windows has no equivalent of used to leave as 500.
+
+        `PERMISSION_REQUIRED` is the one that mattered: it is the failure a
+        user fixes in half a minute by granting Accessibility or Full Disk
+        Access, and reporting it as an internal server error tells a remote
+        caller there is nothing to be done.
+        """
+        expected = {
+            ErrorCode.PERMISSION_REQUIRED: 503,
+            ErrorCode.NO_USER_DATA: 503,
+            ErrorCode.INPUT_NOT_FOUND: 404,
+        }
+        for code, status in expected.items():
+            with self.subTest(code=code.value):
+                sender = StubSender(fail_with=KamadoError(code, "synthetic"))
+                self.serve(_start_server(sender))
+                got, body, _ = _request(
+                    self.base, "POST", "/send", {"room": "Synthetic", "text": "hi"}
+                )
+                self.assertEqual(got, status)
+                self.assertEqual(body["error"]["code"], code.value)
+                self.tearDown()
+
     def test_back_to_back_sends_are_rate_limited(self) -> None:
         self.serve(_start_server(StubSender(), min_interval=60.0))
         status, _, _ = _request(

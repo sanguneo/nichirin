@@ -97,27 +97,20 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
 def make_live_digest_provider(reader_factory) -> Callable[[int, str, int, int], dict[str, Any]]:
     """Return the digest a live server builds on each ``GET /digest``.
 
-    The slicing is the CLI's own, so a remote caller and a local one are
-    reading the same material rather than two implementations of it.
+    The digest is ``kamado.digest.build``, the same call the command makes, so
+    a remote caller and a local one are reading one implementation rather than
+    two. Reaching into ``cli`` for it used to mean assembling an
+    ``argparse.Namespace`` here and pointing this package at the layer above
+    it.
     """
 
     def provider(room_id: int, span: str, limit: int, highlights: int) -> dict[str, Any]:
-        import argparse as _argparse
-
-        from ..cli import _digest
+        from ..digest import build
 
         with reader_factory() as reader:
-            answer = _digest(
-                reader,
-                _argparse.Namespace(
-                    room=None,
-                    room_id=room_id,
-                    span=span,
-                    limit=limit,
-                    highlights=highlights,
-                ),
+            return build(
+                reader, room_id, span=span, limit=limit, highlights=highlights
             )
-        return {key: value for key, value in answer.items() if key != "ok"}
 
     return provider
 
@@ -136,6 +129,9 @@ def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], A
 
         def prime(self) -> None:
             self._watcher.prime()
+
+        def resume(self, cursor) -> None:
+            self._watcher.resume(cursor)
 
         def poll(self):
             return self._watcher.poll()
