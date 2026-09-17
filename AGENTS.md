@@ -234,6 +234,15 @@ on a live client, newest 4,000 rows of each readable room.
 
 - The palette is OmO's `dark` theme, duplicated rather than imported, because
   this project must not read another program's install.
+- **A URL is clickable, and every line it reaches carries the whole target.**
+  `wrap_with_links` binds an OSC 8 hyperlink per line, so a link split across
+  two rows opens the same address from either half rather than a truncated one.
+  The pieces are matched back to the source **character by character**, not by
+  counting: wrapping drops the spaces it breaks on, so length arithmetic drifts
+  by however many it dropped and silently binds the target to the wrong letters
+  — a message with two spaces in it is enough. The escapes are zero-width and
+  `_ANSI` knows them, or every column after a link would move by the length of
+  the URL. Links are emitted only when the theme is enabled.
 - **Never measure text with `len()`.** Hangul is double-width and every line
   carries escape sequences; `layout.display_width` is the only correct ruler,
   and a mistake here silently shifts every column rather than raising.

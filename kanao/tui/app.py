@@ -4,9 +4,11 @@ The shape follows OmO's interactive mode so the two feel like one toolchain:
 a title row with status pinned right, hint rows beneath it, a body, and a
 single footer line that gives up its middle before its edges.
 
-Every frame is rebuilt whole and written once: partial redraws flicker and
-strand stale cells, and one frame per key is imperceptible. The conversation
-itself is the exception, and deliberately so — `_transcript_lines` is cached
+Every frame is rebuilt whole: a caller never decides what to repaint, because
+that is how partial redraws flicker and strand stale cells. `Console.draw`
+writes only the rows that changed, which is its business and not this module's.
+The conversation is the one thing not rebuilt — deliberately so, since
+`_transcript_lines` is cached
 per (width, message count), because rebuilding it on every keystroke measured
 71 ms per key at the default window. Anything that changes a loaded message
 must change that key.
@@ -36,6 +38,7 @@ from .layout import (
     truncate_to_width,
     window_around,
     wrap_to_width,
+    wrap_with_links,
 )
 from ..watch import Watcher
 from .theme import SpeakerPalette, Theme
@@ -579,7 +582,12 @@ class App:
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
             text = message.text or self.theme.fg("dim", f"[{message_kind(message.type)}]")
-            wrapped = wrap_to_width(message.text, body_width) if message.text else [text]
+            if not message.text:
+                wrapped = [text]
+            elif self.theme.enabled:
+                wrapped = wrap_with_links(message.text, body_width)
+            else:
+                wrapped = wrap_to_width(message.text, body_width)
 
             head = (
                 self.theme.fg("dim", stamp)

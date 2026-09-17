@@ -20,6 +20,7 @@ from kanao.tui.layout import (
     strip_ansi,
     truncate_to_width,
     wrap_to_width,
+    wrap_with_links,
 )
 from kanao.tui.theme import TEXT, SpeakerPalette, Theme, to_256
 
@@ -103,6 +104,62 @@ class WrapTests(unittest.TestCase):
         text = "가나다 라마바 사아자"
         joined = "".join(wrap_to_width(text, 8)).replace(" ", "")
         self.assertEqual(joined, text.replace(" ", ""))
+
+
+class LinkTests(unittest.TestCase):
+    """A URL in a message is clickable, and costs the layout nothing.
+
+    The escapes that carry the target are zero-width. If anything measures
+    them, every column after a link moves by the length of the URL, which is
+    invisible in a screenshot and shows up only as text landing late.
+    """
+
+    URL = "https://example.com/products/5035494?ref=chat"
+
+    def targets(self, lines: list[str]) -> list[str]:
+        """Every target bound anywhere in *lines*, in order."""
+        found = []
+        for line in lines:
+            for piece in line.split("\x1b]8;;")[1:]:
+                target = piece.split("\x1b\\")[0]
+                if target:
+                    found.append(target)
+        return found
+
+    def test_a_url_is_bound_to_its_own_text(self) -> None:
+        lines = wrap_with_links(f"봐봐 {self.URL} 이거", 200)
+        self.assertEqual(self.targets(lines), [self.URL])
+        self.assertIn(self.URL, strip_ansi(lines[0]))
+
+    def test_a_split_url_carries_the_whole_target_on_every_line(self) -> None:
+        lines = wrap_with_links(f"봐봐 {self.URL} 이거", 20)
+        self.assertGreater(len(self.targets(lines)), 1, "the URL was not split")
+        self.assertEqual(set(self.targets(lines)), {self.URL})
+
+    def test_a_link_costs_no_columns(self) -> None:
+        for width in (20, 32, 60):
+            with self.subTest(width=width):
+                for line in wrap_with_links(f"봐봐 {self.URL} 이거", width):
+                    self.assertLessEqual(display_width(line), width)
+
+    def test_the_text_is_the_text_that_would_have_been_wrapped(self) -> None:
+        """Binding a target must not move, drop or duplicate a character."""
+        text = f"앞 {self.URL} 뒤  두칸 {self.URL}/b 끝"
+        for width in (16, 24, 40, 100):
+            with self.subTest(width=width):
+                linked = [strip_ansi(line) for line in wrap_with_links(text, width)]
+                self.assertEqual(linked, wrap_to_width(text, width))
+
+    def test_text_without_a_url_is_left_alone(self) -> None:
+        text = "링크 없는 평범한 줄입니다"
+        self.assertEqual(wrap_with_links(text, 12), wrap_to_width(text, 12))
+
+    def test_a_trailing_bracket_is_not_part_of_the_address(self) -> None:
+        lines = wrap_with_links(f"(보기 {self.URL})", 200)
+        self.assertEqual(self.targets(lines), [self.URL])
+
+    def test_strip_ansi_removes_the_link_escapes(self) -> None:
+        self.assertEqual(strip_ansi(wrap_with_links(self.URL, 200)[0]), self.URL)
 
 
 class FooterTests(unittest.TestCase):
