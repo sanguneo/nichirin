@@ -4,7 +4,7 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
-## [Unreleased]
+## [0.12.0] — 2026-09-18
 
 ### 추가
 
@@ -500,6 +500,7 @@ macOS 갈래(`kamado-cli`)에 올라온 두 가지를 가져왔습니다. 방식
   `search` 는 읽을 수 있는 방 전체 검색입니다.
 - 터미널 브라우저: 대화방 목록, 대화, 시간 구간 다이제스트(`/sum`).
 
+[0.12.0]: https://github.com/sanguneo/kanao-cli/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/sanguneo/kanao-cli/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/sanguneo/kanao-cli/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/sanguneo/kanao-cli/compare/v0.9.0...v0.10.0
