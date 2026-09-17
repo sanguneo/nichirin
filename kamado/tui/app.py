@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence, TYPE_CHECKING
 
-from .. import __version__
+from .. import __version__, agent
 from ..errors import ErrorCode, KamadoError
 from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
@@ -62,6 +62,12 @@ DELIVERED_TIMEOUT_SECONDS = 1.6
 """How long the '전송 완료' indicator remains visible before reverting to a clean divider."""
 REFRESH_SECONDS = 0.15
 """How often to look for arrivals. A poll that finds nothing costs one stat."""
+ASK_SPAN = timedelta(hours=2)
+"""How the loaded window is sliced before it is handed to an agent.
+
+The slices are what give the material its shape; the span only decides where
+the headings fall, because every message in the window is included either way.
+"""
 TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
 COMPOSING_GRACE_SECONDS = 3.0
@@ -101,6 +107,10 @@ class ChatState:
     Read when the room is opened rather than when a message is sent: the
     catalog is rewritten constantly, and re-reading it cost 3.0 s per send.
     """
+    asking: Optional["agent.Ask"] = None
+    """A question handed to the configured command, not yet answered."""
+    answer: Optional[str] = None
+    """An answer that arrived while something else was being written."""
     feeds: dict[int, str] = field(default_factory=dict)
     """What each feed row in this window says about itself, asked once."""
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
@@ -1021,6 +1031,22 @@ class App:
                 return truncate_to_width(content, width)
             # Timed out waiting for acknowledgment
             return self.theme.fg("borderMuted", "─" * width)
+        if chat is not None and chat.asking is not None:
+            # Named, not merely "thinking": which program was handed the
+            # conversation is the one thing a reader should never have to
+            # guess, and the elapsed count is what tells a slow answer from a
+            # command that is never coming back.
+            waited = f"{self._clock() - chat.asking.started_at:.0f}s"
+            left = f"── … {chat.asking.label} 에 묻는 중 ({waited}) "
+            fill = max(0, width - display_width(left))
+            content = (
+                self.theme.fg("accent", "── ")
+                + self.theme.fg("warning", "…")
+                + self.theme.fg("accent", f" {chat.asking.label} 에 묻는 중 ")
+                + self.theme.fg("dim", f"({waited}) ")
+                + self.theme.fg("borderMuted", "─" * fill)
+            )
+            return truncate_to_width(content, width)
         if chat is not None and chat.notice:
             bullet = "•"
             notice_text = truncate_to_width(chat.notice, max(1, width - 8))
@@ -1322,6 +1348,11 @@ class App:
 
     def _leave_room(self, chat: ChatState) -> None:
         """Close one pane, keeping whatever was half-written in it."""
+        if chat.asking is not None:
+            # Nobody is left to read the answer, and a process outliving its
+            # pane is one nothing on screen can report or stop.
+            chat.asking.cancel()
+            chat.asking = None
         if chat.draft:
             self.drafts[chat.room.id] = chat.draft
         else:
@@ -1482,12 +1513,97 @@ class App:
             self._leave_room(chat)
         elif name == "open":
             self._open_beside(chat, " ".join(arguments))
+        elif name == "ask":
+            self._ask(chat, " ".join(arguments))
+        elif name == "take":
+            if chat.answer is None:
+                chat.notice = "받아올 답변이 없습니다"
+            else:
+                self._draft_answer(chat, chat.answer)
+                chat.answer = None
         else:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
-                "(사용 가능: /open 방 · /close · /sum 30m · /older · "
-                "/real 닉 · /export · /quit)"
+                "(사용 가능: /ask 질문 · /open 방 · /close · /sum 30m · "
+                "/older · /real 닉 · /export · /quit)"
             )
+
+    def _ask(self, chat: ChatState, question: str) -> None:
+        """Hand this conversation and *question* to the configured command.
+
+        What goes out is the digest's own rendering of the loaded window — the
+        same material `/sum` is built from, every message in it with its time
+        and speaker — and nothing else about the account. The answer comes
+        back into the composer as a draft, never into the client: this tool
+        refuses an ambiguous send, and a message nobody read before it left
+        would be the same mistake wearing a better excuse.
+        """
+        if not question:
+            chat.notice = "물어볼 말이 필요합니다 (예: /ask 오늘 회의 얼기 정리해줘)"
+            return
+        if chat.asking is not None:
+            chat.notice = f"{chat.asking.label} 에 이미 묻고 있습니다"
+            return
+        slices = digest.slice_messages(chat.messages, ASK_SPAN)
+        if not slices:
+            chat.notice = "보낼 대화가 없습니다"
+            return
+        prompt = (
+            f"아래는 카카오톡 대화방 '{chat.room.title}' 의 최근 대화입니다.\n\n"
+            + digest.as_text(slices, self.zone)
+            + f"\n---\n요청: {question}\n\n"
+            "답은 그대로 입력창에 들어갑니다. 머리말이나 설명 없이 본문만 한국어로 쓰세요."
+        )
+        try:
+            chat.asking = agent.start(prompt, self._clock())
+        except KamadoError as error:
+            chat.notice = error.message
+            return
+        chat.notice = ""
+
+    def _collect_answer(self) -> bool:
+        """Take in any answer that has arrived. Returns whether to redraw.
+
+        Polling a process is a system call, and it happens on the frame rather
+        than on the message poll: waiting for an answer is exactly when the
+        screen should be keeping its count honest.
+        """
+        changed = False
+        for chat in self.chats:
+            ask = chat.asking
+            if ask is None:
+                continue
+            if not ask.finished():
+                if self._clock() - ask.started_at < agent.TIMEOUT_SECONDS:
+                    continue
+                ask.cancel()
+                chat.asking = None
+                chat.notice = f"{ask.label} 이(가) 답하지 않아 그만두었습니다"
+                changed = True
+                continue
+            chat.asking = None
+            changed = True
+            try:
+                answer = ask.answer()
+            except KamadoError as error:
+                chat.notice = f"물어보기 실패: {error.message}"
+                continue
+            if not answer:
+                chat.notice = f"{ask.label} 이(가) 아무것도 돌려주지 않았습니다"
+            elif chat.draft:
+                # Their own half-written line is worth more than an answer
+                # that can be asked for again, so it is not written over.
+                chat.answer = answer
+                chat.notice = "답변이 왔습니다 — 입력창을 비우고 /take"
+            else:
+                self._draft_answer(chat, answer)
+        return changed
+
+    def _draft_answer(self, chat: ChatState, answer: str) -> None:
+        """Put an answer in the composer, where it still has to be read."""
+        chat.draft = answer
+        chat.caret = len(answer)
+        chat.notice = "초안입니다. 읽고 고친 뒤 Enter"
 
     def _open_beside(self, chat: ChatState, wanted: str) -> None:
         """Open another conversation in a pane beside this one, by name.
@@ -1591,6 +1707,9 @@ class App:
                 if self.pending_send is not None:
                     console.draw(self.render(width, height), self.cursor)
                     self.flush_pending()
+                continue
+
+            if self._collect_answer():
                 continue
 
             now = time.monotonic()
