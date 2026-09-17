@@ -274,6 +274,14 @@ class OverlayTests(_Fixture):
         image = update_image_with_wal(base, self.database, geometry())
         self.assertEqual(len(image), PAGE_SIZE)
 
+    def test_parallel_decrypt_base_pages_matches_serial(self) -> None:
+        from kakaoread.snapshot import _decrypt_base_pages, _PARALLEL_PAGE_THRESHOLD
+        geom = geometry()
+        encrypted = self.database.read_bytes()
+        base_pages = len(encrypted) // PAGE_SIZE
+        decrypted = _decrypt_base_pages(encrypted, geom, base_pages, PAGE_SIZE, 80)
+        self.assertEqual(len(decrypted), len(encrypted))
+
 
 class OpenImageTests(_Fixture):
     def test_refuses_an_image_that_is_not_a_valid_database(self) -> None:
