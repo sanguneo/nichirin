@@ -642,6 +642,17 @@ Taken:
 
 Not taken, and why:
 
+- **Showing photos in the conversation** (`kamado-cli#32`, still open there).
+  Neither half of it exists on this side. The transport is the **kitty
+  graphics protocol**, which Windows Terminal does not implement — what it
+  gained in 1.22 is sixel, a different protocol — so the escape layer would be
+  written from scratch rather than ported. The conversion is `sips`, which is
+  a macOS binary, so WebP and JPEG would need another answer too. And the
+  feature is the first thing in either repo that makes the *tool* talk to the
+  network: a photo is a CDN address in the database, not pixels, so showing
+  one means fetching it. This repo's description is "네트워크 0회" and its
+  README says the client does the network talking, so that is a promise to
+  change deliberately rather than a detail to inherit.
 - **Opening a room through the client's search box** (`kamado-cli#29`). There
   the fix works because accessibility hands over the *name* of every row: type
   the room into the search field, read 648 row names, click the one that
