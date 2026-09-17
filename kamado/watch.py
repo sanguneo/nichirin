@@ -51,6 +51,33 @@ class Watcher:
         self._seen: dict[int, int] = {}
         self._primed = False
 
+    def watch(self, room_id: int) -> None:
+        """Follow one more room, from now rather than from its beginning.
+
+        A second room costs no second poll: the fingerprint that decides
+        whether anything happened covers the whole account, so one watcher
+        answers for every room it is given. Joining late is the point of
+        recording where the room already stands — without that, the next pass
+        would report its whole recent history as new.
+        """
+        if self._requested is None or room_id in self._requested:
+            return
+        self._requested.append(room_id)
+        if not self._primed:
+            return
+        try:
+            newest = self._reader.newest_log_id(room_id)
+        except _ROOM_FAILURES:
+            return
+        if newest is not None:
+            self._seen[room_id] = newest
+
+    def unwatch(self, room_id: int) -> None:
+        """Stop following a room, forgetting where it had got to."""
+        if self._requested is not None and room_id in self._requested:
+            self._requested.remove(room_id)
+        self._seen.pop(room_id, None)
+
     def watched_rooms(self) -> list[int]:
         """Return the room ids being followed, defaulting to every room."""
         if self._requested is not None:

@@ -189,5 +189,43 @@ class DigestTests(LiveTests):
         self.assertIn("AFTER_DIGEST", [m.text for m in self.app.chat.messages])
 
 
+class PaneArrivalTests(LiveTests):
+    """One poll answers for every open conversation.
+
+    The messages come back mixed, so the risk a second pane introduces is not
+    missing an arrival but filing it under the wrong room — which would show a
+    line in a conversation nobody wrote it in.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.app.open_room(next(room for room in self.app.rooms if room.id == GROUP_ROOM))
+        self.direct, self.group = self.app.chats
+
+    def texts(self, chat) -> list[str]:
+        return [message.text for message in chat.messages]
+
+    def test_each_message_lands_in_the_room_it_was_written_in(self) -> None:
+        self.arrive(5400, "FOR_THE_DIRECT_ROOM", room_id=DIRECT_ROOM)
+        self.arrive(6400, "FOR_THE_GROUP", room_id=GROUP_ROOM)
+
+        self.assertTrue(self.app.refresh(WIDTH))
+
+        self.assertIn("FOR_THE_DIRECT_ROOM", self.texts(self.direct))
+        self.assertNotIn("FOR_THE_GROUP", self.texts(self.direct))
+        self.assertIn("FOR_THE_GROUP", self.texts(self.group))
+        self.assertNotIn("FOR_THE_DIRECT_ROOM", self.texts(self.group))
+
+    def test_a_room_without_the_keyboard_still_receives(self) -> None:
+        """The unfocused pane is watched, not merely displayed."""
+        self.assertIs(self.app.chat, self.group)
+        self.arrive(5401, "WHILE_LOOKING_ELSEWHERE", room_id=DIRECT_ROOM)
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertIn("WHILE_LOOKING_ELSEWHERE", self.texts(self.direct))
+
+    def test_a_poll_that_finds_nothing_redraws_nothing(self) -> None:
+        self.assertFalse(self.app.refresh(WIDTH))
+
+
 if __name__ == "__main__":
     unittest.main()
