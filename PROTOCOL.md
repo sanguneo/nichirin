@@ -124,7 +124,7 @@ streams as it will.
 | `INPUT_NOT_FOUND` | The window was found but its input box was not |
 | `SEND_FAILED` | The client refused or the write could not be verified |
 | `UNAUTHORIZED` | `serve` only: the bearer token was missing or wrong |
-| `RATE_LIMITED` | `serve` only: a send arrived inside the server's minimum interval |
+| `RATE_LIMITED` | `serve` only: the send queue was full, so this send was not accepted |
 
 `PERMISSION_REQUIRED` is this build's own: Full Disk Access or Accessibility
 has not been granted to the terminal running this tool. `kanao-cli` has no

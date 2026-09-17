@@ -281,9 +281,11 @@ curl -N -H "$H" $T/stream      # SSE: event: ready / message / ping / error
 
 Every route returns the same envelope and the same `error.code` values as the
 CLI, with two additions: `401 UNAUTHORIZED` for a missing or wrong bearer
-token, and `429 RATE_LIMITED` when a send arrives less than two seconds after
-the last one. Unlike the local CLI, **the server enforces that interval**, so a
-429 is the answer to retry after — not a reason to send again immediately.
+token, and `429 RATE_LIMITED` when the send queue is full. A send that arrives
+while another is running is **queued, not refused**: two lines in a row both
+arrive, the second waits its turn, and the request simply takes longer rather
+than failing. Only when too many are already in line is one refused, and that
+429 says how many are ahead of it.
 
 - **Resume a dropped stream with its cursor, do not just reconnect.** The
   stream emits `event: cursor` carrying `{roomId: logId}` after the messages it
@@ -323,7 +325,7 @@ the last one. Unlike the local CLI, **the server enforces that interval**, so a
 | `INPUT_NOT_FOUND` | The composer is unavailable or the client's accessibility layout changed. Ask the user to check that window. |
 | `SEND_FAILED` | Native input/submission failed. Inspect and read back before deciding what happened; do not automatically retry. |
 | `UNAUTHORIZED` | Remote only: the bearer token was missing or wrong. Fix `Authorization: Bearer …`; never send the token anywhere else. |
-| `RATE_LIMITED` | Remote only: a send arrived within the server's minimum interval. Wait the reported seconds and retry that one send. |
+| `RATE_LIMITED` | Remote only: the send queue was full, so this one was not accepted. The sends already in line still go; retry this one after they have. |
 
 ## Limits and data handling
 

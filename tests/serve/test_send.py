@@ -1,12 +1,14 @@
 """``POST /send``: how a body is framed, and how two sends are spaced."""
 
+import itertools
 import json
 import threading
+import time
 import unittest
 from http.client import HTTPConnection
 
 from kamado.errors import ErrorCode, KamadoError
-from kamado.serve.handler import _RateLimiter
+from kamado.serve.handler import _SendQueue, _ShuttingDown
 from tests.serve.helpers import (
     TOKEN,
     ServedCase,
@@ -15,6 +17,17 @@ from tests.serve.helpers import (
     _request,
     _start_server,
 )
+
+
+def _clock_that_outruns(interval: float):
+    """A clock whose every read jumps well past *interval*.
+
+    The pacing a queued send would spend in production is expressed rather than
+    spent: by the time the next caller reads the clock, its turn has long since
+    come. The step is derived from the interval on purpose -- a hardcoded one
+    that happened to be *smaller* would turn these into a real wait of minutes.
+    """
+    return itertools.count(0.0, interval * 10.0).__next__
 
 
 class SendTests(ServedCase):
@@ -166,17 +179,74 @@ class SendTests(ServedCase):
                 self.assertEqual(body["error"]["code"], code.value)
                 self.tearDown()
 
-    def test_back_to_back_sends_are_rate_limited(self) -> None:
-        self.serve(_start_server(StubSender(), min_interval=60.0))
-        status, _, _ = _request(
-            self.base, "POST", "/send", {"room": "Synthetic", "text": "one"}
+    def test_back_to_back_sends_are_queued_rather_than_dropped(self) -> None:
+        """Two lines in a row both arrive; the second waits its turn.
+
+        This asserted ``429`` until the queue replaced the refusal. Throwing
+        the second message away was the wrong answer to a caller doing the most
+        ordinary thing there is, and the only use a client had for that status
+        was to sleep and try again -- which is what the queue now does once,
+        here, instead of in every client.
+
+        The clock jumps a long way between reads so the pacing this would spend
+        in production is expressed without spending it in the suite.
+        """
+        sender = StubSender()
+        self.serve(
+            _start_server(
+                sender, min_interval=60.0, clock=_clock_that_outruns(60.0)
+            )
         )
-        self.assertEqual(status, 200)
+        for word in ("one", "two"):
+            status, body, _ = _request(
+                self.base, "POST", "/send", {"room": "Synthetic", "text": word}
+            )
+            self.assertEqual(status, 200, body)
+        self.assertEqual([call["text"] for call in sender.calls], ["one", "two"])
+
+    def test_a_full_queue_refuses_rather_than_growing(self) -> None:
+        """429 is kept for the case it actually describes: the line is full.
+
+        A queue that never says no is only a slower way to empty a thousand
+        messages into somebody's chat, so the line has an end.
+
+        The line is filled directly rather than by holding a request open: this
+        server answers one request at a time on purpose, so a send blocked
+        inside the handler could never be overtaken by the one meant to be
+        refused. Taking the place is what a caller ahead in the queue does.
+        """
+        sender = StubSender()
+        handler = _start_server(sender, min_interval=60.0, max_queued_sends=1)
+        self.assertIsNone(
+            handler._send_queue.reserve(), "somebody is now ahead in the line"
+        )
+        self.serve(handler)
+
         status, body, _ = _request(
-            self.base, "POST", "/send", {"room": "Synthetic", "text": "two"}
+            self.base, "POST", "/send", {"room": "Synthetic", "text": "overflow"}
         )
         self.assertEqual(status, 429)
         self.assertEqual(body["error"]["code"], "RATE_LIMITED")
+        self.assertIn("full", body["error"]["message"])
+        self.assertEqual(sender.calls, [], "the refused message was never sent")
+
+    def test_a_freed_place_lets_the_next_send_through(self) -> None:
+        sender = StubSender()
+        handler = _start_server(sender, min_interval=60.0, max_queued_sends=1)
+        handler._send_queue.reserve()
+        self.serve(handler)
+
+        status, _, _ = _request(
+            self.base, "POST", "/send", {"room": "Synthetic", "text": "refused"}
+        )
+        self.assertEqual(status, 429)
+
+        handler._send_queue.release()
+        status, body, _ = _request(
+            self.base, "POST", "/send", {"room": "Synthetic", "text": "allowed"}
+        )
+        self.assertEqual(status, 200, body)
+        self.assertEqual([call["text"] for call in sender.calls], ["allowed"])
 
     def test_zero_min_interval_disables_the_limiter(self) -> None:
         sender = StubSender()
@@ -201,13 +271,17 @@ class SendTests(ServedCase):
         self.assertEqual(status, 200, body)
         self.assertTrue(body["submitted"])
 
-    def test_concurrent_sends_are_serialized_and_quota_holds(self) -> None:
+    def test_concurrent_sends_are_serialized_and_both_land(self) -> None:
         sender = StubSender()
         entered_holder: list = []
         barrier = threading.Barrier(2)
         results: list = []
 
-        self.serve(_start_server(sender, min_interval=3600.0))
+        self.serve(
+            _start_server(
+                sender, min_interval=3600.0, clock=_clock_that_outruns(3600.0)
+            )
+        )
 
         def one(word: str) -> None:
             barrier.wait(timeout=5)
@@ -223,10 +297,11 @@ class SendTests(ServedCase):
         first.join(timeout=10)
         second.join(timeout=10)
         statuses = sorted(status for status, _, _ in results)
-        # One wins the lock (200), the other is quota-refused (429) — never two
-        # real sends through the single input box, and never a 500.
-        self.assertEqual(statuses, [200, 429])
-        self.assertEqual(len(sender.calls), 1)
+        # One wins the lock and the other waits behind it, but both are sent:
+        # never two at once through the single input box, never a 500, and --
+        # since the queue replaced the refusal -- never a message thrown away.
+        self.assertEqual(statuses, [200, 200])
+        self.assertEqual(len(sender.calls), 2)
 
     def test_lock_is_released_after_a_sender_error(self) -> None:
         sender = StubSender(fail_with=KamadoError(ErrorCode.SEND_FAILED, "boom"))
@@ -263,54 +338,118 @@ class SendTests(ServedCase):
         self.assertEqual(status, 200, body)
 
 
-class RateLimiterTests(unittest.TestCase):
-    """The interval is the quiet time *between* sends, not time a send may take.
+class _JumpingQueue(_SendQueue):
+    """A queue whose one real pause moves a fake clock instead of sleeping.
 
-    Every test above hands the limiter an interval far larger than a stub
-    sender's duration, which is zero. That is the one shape production never
-    has, and it is why the limiter shipped inert: a real ``POST /send`` costs
-    about three seconds, so measuring from the *start* of a send let the send's
-    own duration pay the two-second interval, and four concurrent requests all
-    went through. These drive the clock directly so the slow send is expressed
-    without spending three seconds of test time on it.
+    ``_wait`` is the single place the queue blocks, which is why it is a method
+    rather than an inline ``wait``: replacing it turns "this send waited 1.5
+    seconds" into an assertion instead of a second and a half of test time.
     """
 
-    @staticmethod
-    def _clock(ticks):
-        """A clock that reads *ticks* in order and refuses an unplanned read."""
-        remaining = list(ticks)
+    def __init__(self, min_interval: float, capacity: int = 4) -> None:
+        self.now = 0.0
+        self.waits: list[float] = []
+        super().__init__(min_interval, capacity, clock=lambda: self.now)
 
-        def read() -> float:
-            if not remaining:
-                raise AssertionError("the limiter read the clock more than planned")
-            return remaining.pop(0)
+    def _wait(self, remaining: float) -> None:
+        self.waits.append(remaining)
+        self.now += remaining
 
-        return read
 
-    def test_a_send_slower_than_the_interval_does_not_pay_for_itself(self) -> None:
-        # A send starts, takes three seconds, and finishes at t=3.0. The next
-        # caller arrives immediately and must still wait the full two seconds.
-        limiter = _RateLimiter(2.0, clock=self._clock([3.0, 3.0, 5.5]))
-        self.assertIsNone(limiter.check(), "the first send is never refused")
-        limiter.mark()
-        self.assertEqual(limiter.check(), 2.0)
+class SendQueueTests(unittest.TestCase):
+    """Pacing runs from when a send *started*, and the line has an end."""
 
-    def test_the_interval_reopens_once_it_has_elapsed(self) -> None:
-        limiter = _RateLimiter(2.0, clock=self._clock([3.0, 5.5]))
-        limiter.mark()
-        self.assertIsNone(limiter.check())
+    def test_a_send_slower_than_the_interval_leaves_nothing_to_wait_for(self) -> None:
+        """The cadence is whichever is slower, the send or the interval.
 
-    def test_checking_does_not_record(self) -> None:
-        """Asking twice is not the same as sending twice."""
-        limiter = _RateLimiter(2.0, clock=self._clock([]))
-        self.assertIsNone(limiter.check())
-        self.assertIsNone(limiter.check())
+        A real send costs about three seconds. Charging a two-second interval
+        on top of that would make every message wait for time the previous one
+        had already spent -- and the slower the machine, the worse the penalty.
+        """
+        queue = _JumpingQueue(2.0)
+        self.assertIsNone(queue.reserve())
+        started = queue.begin()
+        queue.now = 3.0  # the send took three seconds
+        queue.commit(started)
+        queue.release()
 
-    def test_zero_interval_never_reads_the_clock(self) -> None:
-        limiter = _RateLimiter(0.0, clock=self._clock([]))
-        self.assertIsNone(limiter.check())
-        limiter.mark()
-        self.assertIsNone(limiter.check())
+        self.assertIsNone(queue.reserve())
+        queue.wait_for_turn()
+        self.assertEqual(queue.waits, [], "the send already outlasted the interval")
+
+    def test_a_send_faster_than_the_interval_waits_the_remainder(self) -> None:
+        queue = _JumpingQueue(2.0)
+        self.assertIsNone(queue.reserve())
+        started = queue.begin()
+        queue.now = 0.5  # a quick send, so pacing still has something to do
+        queue.commit(started)
+        queue.release()
+
+        self.assertIsNone(queue.reserve())
+        queue.wait_for_turn()
+        self.assertEqual(queue.waits, [1.5])
+        self.assertEqual(queue.now, 2.0)
+
+    def test_a_failed_send_paces_nothing(self) -> None:
+        """``begin`` records nothing, so a send that raised holds nobody up."""
+        queue = _JumpingQueue(60.0)
+        self.assertIsNone(queue.reserve())
+        queue.begin()  # the send then failed, so commit is never reached
+        queue.release()
+
+        self.assertIsNone(queue.reserve())
+        queue.wait_for_turn()
+        self.assertEqual(queue.waits, [])
+
+    def test_the_line_has_an_end(self) -> None:
+        queue = _JumpingQueue(2.0, capacity=2)
+        self.assertIsNone(queue.reserve())
+        self.assertIsNone(queue.reserve())
+        self.assertEqual(queue.reserve(), 2, "the third is told how many are ahead")
+
+    def test_leaving_the_line_frees_the_place(self) -> None:
+        queue = _JumpingQueue(2.0, capacity=1)
+        self.assertIsNone(queue.reserve())
+        self.assertEqual(queue.reserve(), 1)
+        queue.release()
+        self.assertIsNone(queue.reserve())
+
+    def test_a_zero_interval_neither_waits_nor_refuses(self) -> None:
+        queue = _JumpingQueue(0.0, capacity=1)
+        for _ in range(3):
+            self.assertIsNone(queue.reserve())
+        queue.commit(queue.begin())
+        queue.wait_for_turn()
+        self.assertEqual(queue.waits, [])
+
+    def test_closing_answers_a_send_that_is_still_waiting(self) -> None:
+        """Shutdown must reply, not let a daemon thread take the message away.
+
+        Whichever order the two threads reach the queue in, the waiter is told
+        the server is going -- so there is no timing assumption here.
+        """
+        queue = _SendQueue(60.0, 4, clock=time.monotonic)
+        queue.reserve()
+        queue.commit(time.monotonic())
+
+        outcome: list[str] = []
+        entered = threading.Event()
+
+        def wait_in_line() -> None:
+            entered.set()
+            try:
+                queue.wait_for_turn()
+            except _ShuttingDown:
+                outcome.append("told")
+            else:
+                outcome.append("ran")
+
+        waiter = threading.Thread(target=wait_in_line, daemon=True)
+        waiter.start()
+        self.assertTrue(entered.wait(timeout=5))
+        queue.close()
+        waiter.join(timeout=5)
+        self.assertEqual(outcome, ["told"])
 
 
 if __name__ == "__main__":

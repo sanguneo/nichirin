@@ -50,6 +50,18 @@ becomes a way to make this process read a whole history into memory.
 MAX_HIGHLIGHTS = 20
 """Most representative lines a digest slice may be asked for."""
 
+MAX_QUEUED_SENDS = 4
+"""How many sends may be in line at once, counting the one being made.
+
+Somebody typing two short lines in a row is the normal shape of a
+conversation, not abuse, so a send that arrives during another one waits its
+turn instead of being thrown away. But a queue that never says no is only a
+slower way to dump a thousand messages into someone's chat, so the line has an
+end: past this, refusing is the honest answer and the caller is told when a
+slot opens. Four keeps the worst wait to a few sends' worth of pacing, which
+fits inside an ordinary client timeout.
+"""
+
 _SQLITE_INT_MIN = -(2 ** 63)
 _SQLITE_INT_MAX = 2 ** 63 - 1
 

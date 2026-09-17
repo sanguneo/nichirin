@@ -87,6 +87,11 @@ def run(
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        # Answer whoever is still waiting their turn. The worker threads are
+        # daemons, so without this a queued send would vanish mid-request at
+        # the moment the process exits -- a quieter way to drop the message
+        # than the refusal the queue was built to replace.
+        handler._send_queue.close()  # type: ignore[attr-defined]
         return 130
     finally:
         server.server_close()

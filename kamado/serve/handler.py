@@ -24,6 +24,7 @@ from .config import (
     MAX_BODY_BYTES,
     MAX_HIGHLIGHTS,
     MAX_LIMIT,
+    MAX_QUEUED_SENDS,
     MAX_STREAMS,
     _status_for,
     validate_count,
@@ -42,44 +43,114 @@ class _BodyTimeout(Exception):
     """The caller promised a body in ``Content-Length`` and then stopped."""
 
 
-class _RateLimiter:
-    """Refuse sends that arrive sooner than *min_interval* after the last one.
+class _ShuttingDown(Exception):
+    """The server stopped while this send was still waiting its turn."""
 
-    The interval is measured from the moment a send *finished*, which is why
-    asking and recording are two calls rather than one. Recording at the start
-    instead made a send's own duration count as time served: one ``POST /send``
-    costs about three seconds here, because it opens a reader and resolves the
-    room against the whole catalog before it types anything, so a two-second
-    interval was always already satisfied by the time the next caller was let
-    through. The limiter never fired — four concurrent requests all passed —
-    and it only looked correct under test because a stub sender returns
-    instantly, which is the one timing production never has.
 
-    A zero interval disables the limiter entirely: no clock call, no state.
+class _SendQueue:
+    """Space sends apart without dropping any, and refuse only when full.
+
+    Refusing the second of two messages was the wrong answer. What is being
+    protected is not a scarce server resource, it is one input box, and a
+    caller handed a 429 can do nothing with it except sleep and try again —
+    which is the queue's job, written once here instead of once in every
+    client. So a send that arrives during another one waits, and ``429`` is
+    kept for the case it actually describes: the line is full.
+
+    *Pacing runs from when a send starts, not when it finishes.* A send costs
+    about three seconds here, and charging the interval on top of that would
+    make every message wait for time the previous one already spent — the
+    slower the machine, the worse the penalty. Measured from the start, the
+    cadence is whichever is slower, the send itself or *min_interval*, so on
+    this host a two-second interval costs nothing at all.
+
+    A zero interval disables the queue entirely: sends still serialize on the
+    lock outside, but nobody waits and nobody is refused.
     """
 
-    def __init__(self, min_interval: float, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        min_interval: float,
+        capacity: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._min_interval = min_interval
+        self._capacity = capacity
         self._clock = clock
-        self._last: Optional[float] = None
-        self._lock = threading.Lock()
+        self._state = threading.Condition()
+        self._queued = 0
+        self._next_start: Optional[float] = None
+        self._closed = False
 
-    def check(self) -> Optional[float]:
-        """Return seconds to wait when too soon, else None. Records nothing."""
+    def reserve(self) -> Optional[int]:
+        """Take a place in line, or return how many are already in it.
+
+        A refused caller is told the depth rather than a time, because the
+        honest estimate is not available: the send at the front may be halfway
+        through three seconds of accessibility work, and nothing here knows how
+        much of it is left.
+        """
         if self._min_interval == 0.0:
             return None
-        with self._lock:
-            if self._last is None:
-                return None
-            wait = self._min_interval - (self._clock() - self._last)
-            return wait if wait > 0 else None
+        with self._state:
+            if self._queued >= self._capacity:
+                return self._queued
+            self._queued += 1
+            return None
 
-    def mark(self) -> None:
-        """Start the interval from now, the moment a send finished."""
+    def release(self) -> None:
+        """Give up a place, whether the send worked or not."""
         if self._min_interval == 0.0:
             return
-        with self._lock:
-            self._last = self._clock()
+        with self._state:
+            if self._queued > 0:
+                self._queued -= 1
+
+    def wait_for_turn(self) -> None:
+        """Block until this send may start, or raise if the server is stopping."""
+        if self._min_interval == 0.0:
+            return
+        with self._state:
+            while True:
+                if self._closed:
+                    raise _ShuttingDown()
+                if self._next_start is None:
+                    return
+                remaining = self._next_start - self._clock()
+                if remaining <= 0:
+                    return
+                self._wait(remaining)
+
+    def begin(self) -> float:
+        """Read the clock for a send that is about to start, recording nothing.
+
+        Nothing is committed yet because the send may still fail, and a send
+        that delivered nothing should not pace the next one.
+        """
+        return self._clock()
+
+    def commit(self, started: float) -> None:
+        """Now that a send has delivered, pace the next from when it started."""
+        if self._min_interval == 0.0:
+            return
+        with self._state:
+            self._next_start = started + self._min_interval
+            self._state.notify_all()
+
+    def close(self) -> None:
+        """Wake whoever is still in line so they are answered, not killed.
+
+        The server's threads are daemons, so without this a caller waiting
+        their turn at Ctrl-C simply vanishes mid-request: preventing dropped
+        messages would have bought a quieter way to drop them.
+        """
+        with self._state:
+            self._closed = True
+            self._state.notify_all()
+
+    def _wait(self, remaining: float) -> None:
+        """The one real pause, named so a test can replace it with a clock jump."""
+        self._state.wait(remaining)
 
 
 def build_handler(
@@ -95,6 +166,7 @@ def build_handler(
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     max_streams: int = MAX_STREAMS,
+    max_queued_sends: int = MAX_QUEUED_SENDS,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -114,7 +186,7 @@ def build_handler(
     period = validate_poll_interval(poll_interval)
     patience = validate_request_timeout(request_timeout)
     streams_allowed = validate_max_streams(max_streams)
-    limiter = _RateLimiter(spacing, clock=clock)
+    queue = _SendQueue(spacing, max_queued_sends, clock=clock)
     send_lock = threading.Lock()
     # Not a lock: a permit per stream, so the ninth caller is refused rather
     # than queued behind eight connections that intend to stay all day.
@@ -434,41 +506,68 @@ def build_handler(
                         ),
                     )
                     return
-            # Quota and execution share one lock so the spacing a caller is
-            # charged matches the order the input box actually serves.
-            with send_lock:
-                if not dry_run:
-                    wait = limiter.check()
-                    if wait is not None:
-                        self._reply(
-                            429,
-                            as_envelope(
-                                KamadoError(
-                                    ErrorCode.RATE_LIMITED,
-                                    f"another send ran recently; retry in {wait:.1f}s",
-                                )
-                            ),
-                        )
-                        return
-                try:
-                    result = send(room, text, dry_run=dry_run, open_if_needed=open_room)
-                except KamadoError as error:
-                    self._reply(_status_for(error), as_envelope(error))
-                    return
-                except OSError as error:
+            # Take a place in line before the lock, so the queue can count who
+            # is waiting rather than discover them already blocked on it.
+            if not dry_run:
+                in_line = queue.reserve()
+                if in_line is not None:
                     self._reply(
-                        500, as_envelope(KamadoError(ErrorCode.SEND_FAILED, str(error)))
+                        429,
+                        as_envelope(
+                            KamadoError(
+                                ErrorCode.RATE_LIMITED,
+                                f"the send queue is full ({in_line} already in "
+                                "line); retry once they have gone through",
+                            )
+                        ),
                     )
                     return
+            try:
+                # Queue and execution share one lock so the spacing a caller is
+                # charged matches the order the input box actually serves.
+                with send_lock:
+                    if not dry_run:
+                        try:
+                            queue.wait_for_turn()
+                        except _ShuttingDown:
+                            self._reply(
+                                503,
+                                as_envelope(
+                                    KamadoError(
+                                        ErrorCode.BUSY,
+                                        "the server is shutting down; "
+                                        "this message was not sent",
+                                    )
+                                ),
+                            )
+                            return
+                    started = queue.begin()
+                    try:
+                        result = send(
+                            room, text, dry_run=dry_run, open_if_needed=open_room
+                        )
+                    except KamadoError as error:
+                        self._reply(_status_for(error), as_envelope(error))
+                        return
+                    except OSError as error:
+                        self._reply(
+                            500,
+                            as_envelope(KamadoError(ErrorCode.SEND_FAILED, str(error))),
+                        )
+                        return
+                    if not dry_run:
+                        # Paced from when this send started, and only now that it
+                        # delivered: the failures above put text nowhere, and
+                        # charging them would hold up somebody's retry of a room
+                        # they had simply not opened yet.
+                        queue.commit(started)
+            finally:
                 if not dry_run:
-                    # Only a send that delivered spends the quota. The failures
-                    # above returned without putting text anywhere, and charging
-                    # a caller for them would rate-limit their retry of a room
-                    # they had simply not opened yet.
-                    limiter.mark()
+                    queue.release()
             self._reply(200, {"ok": True, **result})
 
     # Bind the validated secret and validated tunables onto the class so a
     # reviewer can see what each connection closes over.
     Handler._serve_secret = secret  # type: ignore[attr-defined]
+    Handler._send_queue = queue  # type: ignore[attr-defined]
     return Handler

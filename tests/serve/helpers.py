@@ -171,7 +171,7 @@ class StubRoom:
 def _start_server(sender, *, rooms=None, watcher=None, token=TOKEN, min_interval=0.0,
                   rooms_provider=None, context_provider=None, digest_provider=None,
                   poll_interval=0.05, clock=None, request_timeout=None,
-                  max_streams=None, watcher_factory=None):
+                  max_streams=None, watcher_factory=None, max_queued_sends=None):
     if rooms_provider is None:
         listed = [StubRoom(room) for room in (rooms or [])]
         rooms_provider = lambda: listed  # noqa: E731 - one expression, read once
@@ -190,6 +190,8 @@ def _start_server(sender, *, rooms=None, watcher=None, token=TOKEN, min_interval
         kwargs["request_timeout"] = request_timeout
     if max_streams is not None:
         kwargs["max_streams"] = max_streams
+    if max_queued_sends is not None:
+        kwargs["max_queued_sends"] = max_queued_sends
     if clock is not None:
         kwargs["clock"] = clock
     return serve.build_handler(sender.send, **kwargs)
