@@ -25,17 +25,6 @@ from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
-from .serve import (
-    DEFAULT_POLL_INTERVAL_SECONDS as DEFAULT_SERVE_POLL_INTERVAL,
-    DEFAULT_MIN_INTERVAL_SECONDS as DEFAULT_SERVE_MIN_INTERVAL,
-    DEFAULT_HOST as DEFAULT_SERVE_HOST,
-    DEFAULT_PORT as DEFAULT_SERVE_PORT,
-    make_live_context_provider,
-    make_live_rooms_provider,
-    make_live_send,
-    make_live_watcher_factory,
-    run as serve_run,
-)
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
 
@@ -50,6 +39,13 @@ def _interval(value: str) -> float:
     parsed = float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _non_negative_interval(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0 or parsed != parsed or parsed == float("inf"):
+        raise argparse.ArgumentTypeError("must be 0 or a positive finite number")
     return parsed
 
 
@@ -136,8 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
         "serve",
         help="Expose send, rooms, context, and a message stream over HTTP + SSE",
     )
-    serve.add_argument("--host", default=DEFAULT_SERVE_HOST)
-    serve.add_argument("--port", type=int, default=DEFAULT_SERVE_PORT)
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
         "--token",
         default=None,
@@ -145,14 +141,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--min-interval",
-        type=_interval,
-        default=DEFAULT_SERVE_MIN_INTERVAL,
-        help="Minimum seconds between two sends (default %(default)s)",
+        type=_non_negative_interval,
+        default=2.0,
+        help="Minimum seconds between two sends; 0 disables (default %(default)s)",
     )
     serve.add_argument(
         "--poll-interval",
         type=_interval,
-        default=DEFAULT_SERVE_POLL_INTERVAL,
+        default=1.0,
         help="Seconds between watcher polls on /stream (default %(default)s)",
     )
 
@@ -227,20 +223,22 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return _send(reader, arguments)
 
     if arguments.command == "serve":
-        token = arguments.token or os.environ.get("KANAO_TOKEN")
-        if not token or len(token) < 16:
-            raise KanaoError(
-                ErrorCode.INVALID_REQUEST,
-                "a bearer token of at least 16 characters is required; "
-                "pass --token or set KANAO_TOKEN",
-            )
-        if arguments.host == "0.0.0.0":
-            import sys as _sys
+        from .serve import (
+            make_live_context_provider,
+            make_live_rooms_provider,
+            make_live_send,
+            make_live_watcher_factory,
+            run as serve_run,
+            validate_token,
+        )
+
+        token = validate_token(arguments.token or os.environ.get("KANAO_TOKEN"))
+        if arguments.host in ("0.0.0.0", "::", ""):
             print(
-                "warning: serving on 0.0.0.0 exposes the bearer token to "
-                "every machine that can reach this port. Put a reverse "
-                "proxy in front or use SSH port forwarding.",
-                file=_sys.stderr,
+                "warning: serving on a wildcard address exposes the bearer "
+                "token to every machine that can reach this port. Put a "
+                "reverse proxy in front or use SSH port forwarding.",
+                file=sys.stderr,
                 flush=True,
             )
         return serve_run(
