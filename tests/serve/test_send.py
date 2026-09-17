@@ -6,6 +6,7 @@ import unittest
 from http.client import HTTPConnection
 
 from kamado.errors import ErrorCode, KamadoError
+from kamado.serve.handler import _RateLimiter
 from tests.serve.helpers import (
     TOKEN,
     ServedCase,
@@ -240,6 +241,76 @@ class SendTests(ServedCase):
             self.base, "POST", "/send", {"room": "Synthetic", "text": "y"}
         )
         self.assertEqual(status, 200, body)
+
+    def test_a_failed_send_does_not_spend_the_quota(self) -> None:
+        """Nothing was delivered, so the caller's next try is not charged.
+
+        The failure paths return before the quota is marked. Charging them
+        would rate-limit somebody's retry of a room they had simply not opened
+        yet — a 404 followed by a 429 that outlasts their patience.
+        """
+        sender = StubSender(fail_with=KamadoError(ErrorCode.WINDOW_NOT_FOUND, "shut"))
+        self.serve(_start_server(sender, min_interval=3600.0))
+        status, body, _ = _request(
+            self.base, "POST", "/send", {"room": "Synthetic", "text": "x"}
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"]["code"], "WINDOW_NOT_FOUND")
+        sender.fail_with = None
+        status, body, _ = _request(
+            self.base, "POST", "/send", {"room": "Synthetic", "text": "y"}
+        )
+        self.assertEqual(status, 200, body)
+
+
+class RateLimiterTests(unittest.TestCase):
+    """The interval is the quiet time *between* sends, not time a send may take.
+
+    Every test above hands the limiter an interval far larger than a stub
+    sender's duration, which is zero. That is the one shape production never
+    has, and it is why the limiter shipped inert: a real ``POST /send`` costs
+    about three seconds, so measuring from the *start* of a send let the send's
+    own duration pay the two-second interval, and four concurrent requests all
+    went through. These drive the clock directly so the slow send is expressed
+    without spending three seconds of test time on it.
+    """
+
+    @staticmethod
+    def _clock(ticks):
+        """A clock that reads *ticks* in order and refuses an unplanned read."""
+        remaining = list(ticks)
+
+        def read() -> float:
+            if not remaining:
+                raise AssertionError("the limiter read the clock more than planned")
+            return remaining.pop(0)
+
+        return read
+
+    def test_a_send_slower_than_the_interval_does_not_pay_for_itself(self) -> None:
+        # A send starts, takes three seconds, and finishes at t=3.0. The next
+        # caller arrives immediately and must still wait the full two seconds.
+        limiter = _RateLimiter(2.0, clock=self._clock([3.0, 3.0, 5.5]))
+        self.assertIsNone(limiter.check(), "the first send is never refused")
+        limiter.mark()
+        self.assertEqual(limiter.check(), 2.0)
+
+    def test_the_interval_reopens_once_it_has_elapsed(self) -> None:
+        limiter = _RateLimiter(2.0, clock=self._clock([3.0, 5.5]))
+        limiter.mark()
+        self.assertIsNone(limiter.check())
+
+    def test_checking_does_not_record(self) -> None:
+        """Asking twice is not the same as sending twice."""
+        limiter = _RateLimiter(2.0, clock=self._clock([]))
+        self.assertIsNone(limiter.check())
+        self.assertIsNone(limiter.check())
+
+    def test_zero_interval_never_reads_the_clock(self) -> None:
+        limiter = _RateLimiter(0.0, clock=self._clock([]))
+        self.assertIsNone(limiter.check())
+        limiter.mark()
+        self.assertIsNone(limiter.check())
 
 
 if __name__ == "__main__":

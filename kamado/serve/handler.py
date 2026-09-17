@@ -45,6 +45,16 @@ class _BodyTimeout(Exception):
 class _RateLimiter:
     """Refuse sends that arrive sooner than *min_interval* after the last one.
 
+    The interval is measured from the moment a send *finished*, which is why
+    asking and recording are two calls rather than one. Recording at the start
+    instead made a send's own duration count as time served: one ``POST /send``
+    costs about three seconds here, because it opens a reader and resolves the
+    room against the whole catalog before it types anything, so a two-second
+    interval was always already satisfied by the time the next caller was let
+    through. The limiter never fired — four concurrent requests all passed —
+    and it only looked correct under test because a stub sender returns
+    instantly, which is the one timing production never has.
+
     A zero interval disables the limiter entirely: no clock call, no state.
     """
 
@@ -55,17 +65,21 @@ class _RateLimiter:
         self._lock = threading.Lock()
 
     def check(self) -> Optional[float]:
-        """Return seconds to wait when too soon, else record now and return None."""
+        """Return seconds to wait when too soon, else None. Records nothing."""
         if self._min_interval == 0.0:
             return None
         with self._lock:
-            now = self._clock()
-            if self._last is not None:
-                wait = self._min_interval - (now - self._last)
-                if wait > 0:
-                    return wait
-            self._last = now
-            return None
+            if self._last is None:
+                return None
+            wait = self._min_interval - (self._clock() - self._last)
+            return wait if wait > 0 else None
+
+    def mark(self) -> None:
+        """Start the interval from now, the moment a send finished."""
+        if self._min_interval == 0.0:
+            return
+        with self._lock:
+            self._last = self._clock()
 
 
 def build_handler(
@@ -446,6 +460,12 @@ def build_handler(
                         500, as_envelope(KamadoError(ErrorCode.SEND_FAILED, str(error)))
                     )
                     return
+                if not dry_run:
+                    # Only a send that delivered spends the quota. The failures
+                    # above returned without putting text anywhere, and charging
+                    # a caller for them would rate-limit their retry of a room
+                    # they had simply not opened yet.
+                    limiter.mark()
             self._reply(200, {"ok": True, **result})
 
     # Bind the validated secret and validated tunables onto the class so a
