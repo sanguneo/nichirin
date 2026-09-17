@@ -4,6 +4,21 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [Unreleased]
+
+### 추가
+
+- **원격 인터페이스 `kanao serve`.** Windows 상주 프로세스가 HTTP 서버를 열어
+  리눅스·원격 외부에서 같은 전송 경로를 호출합니다. 표준 라이브러리만 씁니다.
+  - `GET /health`(토큰 불필요), `GET /rooms`, `GET /context?roomId=…`,
+    `POST /send`, `GET /stream`(SSE: `ready`/`message`/`ping`).
+  - Bearer 토큰(`--token`/`KANAO_TOKEN`, 최소 16자), 기본 바인딩 `127.0.0.1`,
+    전송 직렬화 + 서버 강제 2초 간격(429 `RATE_LIMITED`).
+  - 새 오류 코드 `UNAUTHORIZED`, `RATE_LIMITED` — 다른 대응을 요구하므로
+    기존 코드와 분리했습니다.
+  - SSH 포트포워딩·VPN·TLS 종료 리버스 프록시 뒤에 두는 것을 전제로 하며,
+    `0.0.0.0` 바인딩 시 경고를 출력합니다.
+
 ## [0.6.0] — 2026-09-17
 
 이름이 바뀌었습니다. 예전 이름으로 쓰던 명령은 그대로 둡니다.

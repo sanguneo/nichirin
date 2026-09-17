@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 from typing import Any, Optional, Sequence
 
@@ -24,6 +25,17 @@ from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
+from .serve import (
+    DEFAULT_POLL_INTERVAL_SECONDS as DEFAULT_SERVE_POLL_INTERVAL,
+    DEFAULT_MIN_INTERVAL_SECONDS as DEFAULT_SERVE_MIN_INTERVAL,
+    DEFAULT_HOST as DEFAULT_SERVE_HOST,
+    DEFAULT_PORT as DEFAULT_SERVE_PORT,
+    make_live_context_provider,
+    make_live_rooms_provider,
+    make_live_send,
+    make_live_watcher_factory,
+    run as serve_run,
+)
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
 
@@ -120,6 +132,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("tui", help="Browse conversations in a terminal interface")
 
+    serve = commands.add_parser(
+        "serve",
+        help="Expose send, rooms, context, and a message stream over HTTP + SSE",
+    )
+    serve.add_argument("--host", default=DEFAULT_SERVE_HOST)
+    serve.add_argument("--port", type=int, default=DEFAULT_SERVE_PORT)
+    serve.add_argument(
+        "--token",
+        default=None,
+        help="Bearer token (defaults to the KANAO_TOKEN environment variable)",
+    )
+    serve.add_argument(
+        "--min-interval",
+        type=_interval,
+        default=DEFAULT_SERVE_MIN_INTERVAL,
+        help="Minimum seconds between two sends (default %(default)s)",
+    )
+    serve.add_argument(
+        "--poll-interval",
+        type=_interval,
+        default=DEFAULT_SERVE_POLL_INTERVAL,
+        help="Seconds between watcher polls on /stream (default %(default)s)",
+    )
+
     return parser
 
 
@@ -189,6 +225,37 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "send":
         return _send(reader, arguments)
+
+    if arguments.command == "serve":
+        token = arguments.token or os.environ.get("KANAO_TOKEN")
+        if not token or len(token) < 16:
+            raise KanaoError(
+                ErrorCode.INVALID_REQUEST,
+                "a bearer token of at least 16 characters is required; "
+                "pass --token or set KANAO_TOKEN",
+            )
+        if arguments.host == "0.0.0.0":
+            import sys as _sys
+            print(
+                "warning: serving on 0.0.0.0 exposes the bearer token to "
+                "every machine that can reach this port. Put a reverse "
+                "proxy in front or use SSH port forwarding.",
+                file=_sys.stderr,
+                flush=True,
+            )
+        return serve_run(
+            host=arguments.host,
+            port=arguments.port,
+            send=make_live_send(),
+            token=token,
+            min_interval=arguments.min_interval,
+            rooms_provider=make_live_rooms_provider(lambda: Reader()),
+            context_provider=make_live_context_provider(lambda: Reader()),
+            watcher_factory=make_live_watcher_factory(
+                lambda: Reader(), interval=arguments.poll_interval
+            ),
+            poll_interval=arguments.poll_interval,
+        )
 
     if arguments.command == "search":
         rooms = reader.rooms()

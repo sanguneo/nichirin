@@ -228,6 +228,41 @@ python -m kanao send --room "이름" --open "창이 닫혀 있어도"
 > 확인하려면 `context`나 `messages`로 내 계정의 새 기록을 되읽으세요. 불확실한 전송을
 > 자동으로 재시도하면 같은 말을 두 번 보내게 됩니다.
 
+## 원격에서 보내고 읽기
+
+Windows에 상주하는 프로세스가 HTTP 서버를 열면, 리눅스나 원격 외부에서 카카오톡
+메시지를 보내고 읽을 수 있습니다. 표준 라이브러리만 쓰므로 설치할 것이 없습니다.
+
+```powershell
+# Windows (카카오톡이 실행 중인 머신)
+$env:KANAO_TOKEN = "열여섯-글자-이상의-공유-비밀"
+python -m kanao serve
+```
+
+```bash
+# Linux / 원격 (SSH 포트포워딩: ssh -L 8765:127.0.0.1:8765 windows-host)
+T=http://127.0.0.1:8765; H="Authorization: Bearer 열여섯-글자-이상의-공유-비밀"
+curl -s $T/health
+curl -s -H "$H" $T/rooms
+curl -s -H "$H" "$T/context?roomId=1&limit=20"
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d '{"room": "가족", "text": "원격에서 보냄"}' $T/send
+curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
+```
+
+| 메서드·경로 | 하는 일 |
+| --- | --- |
+| `GET /health` | 살아있는지 (토큰 불필요) |
+| `GET /rooms` | 읽을 수 있는 방 목록 |
+| `GET /context?roomId=…&limit=…` | 한 방의 최근 메시지 |
+| `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
+| `GET /stream` | **SSE** 실시간 새 메시지 (`event: message`, 하트비트 `event: ping`) |
+
+연속 전송은 서버에서 2초 간격 규칙을 강제합니다(429 `RATE_LIMITED`). 토큰은
+`--token`이나 `KANAO_TOKEN` 환경 변수로 주고, 바인딩은 기본 `127.0.0.1` 입니다.
+다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
+리버스 프록시 뒤에 두세요 — 평문 HTTP이므로 토큰이 그대로 노출됩니다.
+
 쓰다 만 초안이 입력창에 남아 있으면 **지우고 보냅니다.** 보내는 사람은 이미 방과 할 말을
 정한 상태고, 클라이언트 앞까지 걸어가야만 풀리는 거절은 끝내지도 않은 한 줄보다 비쌉니다.
 대신 조용히 지우지는 않습니다 — 답에 `clearedDraft: true`가 붙고, `--dry-run`은 지우기

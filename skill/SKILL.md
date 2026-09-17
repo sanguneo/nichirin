@@ -157,6 +157,35 @@ python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" "Approved te
 python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --open "Approved text"
 ```
 
+## Remote send, read, and live stream
+
+The same primitives are reachable over HTTP for a Linux box or another
+network. Start the server on the Windows host that runs KakaoTalk:
+
+```powershell
+$env:KANAO_TOKEN = "long-shared-secret-at-least-sixteen-characters"
+python "<skill-dir>/scripts/kanao-cli.py" serve
+```
+
+From the remote machine (after `ssh -L 8765:127.0.0.1:8765 <windows-host>`):
+
+```bash
+T=http://127.0.0.1:8765
+H="Authorization: Bearer long-shared-secret-at-least-sixteen-characters"
+curl -s $T/health
+curl -s -H "$H" $T/rooms
+curl -s -H "$H" "$T/context?roomId=1&limit=20"
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d '{"room": "Sample Room", "text": "hi"}' $T/send
+curl -N -H "$H" $T/stream      # SSE: event: ready / message / ping
+```
+
+Every command obeys the same envelope, the same error codes, and the same
+two-seconds-between-sends rule (the server returns `RATE_LIMITED` when a caller
+tries to send sooner). `/stream` is SSE, not WebRTC — the read direction is
+a one-way push of small JSON messages, and SSE rides plain HTTP, passes any
+proxy a `POST` would, and needs no extra package.
+
 - Confirm recipient and content with the user before sending to others. Existing
   explicit authorization for that message is sufficient. A draft request is not
   permission to send.
