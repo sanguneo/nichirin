@@ -253,6 +253,17 @@ class SpeakerPaletteTests(unittest.TestCase):
                 with self.subTest(colour=colour):
                     self.assertLessEqual(self._spread(colour), 125, "a distinct palette tint, never pure neon")
 
+    def test_light_mode_palette_generates_distinct_readable_colours(self) -> None:
+        palette = SpeakerPalette(dark=False)
+        speakers = [f"speaker{index}" for index in range(20)]
+        self.assertEqual(palette.distinct_names(speakers), 20)
+        for speaker in speakers:
+            col = palette.name_colour(speaker)
+            # Light mode colours should be deeply saturated and not washed out to white
+            channels = self._channels(col)
+            self.assertGreaterEqual(self._spread(col), 70, "should have rich distinct tint")
+            self.assertLessEqual(max(channels), 225, "should not be washed out to near-white")
+
 
 if __name__ == "__main__":
     unittest.main()
