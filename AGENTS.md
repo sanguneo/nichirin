@@ -381,13 +381,31 @@ on a live client, newest 4,000 rows of each readable room.
   when the snapshot had gone stale, and sending a message is exactly what
   makes it stale, so the duplicate-title census comes from the room list the
   screen already loaded rather than from a fresh read.
+- **A refusal for a duplicate title names the other room.** The way out of the
+  collision is in the client — a title is the only thing a window can be
+  addressed by, so one of the two rooms has to be renamed — and "there are 2"
+  does not say which one that is. The other room is described by kind, size
+  and last activity, from the list the screen already holds, so this costs
+  nothing the send was not already carrying. Three titles collide across 272
+  rooms on the account this was measured on, so it is not a hypothetical.
 - **Polling yields to typing.** A poll that finds something used to re-decrypt
   the room's whole log — 0.62 s and 0.94 s measured on two live rooms — and
   this loop is single-threaded, so `_poll_due` defers while keys are still
   arriving and `_next_poll_at` waits behind an expensive room instead of in
   front of it. The log-only overlay is what let `REFRESH_SECONDS` drop from
   0.35 to 0.15; the deferral stays, because an arrival is still the most
-  expensive thing that can happen between two keystrokes.
+  expensive thing that can happen between two keystrokes. Re-measured after
+  the overlay: a poll that opens the room costs 171–355 ms, four times in 40 s
+  on a live 33-member room, against 0.30 ms for one that finds nothing.
+- **The keystroke clock cannot see Hangul being typed, so the draft box
+  answers for it.** The IME holds every jamo and paints the half-made syllable
+  at the terminal's own caret, so nothing reaches the loop until the syllable
+  commits and `TYPING_GRACE_SECONDS` expires *inside* a word — which is why
+  typing stuttered where the same keys in ASCII did not. Text already in the
+  composer is the evidence the clock is missing, so it raises the grace to
+  `COMPOSING_GRACE_SECONDS`. That is 1.5 s rather than the macOS port's 3.0 s
+  because the hidden poll costs 171–355 ms here against 1.3–1.9 s there; a
+  message left half-written still lets the room move again 1.5 s later.
 - **The first frame is drawn before the first decryption.** Opening the
   interface means decrypting the catalog, which is the slowest thing this
   program does, and it used to happen before anything reached the screen — so
@@ -586,6 +604,14 @@ Taken:
 - **The light palette and appearance detection** (`kamado-cli#20`), with the
   macOS `defaults read` probe replaced by the Windows app-theme registry value
   and the contrast re-measured rather than inherited.
+- **Holding the poll while a message is being written** (`kamado-cli#25`). The
+  IME is blind to the keystroke clock on both sides, so the mechanism crossed
+  over unchanged; the constant did not. 3.0 s there buys back a 1.3–1.9 s
+  poll, and the same poll measured 171–355 ms here, so it is 1.5 s.
+- **Naming the room an ambiguous send is torn between** (`kamado-cli#26`).
+  Ported as written — the census and the room list it describes from are the
+  same on both sides — and it is live here: three titles collide across the
+  272 rooms of the account it was checked against.
 
 Not taken, and why:
 
@@ -596,6 +622,18 @@ Not taken, and why:
   subprocesses by spawning, and a `PreparedKey` wraps a CNG handle that cannot
   cross a process boundary — so this is a redesign of the key handling, not a
   port, and nothing measured here says it would pay for itself.
+- **Reading a room's name out of the meta table** (`kamado-cli#24`). On macOS a
+  rename leaves `NTChatRoom.chatName` null and writes the name to `NTChatMeta`
+  as `type = 3`, so the reader had to go and get it. The Windows client keeps
+  the same meta table — `chatMetas`, same `type = 3`, 7 named rooms of 59 rows
+  — but it also writes the name straight into `chatRoomList.chatRoomTitle`,
+  and that column is filled for **all 272** rooms. Checked room by room: the
+  title this reader composes differs from the stored one in exactly one room,
+  the self-chat, which is the deliberate disagreement `stored_title` already
+  documents. The meta name disagrees with the catalog in one room, where the
+  meta row is from 2018 and its revision is far below the room's
+  `lastSyncMetaRevision` — so on this side the meta table is the **stale**
+  copy, and preferring it would introduce the bug the macOS change removes.
 - **The resident daemon on a Unix domain socket.** There is no such socket to
   bind; it would be a named pipe and a different program, and the command
   costs that motivated it were already paid down by the context cache and the

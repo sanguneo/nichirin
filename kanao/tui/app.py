@@ -66,6 +66,8 @@ the room can be asked more often without the screen paying for it.
 """
 TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
+COMPOSING_GRACE_SECONDS = 1.5
+"""How long a half-written message holds a poll off, IME pauses included."""
 
 
 @dataclass
@@ -969,14 +971,27 @@ class App:
         catalog here cost up to 3.0 s per send: a busy room rewrites it
         constantly, and sending rewrites it too, so the snapshot almost always
         had to be decrypted again before the message could go out.
+
+        The refusal names the room it is torn between, because the way out is
+        in the client rather than here: a title is the only thing the window
+        can be addressed by, so nothing short of one of those rooms being
+        renamed resolves it, and being told only that there are two leaves
+        nobody able to say which one to rename.
         """
         census = self.titles or [other.title for other in self.reader.rooms()]
         same = [title for title in census if title == room.title]
-        if len(same) != 1:
-            raise KanaoError(
-                ErrorCode.AMBIGUOUS_CHAT,
-                f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다",
-            )
+        if len(same) == 1:
+            return
+        described = ", ".join(
+            f"{other.kind} {other.member_count}명 {_stamp(other.last_updated_at, self.zone)}"
+            for other in self.rooms
+            if other.title == room.title and other.id != room.id
+        )
+        raise KanaoError(
+            ErrorCode.AMBIGUOUS_CHAT,
+            f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다"
+            + (f" (다른 방: {described})" if described else ""),
+        )
 
     def send_message(self, text: str) -> None:
         """Hand *text* to this room's own input box in the running client.
@@ -1149,21 +1164,34 @@ class App:
                 continue
 
             now = time.monotonic()
-            if not _poll_due(now, due_at, last_key_at):
+            composing = self.chat is not None and bool(self.chat.draft)
+            if not _poll_due(now, due_at, last_key_at, composing):
                 continue
             self.refresh(width)
             due_at = _next_poll_at(time.monotonic(), time.monotonic() - now)
 
 
-def _poll_due(now: float, due_at: float, last_key_at: float) -> bool:
+def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) -> bool:
     """Whether to look for arrivals now.
 
-    Typing wins. A poll that finds something has to decrypt the room's whole
-    log — measured at 0.62 s and 0.94 s on two live rooms — and this loop is
-    single-threaded, so doing that between keystrokes is what makes input feel
-    stuck rather than slow.
+    Typing wins. A poll that finds something has to open the room — measured
+    at 171 ms to 355 ms on a live 33-member room, four times in 40 s, against
+    0.3 ms for a poll that finds nothing — and this loop is single-threaded,
+    so doing that between keystrokes is what makes input feel stuck rather
+    than slow.
+
+    The keystroke clock cannot see somebody writing Hangul. The IME keeps
+    every jamo and paints the half-made syllable at the terminal's own caret,
+    so nothing reaches this loop until the syllable commits and the grace
+    expires *inside* a word. Text already in the composer is the evidence the
+    clock is missing, and it buys the longer grace: long enough to cover the
+    pauses inside a sentence, short enough that a message left half-written
+    does not stop the room from moving. It is shorter than the macOS port it
+    came from, where the same poll costs 1.3 s to 1.9 s; here the log overlay
+    means there is less to hide.
     """
-    if now - last_key_at < TYPING_GRACE_SECONDS:
+    grace = COMPOSING_GRACE_SECONDS if composing else TYPING_GRACE_SECONDS
+    if now - last_key_at < grace:
         return False
     return now >= due_at
 
