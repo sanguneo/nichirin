@@ -541,13 +541,15 @@ class DeliveryMarkTests(ComposerCase):
         now[0] += 60.0
         self.assertNotIn("전송 중", self.composer())
 
-    def test_a_tick_is_not_undone_by_the_clock(self) -> None:
+    def test_a_tick_times_out_and_reverts_to_clean_divider(self) -> None:
         now = [1_000.0]
         self.app._clock = lambda: now[0]
         self.send("안녕")
         self.arrive("안녕")
-        now[0] += 600.0
         self.assertIn("✓", self.composer())
+        now[0] += 2.0
+        self.assertNotIn("✓", self.composer())
+        self.assertNotIn("전송 완료", self.composer())
 
 
 if __name__ == "__main__":

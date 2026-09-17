@@ -52,6 +52,8 @@ KEY_WAIT_SECONDS = 0.12
 """How long a frame waits for input before checking for new messages."""
 UNCERTAIN_AFTER_SECONDS = 30.0
 """How long a send may go unseen before the mark stops claiming to be sure."""
+DELIVERED_TIMEOUT_SECONDS = 1.6
+"""How long the '전송 완료' indicator remains visible before reverting to a clean divider."""
 REFRESH_SECONDS = 0.15
 """How often to look for arrivals. A poll that finds nothing costs one stat."""
 TYPING_GRACE_SECONDS = 0.4
@@ -85,6 +87,8 @@ class ChatState:
     """When that text was handed over, so waiting too long can be admitted."""
     delivered: bool = False
     """Whether the last thing sent has since appeared in the conversation."""
+    delivered_at: float = 0.0
+    """When delivery was confirmed, so the indicator can revert to a clean divider."""
     window_alias: Optional[str] = None
     """The title this room's window carries, when it differs from its own.
 
@@ -283,6 +287,7 @@ class App:
         if any(message.from_me and _same_words(message.text) == wanted for message in arrived):
             chat.outbox = None
             chat.delivered = True
+            chat.delivered_at = self._clock()
 
     def _refresh_rooms(self) -> bool:
         """Re-read the catalog so unread counts and ordering stay current."""
@@ -796,8 +801,8 @@ class App:
     def _status_divider(self, width: int) -> str:
         """Draw the OmO-style active status divider right above the input."""
         chat = self.chat
-        if chat is not None and (chat.outbox is not None or chat.delivered):
-            if chat.delivered:
+        if chat is not None and chat.delivered:
+            if self._clock() - chat.delivered_at < DELIVERED_TIMEOUT_SECONDS:
                 bullet = "✓"
                 text = "전송 완료"
                 left = f"── {bullet} {text} "
@@ -809,6 +814,9 @@ class App:
                     + self.theme.fg("borderMuted", "─" * fill)
                 )
                 return truncate_to_width(content, width)
+            chat.delivered = False
+
+        if chat is not None and chat.outbox is not None:
             elapsed_sec = self._clock() - chat.outbox_at
             if elapsed_sec < UNCERTAIN_AFTER_SECONDS:
                 elapsed = f"{elapsed_sec:.1f}s"
