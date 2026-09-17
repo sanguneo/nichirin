@@ -1148,14 +1148,28 @@ class App:
         catalog here cost up to 3.0 s per send: a busy room rewrites it
         constantly, and sending rewrites it too, so the snapshot almost always
         had to be decrypted again before the message could go out.
+
+        The refusal names the rooms it is torn between, because the way out is
+        in the client rather than here: a title is the only thing the
+        accessibility layer can address a window by, so nothing short of one
+        of those rooms getting a name of its own resolves it. Naming one is
+        enough, now that a name set in the client is read back as the room's
+        title instead of being left to the member list.
         """
         census = self.titles or [other.title for other in self.reader.rooms()]
         same = [title for title in census if title == room.title]
-        if len(same) != 1:
-            raise KamadoError(
-                ErrorCode.AMBIGUOUS_CHAT,
-                f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다",
-            )
+        if len(same) == 1:
+            return
+        described = ", ".join(
+            f"{other.kind} {other.member_count}명 {_stamp(other.last_updated_at, self.zone)}"
+            for other in self.rooms
+            if other.title == room.title and other.id != room.id
+        )
+        raise KamadoError(
+            ErrorCode.AMBIGUOUS_CHAT,
+            f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다"
+            + (f" (다른 방: {described})" if described else ""),
+        )
 
     def send_message(self, text: str) -> None:
         """Hand *text* to this room's own input box in the running client.

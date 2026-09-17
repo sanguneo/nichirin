@@ -15,6 +15,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from kamado.errors import ErrorCode, KamadoError
+from kamado.model import GROUP_CHAT
 from kamado.tui.app import REFRESH_SECONDS, App, _next_poll_at, _poll_due, _window, ChatState
 from kamado.tui import console as console_module
 from kamado.tui.console import (
@@ -207,6 +208,36 @@ class ComposerTests(ComposerCase):
         self.press_enter()
         self.assertEqual(self.sender.sent, [])
         self.assertIn("특정할 수 없습니다", self.chat.notice)
+
+    def test_the_refusal_names_the_room_it_is_torn_between(self) -> None:
+        """The collision is only resolved in the client, so say which room.
+
+        A group that was never named is titled after its members, so a
+        two-person group wears the same name as the direct chat with that
+        person. Told only that there are two, nobody can tell which to rename.
+        """
+        twin = replace(
+            self.chat.room,
+            id=self.chat.room.id + 1,
+            type=GROUP_CHAT,
+            member_count=2,
+            last_updated_at=1_700_000_000,
+        )
+        self.app.rooms = [*self.app.rooms, twin]
+        self.app.titles = [self.chat.room.title, twin.title]
+        self.type("안녕")
+        self.press_enter()
+        self.assertEqual(self.sender.sent, [])
+        self.assertIn("group", self.chat.notice)
+        self.assertIn("2명", self.chat.notice)
+
+    def test_the_room_being_sent_to_is_not_named_as_the_other_one(self) -> None:
+        self.app.titles = [self.chat.room.title, self.chat.room.title]
+        self.type("안녕")
+        self.press_enter()
+        self.assertNotIn("다른 방", self.chat.notice)
+
+
 
 
 class CostTests(ComposerCase):
