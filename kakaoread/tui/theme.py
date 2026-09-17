@@ -150,10 +150,11 @@ def _truecolor_supported() -> bool:
 # -- Speaker tints -----------------------------------------------------------
 
 _BASE_LIGHTNESS: Final = 0.831  # #d4d4d4 expressed as HSL lightness.
-_NAME_SATURATION: Final = 0.46
+_NAME_LIGHTNESS: Final = 0.72  # Balanced lightness giving names vivid contrast.
+_NAME_SATURATION: Final = 0.75  # Distinct, easily distinguishable colours per person.
 _BODY_SATURATION: Final = 0.10
 _GOLDEN_ANGLE: Final = 137.507764  # Spreads consecutive hues as far as possible.
-_LIGHTNESS_STEPS: Final = (0.0, -0.035, 0.035)
+_LIGHTNESS_STEPS: Final = (0.0, -0.04, 0.04)
 """Hue alone stops separating once a room has many speakers, because a small
 saturation over a 360-degree circle rounds neighbours to the same byte. A
 three-step lightness cycle multiplies the usable slots without making any one
@@ -210,12 +211,12 @@ class SpeakerPalette:
         """A stable hue, placed as far as possible from the hues already used."""
         return (self._slot(speaker) * _GOLDEN_ANGLE + _hue_for(speaker) * 0.02) % 360
 
-    def _lightness(self, speaker: str) -> float:
-        return _BASE_LIGHTNESS + _LIGHTNESS_STEPS[self._slot(speaker) % len(_LIGHTNESS_STEPS)]
+    def _name_lightness(self, speaker: str) -> float:
+        return _NAME_LIGHTNESS + _LIGHTNESS_STEPS[self._slot(speaker) % len(_LIGHTNESS_STEPS)]
 
     def name_colour(self, speaker: str) -> str:
-        """A tint for the speaker's name: short enough to carry real colour."""
-        return _hsl_to_hex(self.hue(speaker), _NAME_SATURATION, self._lightness(speaker))
+        """A distinct colour for the speaker's name: clearly separable across people."""
+        return _hsl_to_hex(self.hue(speaker), _NAME_SATURATION, self._name_lightness(speaker))
 
     def body_colour(self, speaker: str) -> str:
         """A far weaker tint for the message itself, so the text stays the text."""

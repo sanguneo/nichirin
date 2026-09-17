@@ -683,16 +683,6 @@ class App:
         chat = self.chat
         assert chat is not None
 
-        if chat.delivered:
-            mark = self.theme.fg("success", "✓")
-        elif chat.outbox is None:
-            mark = " "
-        elif self._clock() - chat.outbox_at < UNCERTAIN_AFTER_SECONDS:
-            mark = self.theme.fg("muted", "*")
-        else:
-            # Long enough that "queued" would be a claim rather than a fact.
-            mark = self.theme.fg("warning", "?")
-
         content_width = max(6, width - 4)
         paragraphs = chat.draft.split("\n")
         wrapped_rows: list[str] = []
@@ -734,9 +724,7 @@ class App:
             body = prompt + row_text
             if not chat.draft and idx == 0:
                 body += self.theme.fg("dim", "메시지 입력 (Enter 전송 · Shift+Enter 줄바꿈)")
-            m_mark = (" " + mark) if (idx == len(visible_rows) - 1 and mark != " ") else ""
-            row_width = max(1, width - display_width(m_mark))
-            line = pad_to_width(truncate_to_width(body, row_width), row_width) + m_mark
+            line = pad_to_width(truncate_to_width(body, width), width)
             content_lines.append(line)
 
         caret_cursor = (caret_row, min(width - 1, 2 + caret_col))
@@ -746,19 +734,35 @@ class App:
     def _status_divider(self, width: int) -> str:
         """Draw the OmO-style active status divider right above the input."""
         chat = self.chat
-        if chat is not None and chat.outbox is not None and not chat.delivered:
-            elapsed = f"{self._clock() - chat.outbox_at:.1f}s"
-            bullet = "•"
-            left = f"── {bullet} 전송 중… ({elapsed}) "
-            fill = max(0, width - display_width(left))
-            content = (
-                self.theme.fg("accent", "── ")
-                + self.theme.fg("warning", bullet)
-                + self.theme.fg("accent", " 전송 중… ")
-                + self.theme.fg("dim", f"({elapsed}) ")
-                + self.theme.fg("borderMuted", "─" * fill)
-            )
-            return truncate_to_width(content, width)
+        if chat is not None and (chat.outbox is not None or chat.delivered):
+            if chat.delivered:
+                bullet = "✓"
+                text = "전송 완료"
+                left = f"── {bullet} {text} "
+                fill = max(0, width - display_width(left))
+                content = (
+                    self.theme.fg("accent", "── ")
+                    + self.theme.fg("success", bullet)
+                    + self.theme.fg("accent", f" {text} ")
+                    + self.theme.fg("borderMuted", "─" * fill)
+                )
+                return truncate_to_width(content, width)
+            elapsed_sec = self._clock() - chat.outbox_at
+            if elapsed_sec < UNCERTAIN_AFTER_SECONDS:
+                elapsed = f"{elapsed_sec:.1f}s"
+                bullet = "•"
+                left = f"── {bullet} 전송 중… ({elapsed}) "
+                fill = max(0, width - display_width(left))
+                content = (
+                    self.theme.fg("accent", "── ")
+                    + self.theme.fg("warning", bullet)
+                    + self.theme.fg("accent", " 전송 중… ")
+                    + self.theme.fg("dim", f"({elapsed}) ")
+                    + self.theme.fg("borderMuted", "─" * fill)
+                )
+                return truncate_to_width(content, width)
+            # Timed out waiting for acknowledgment
+            return self.theme.fg("borderMuted", "─" * width)
         if chat is not None and chat.notice:
             bullet = "•"
             notice_text = truncate_to_width(chat.notice, max(1, width - 8))
@@ -787,7 +791,7 @@ class App:
 
     def _status_line(self, width: int) -> str:
         chat = self.chat
-        if chat is not None and chat.outbox is not None and not chat.delivered:
+        if chat is not None and (chat.outbox is not None or chat.delivered):
             return self._status_divider(width)
         if chat is not None and chat.notice:
             return self._status_divider(width)
