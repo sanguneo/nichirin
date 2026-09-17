@@ -4,6 +4,24 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [0.10.1] — 2026-09-17
+
+### 추가
+
+- **`PROTOCOL.md`.** 이 CLI가 내는 봉투를 소비자에게 약속하는 문서입니다. 에이전트가 이 도구를
+  부르는 것이 정해진 방향이고(0.10.0에서 `/ask` 를 뺀 이유), 곧 HTTP 래퍼도 같은 봉투를 중계하게
+  되므로, 그때 깨질 것을 지금 적어둡니다. 봉투 모양·종료 코드·id는 문자열·시각은 오프셋 포함
+  ISO-8601·`follow` 는 NDJSON·에러 코드표, 그리고 **호환 규칙**: 키 추가는 파괴적 변경이 아니고
+  소비자는 모르는 키를 무시한다. 제거·개명·의미 변경만 파괴적입니다.
+- **`tests/envelopes/*.json` — 봉투 샘플 8개와 `tests/test_protocol.py`.** 문서가 아니라 이 파일들이
+  정본입니다. `tests/fixtures.py` 의 합성 데이터로 만들어지고(실제 계정은 읽지 않습니다), 명령의
+  출력이 달라지면 **소비자가 아니라 이 저장소에서 먼저** 테스트가 깨집니다. 의도한 변경이면
+  `python -m tests.test_protocol --write` 로 다시 씁니다.
+
+  macOS 갈래(`kamado-cli`)에도 같은 문서와 샘플을 넣고 둘을 대조했습니다: 8개 샘플의 키 집합이
+  전부 같고 차이는 kamado의 `room.typeCode` **하나**뿐입니다. 소비자 하나가 바이너리 이름만 바꿔
+  양쪽을 섬길 수 있다는 뜻입니다.
+
 ## [0.10.0] — 2026-09-17
 
 ### 제거
@@ -419,6 +437,7 @@ macOS 갈래(`kamado-cli`)에 올라온 두 가지를 가져왔습니다. 방식
   `search` 는 읽을 수 있는 방 전체 검색입니다.
 - 터미널 브라우저: 대화방 목록, 대화, 시간 구간 다이제스트(`/sum`).
 
+[0.10.1]: https://github.com/sanguneo/kanao-cli/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/sanguneo/kanao-cli/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/sanguneo/kanao-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sanguneo/kanao-cli/compare/v0.7.1...v0.8.0
