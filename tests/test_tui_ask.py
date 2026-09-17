@@ -1,0 +1,236 @@
+"""Asking a command outside this process, and what comes back.
+
+No model is involved here: the configured command is a Python one-liner that
+echoes, fails or says nothing on purpose, so what is under test is the handing
+over and the taking back rather than anybody's answer. Nothing waits on a
+clock — a started process is waited on directly, which is deterministic.
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import sys
+import unittest
+from unittest.mock import patch
+
+from kamado import agent
+from kamado.errors import ErrorCode, KamadoError
+from kamado.tui.app import App, ChatState
+from kamado.tui.console import Key
+from kamado.tui.layout import strip_ansi
+from kamado.tui.theme import Theme
+
+from tests.fixtures import DIRECT_ROOM, GROUP_ROOM, build_reader
+
+WIDTH = 80
+HEIGHT = 24
+
+
+def script(body: str) -> str:
+    """A command line running *body*, quoted the way a shell would need it."""
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(body)}"
+
+
+ECHOES = script("import sys; sys.stdout.write(sys.stdin.read())")
+ANSWERS = script("import sys; sys.stdout.write('답장 초안입니다')")
+SAYS_NOTHING = script("pass")
+FAILS = script("import sys; sys.stdout.write('무언가 잘못됨'); sys.exit(3)")
+FAILS_NOISILY = script(
+    "import sys; sys.stdout.write('{\\n  stack: 1,\\n}\\n로그인되지 않았습니다\\n'); sys.exit(1)"
+)
+
+
+class AskCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.reader = build_reader()
+        self.addCleanup(self.reader.close)
+        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=False))
+        self.app.load_rooms()
+        self.app.open_room(next(r for r in self.app.rooms if r.id == DIRECT_ROOM))
+
+    @property
+    def chat(self) -> ChatState:
+        chat = self.app.chat
+        assert chat is not None
+        return chat
+
+    def ask(self, command: str, question: str = "정리해줘") -> None:
+        """Ask *question* of *command* and settle it, without waiting on a clock."""
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: command}):
+            self.app._run_command(f"/ask {question}")
+        pending = self.chat.asking
+        if pending is not None:
+            pending.process.wait()
+            self.app._collect_answer()
+
+    def frame(self) -> list[str]:
+        return [strip_ansi(line) for line in self.app.render(WIDTH, HEIGHT)]
+
+
+class CommandResolutionTests(unittest.TestCase):
+    def test_the_variable_is_read_as_a_command_line(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: "some agent --flag"}):
+            self.assertEqual(agent.command(), ["some", "agent", "--flag"])
+
+    def test_quotes_are_honoured_the_way_a_shell_would(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: "'a b' c"}):
+            self.assertEqual(agent.command(), ["a b", "c"])
+
+    def test_an_unclosed_quote_is_refused_rather_than_guessed(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: "broken 'quote"}):
+            with self.assertRaises(KamadoError) as raised:
+                agent.command()
+        self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
+
+    def test_omo_is_the_default_when_it_is_installed(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ""}), patch.object(
+            agent.shutil, "which", return_value="/somewhere/omo"
+        ):
+            self.assertEqual(agent.command(), ["/somewhere/omo", "-p"])
+
+    def test_nothing_configured_and_nothing_installed_is_nobody_to_ask(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ""}), patch.object(
+            agent.shutil, "which", return_value=None
+        ):
+            self.assertIsNone(agent.command())
+
+
+class HandingOverTests(AskCase):
+    def test_the_conversation_and_the_question_are_what_is_sent(self) -> None:
+        """The command sees the room's own words and what was asked of them."""
+        self.ask(ECHOES, "오늘 얘기 정리해줘")
+        sent = self.chat.draft
+        self.assertIn("first", sent, "the conversation did not reach the command")
+        self.assertIn("오늘 얘기 정리해줘", sent)
+        self.assertIn(self.chat.room.title, sent)
+
+    def test_nothing_about_other_rooms_is_sent(self) -> None:
+        self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM))
+        self.app.focus = 0
+        self.ask(ECHOES)
+        self.assertNotIn("group hello", self.chat.draft)
+
+    def test_a_question_is_required(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ECHOES}):
+            self.app._run_command("/ask")
+        self.assertIsNone(self.chat.asking)
+        self.assertIn("물어볼 말", self.chat.notice)
+
+    def test_with_nobody_to_ask_it_says_so(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ""}), patch.object(
+            agent.shutil, "which", return_value=None
+        ):
+            self.app._run_command("/ask 정리해줘")
+        self.assertIsNone(self.chat.asking)
+        self.assertIn(agent.AGENT_VARIABLE, self.chat.notice)
+
+    def test_a_second_question_waits_for_the_first(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ECHOES}):
+            self.app._run_command("/ask 하나")
+            first = self.chat.asking
+            assert first is not None
+            self.app._run_command("/ask 둘")
+            self.assertIs(self.chat.asking, first)
+            self.assertIn("이미", self.chat.notice)
+            first.cancel()
+            self.chat.asking = None
+
+
+class AnswerTests(AskCase):
+    def test_an_answer_becomes_a_draft_and_is_not_sent(self) -> None:
+        self.ask(ANSWERS)
+        self.assertEqual(self.chat.draft, "답장 초안입니다")
+        self.assertEqual(self.chat.caret, len(self.chat.draft))
+        self.assertIsNone(self.app.pending_send, "an answer was sent without being read")
+        self.assertIsNone(self.chat.outbox)
+
+    def test_a_draft_already_being_written_is_not_written_over(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ANSWERS}):
+            self.app._run_command("/ask 정리해줘")
+        pending = self.chat.asking
+        assert pending is not None
+        for character in "내가 쓰던 말":
+            self.app.handle("char", character)
+        pending.process.wait()
+        self.app._collect_answer()
+
+        self.assertEqual(self.chat.draft, "내가 쓰던 말")
+        self.assertEqual(self.chat.answer, "답장 초안입니다")
+        self.assertIn("/take", self.chat.notice)
+
+    def test_take_puts_that_answer_in_the_composer(self) -> None:
+        self.chat.answer = "기다리던 답변"
+        self.app._run_command("/take")
+        self.assertEqual(self.chat.draft, "기다리던 답변")
+        self.assertIsNone(self.chat.answer)
+
+    def test_take_with_nothing_waiting_says_so(self) -> None:
+        self.app._run_command("/take")
+        self.assertEqual(self.chat.draft, "")
+        self.assertIn("없습니다", self.chat.notice)
+
+    def test_a_command_that_fails_is_reported_with_what_it_printed(self) -> None:
+        self.ask(FAILS)
+        self.assertEqual(self.chat.draft, "")
+        self.assertIn("무언가 잘못됨", self.chat.notice)
+
+    def test_a_failure_is_quoted_by_its_last_word_not_its_last_bytes(self) -> None:
+        """An agent that fails prints its own diagnostics above the reason.
+
+        Cutting by length lands in the middle of one of them: against a real
+        agent with no credentials that quoted half a JSON object, while the
+        line below it said plainly that nobody was logged in.
+        """
+        self.ask(FAILS_NOISILY)
+        self.assertIn("로그인되지 않았습니다", self.chat.notice)
+        self.assertNotIn("stack", self.chat.notice)
+
+    def test_a_command_that_says_nothing_is_not_an_empty_draft(self) -> None:
+        self.ask(SAYS_NOTHING)
+        self.assertEqual(self.chat.draft, "")
+        self.assertIn("아무것도", self.chat.notice)
+
+    def test_a_command_that_does_not_exist_is_reported(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: "kamado-no-such-command"}):
+            self.app._run_command("/ask 정리해줘")
+        self.assertIsNone(self.chat.asking)
+        self.assertNotEqual(self.chat.notice, "")
+
+
+class WhileWaitingTests(AskCase):
+    def test_the_screen_names_the_program_the_words_went_to(self) -> None:
+        """Which program was handed the conversation is never left to guess."""
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ECHOES}):
+            self.app._run_command("/ask 정리해줘")
+        pending = self.chat.asking
+        assert pending is not None
+        self.addCleanup(pending.cancel)
+        above = next(line for line in self.frame() if "묻는 중" in line)
+        self.assertIn(pending.label, above)
+
+    def test_closing_the_pane_stops_the_command(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: ECHOES}):
+            self.app._run_command("/ask 정리해줘")
+        pending = self.chat.asking
+        assert pending is not None
+        self.app.handle(Key.ESCAPE, "")
+        self.assertIsNotNone(pending.process.poll(), "the command outlived its pane")
+
+    def test_an_answer_that_never_comes_is_given_up_on(self) -> None:
+        with patch.dict(os.environ, {agent.AGENT_VARIABLE: script("import time; time.sleep(60)")}):
+            self.app._run_command("/ask 정리해줘")
+        pending = self.chat.asking
+        assert pending is not None
+        self.addCleanup(pending.cancel)
+        # The clock is read rather than waited on, so the deadline is reached
+        # by moving it, not by sitting through it.
+        self.app._clock = lambda: pending.started_at + agent.TIMEOUT_SECONDS + 1
+        self.assertTrue(self.app._collect_answer())
+        self.assertIsNone(self.chat.asking)
+        self.assertIsNotNone(pending.process.poll())
+        self.assertIn("답하지 않아", self.chat.notice)
+
+
+if __name__ == "__main__":
+    unittest.main()
