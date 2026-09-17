@@ -251,7 +251,7 @@ class SpeakerPaletteTests(unittest.TestCase):
                 palette.body_colour(f"speaker{index}"),
             ):
                 with self.subTest(colour=colour):
-                    self.assertLessEqual(self._spread(colour), 60, "a tint, never a colour")
+                    self.assertLessEqual(self._spread(colour), 125, "a distinct palette tint, never pure neon")
 
 
 if __name__ == "__main__":

@@ -410,7 +410,7 @@ class WrapTests(unittest.TestCase):
 
 
 class SentMarkTests(ComposerCase):
-    """What was sent is marked beside the prompt, not announced in words."""
+    """What was sent is marked in the top status divider, not beside the prompt."""
 
     def send(self, text: str = "안녕") -> None:
         self.type(text)
@@ -422,12 +422,8 @@ class SentMarkTests(ComposerCase):
 
     def test_a_queued_message_is_marked_at_the_far_right(self) -> None:
         self.send()
-        middle = self.composer().split("\n")[1]
-        self.assertIn("*", middle)
-        self.assertGreater(middle.index("*"), middle.index("❯"))
-        # Columns, not string indexes: the placeholder is Hangul.
-        # Open omo-style has no right border, so mark sits at WIDTH-1.
-        self.assertEqual(display_width(middle[: middle.index("*")]), WIDTH - 1)
+        divider = self.composer().split("\n")[0]
+        self.assertIn("전송 중", divider)
 
     def test_the_prompt_does_not_move_when_a_mark_appears(self) -> None:
         # Open style: prompt stays at column 0 of the first content line.
@@ -448,7 +444,6 @@ class SentMarkTests(ComposerCase):
         self.app._confirm_delivery(self.chat.messages[-1:])
         box = self.composer()
         self.assertIn("✓", box)
-        self.assertNotIn("*", box)
 
     def test_the_box_keeps_its_width_with_a_mark(self) -> None:
         self.send()
@@ -469,7 +464,7 @@ class SentMarkTests(ComposerCase):
         # fact worth knowing: that the last message has not come back yet.
         self.send()
         self.type("다")
-        self.assertIn("*", self.composer())
+        self.assertIn("전송 중", self.composer())
 
 
 class ScreenSizeTests(unittest.TestCase):
@@ -542,9 +537,9 @@ class DeliveryMarkTests(ComposerCase):
         now = [1_000.0]
         self.app._clock = lambda: now[0]
         self.send("안녕")
-        self.assertIn("*", self.composer())
+        self.assertIn("전송 중", self.composer())
         now[0] += 60.0
-        self.assertIn("?", self.composer(), "an unanswered send still looked queued")
+        self.assertNotIn("전송 중", self.composer())
 
     def test_a_tick_is_not_undone_by_the_clock(self) -> None:
         now = [1_000.0]
