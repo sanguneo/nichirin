@@ -1,7 +1,7 @@
 [project]
 name = "kanao-cli"
 version = "0.6.0"
-description = "Read-only KakaoTalk conversation reader for AI agents on Windows"
+description = "Zero-dependency KakaoTalk reader, TUI, and text sender for Windows and AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
