@@ -143,6 +143,7 @@ PBKDF2-HMAC-SHA256을 100,000회 적용해 유도합니다. 힙 스캔도, 실�
 | `rooms` | `[--limit N] [--readable-only]` — 최근 활동 순 |
 | `context` | `(--room TITLE \| --room-id ID) [--limit N]` — 기본 40개와 커버리지 |
 | `messages` | `(--room TITLE \| --room-id ID) [--limit N] [--before-id ID]` — 기본 40개, 오래된 순 |
+| `digest` | `(--room TITLE \| --room-id ID) [--span 30m] [--limit N] [--highlights N]` — 최신 N개(기본 400)를 시간 구간으로 잘라 활동량·화자·단어·대표 문장. 화면의 `/sum`과 같은 재료를 JSON으로 |
 | `friends` | `[--favorites] [--with-phone]` — 전화번호는 요청할 때만 |
 | `names` | `(--room TITLE \| --room-id ID) [NAME] [--user-id ID]` — 닉네임은 한 개 |
 | `search` | `KEYWORD [--limit N]` — 기본 20개, 최신 일치부터 |

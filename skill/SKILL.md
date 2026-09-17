@@ -106,6 +106,14 @@ KakaoTalk ids can exceed 2^53. Preserve them without conversion to floating
 point. Timestamps include a UTC offset when present; convert and label the
 user's zone. Raw `query` rows retain SQLite types; cast id columns to TEXT.
 
+For a summary of a busy room, start with `digest` rather than paging through
+`messages`. It is extractive, not generative: it counts who spoke in each time
+window, which words the window was about, and quotes the lines most likely to
+carry the point, each a real message with its id. Write the summary from that
+material, and read `messages` around a highlight when its context matters.
+The span is a slice length, not a lookback: `--span 2h` over the newest 400
+messages, and only the most recent 12 hours of those are sliced.
+
 Before summarising or drafting:
 
 1. Read surrounding messages, not just previews. Increase `--limit` when a
@@ -147,6 +155,7 @@ The full parser surface is below. Positive limits and intervals are required.
 | `rooms` | `[--limit N] [--readable-only]` | `rooms`, `count`; most recently active first |
 | `context` | `(--room TITLE \| --room-id ID) [--limit N]` | Room, messages, coverage, attention; default 40 messages |
 | `messages` | `(--room TITLE \| --room-id ID) [--limit N] [--before-id ID]` | `room`, `messages`, `count`; default 40, oldest-first |
+| `digest` | `(--room TITLE \| --room-id ID) [--span 30m\|2h] [--limit N] [--highlights N]` | `slices` of the newest N (default 400) messages: per window `from`, `to`, `count`, `speakers`, `keywords`, verbatim `highlights` |
 | `friends` | `[--favorites] [--with-phone]` | `friends`, `count`; favorites first, then name |
 | `names` | `(--room TITLE \| --room-id ID) [NAME] [--user-id ID]` | `room`, `users`, `count`, `note` |
 | `search` | `KEYWORD [--limit N]` | `matches`, `count`, `unsearchableRooms`, `note`; default 20, newest-first |
