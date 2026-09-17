@@ -156,9 +156,10 @@ class GroupTests(unittest.TestCase):
     def test_a_group_room_reads_like_any_other(self) -> None:
         with build_reader() as reader:
             answer = read_context(reader, GROUP_ROOM)
+            stored = len(reader.messages(GROUP_ROOM, limit=100))
         self.assertTrue(answer["ok"])
         self.assertEqual(answer["room"]["kind"], "group")
-        self.assertEqual(len(answer["messages"]), 5)
+        self.assertEqual(len(answer["messages"]), stored)
 
 
 class AttentionTests(unittest.TestCase):

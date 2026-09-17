@@ -183,5 +183,48 @@ class NewlineDecodingTests(unittest.TestCase):
         self.assertEqual(self.read(down(0, "\x15")), ("char", "\x15"))
 
 
+class MouseDecodingTests(unittest.TestCase):
+    """A click has to arrive as a position, and a release must not repeat it.
+
+    The report is fed in as bytes rather than as a KeyEvent: the parsing of the
+    SGR sequence is the part that can be wrong, and a hand-built event would
+    skip exactly that.
+    """
+
+    def read(self, written: bytes) -> tuple[str, str]:
+        console = Console()
+        console._input = bytearray(written)
+        return console.read_key(0.0)
+
+    def test_a_left_press_becomes_a_click_at_zero_based_coordinates(self) -> None:
+        self.assertEqual(self.read(b"\x1b[<0;12;5M"), (Key.CLICK, "4,11"))
+
+    def test_the_release_that_follows_is_not_a_second_click(self) -> None:
+        self.assertEqual(self.read(b"\x1b[<0;12;5m"), ("", ""))
+
+    def test_a_column_past_the_x10_limit_still_arrives(self) -> None:
+        # This is the whole reason SGR reporting is asked for.
+        self.assertEqual(self.read(b"\x1b[<0;240;9M"), (Key.CLICK, "8,239"))
+
+    def test_the_wheel_scrolls_rather_than_being_swallowed(self) -> None:
+        # Asking the terminal to report buttons takes its own wheel scrolling
+        # away, so a discarded wheel report leaves no way to scroll by mouse.
+        self.assertEqual(self.read(b"\x1b[<64;10;5M"), (Key.WHEEL_UP, ""))
+        self.assertEqual(self.read(b"\x1b[<65;10;5M"), (Key.WHEEL_DOWN, ""))
+
+    def test_a_modified_wheel_notch_still_scrolls(self) -> None:
+        for report in (b"\x1b[<68;10;5M", b"\x1b[<72;10;5M", b"\x1b[<80;10;5M"):
+            with self.subTest(report=report):
+                self.assertEqual(self.read(report), (Key.WHEEL_UP, ""))
+
+    def test_other_buttons_are_ignored(self) -> None:
+        for report in (b"\x1b[<2;3;4M", b"\x1b[<1;3;4M"):
+            with self.subTest(report=report):
+                self.assertEqual(self.read(report), ("", ""))
+
+    def test_a_malformed_report_is_consumed_rather_than_typed(self) -> None:
+        self.assertEqual(self.read(b"\x1b[<nonsenseM"), ("", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

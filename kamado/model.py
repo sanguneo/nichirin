@@ -57,12 +57,29 @@ Every row of this type carried ``src_logId``, ``src_userId``, ``src_type`` and
 ``src_message`` in its attachment, across three rooms and 108 replies.
 """
 
+MULTI_PHOTO_MESSAGE: Final = 27
+"""Several pictures sent as one message, confirmed against a live client.
+
+Its attachment carries parallel lists -- ``thumbnailUrls``, ``imageUrls`` and
+the per-picture sizes -- rather than the single-photo keys.
+"""
+
+_STILL_MESSAGE_TYPES: Final = frozenset({PHOTO_MESSAGE, MULTI_PHOTO_MESSAGE, 16386})
+"""Type codes observed carrying a still picture on a live client.
+
+Shape alone cannot tell a photo from a video: a video's attachment holds the
+same ``url``/``w``/``h`` keys, so reading only those made every ``.mp4`` open as
+if it were an image. 16386 is included because live rows under it carry the
+single-photo keys and a ``.jpg`` address.
+"""
+
 _MESSAGE_KINDS: Final = {
     FEED_MESSAGE: "feed",
     TEXT_MESSAGE: "text",
     PHOTO_MESSAGE: "photo",
     VIDEO_MESSAGE: "video",
     REPLY_MESSAGE: "reply",
+    MULTI_PHOTO_MESSAGE: "photos",
 }
 
 
@@ -225,6 +242,30 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class Photo:
+    """Where a picture lives and how large it was, as the client recorded it.
+
+    The client stores an address on its own CDN rather than the bytes, so this
+    is what a viewer needs to fetch one, and the stored dimensions are what let
+    it be sized without downloading it first.
+    """
+
+    url: str
+    width: int
+    height: int
+    count: int = 1
+    """How many pictures the message carried; a single photo is one."""
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "url": self.url,
+            "width": self.width,
+            "height": self.height,
+            "count": self.count,
+        }
+
+
+@dataclass(frozen=True)
 class Message:
     """One message, already attributed to a named sender."""
 
@@ -243,6 +284,8 @@ class Message:
     """Whether the signed-in account is one of the ids this message named."""
     reply: Optional[Quote] = None
     replies_to_me: bool = False
+    photo: Optional[Photo] = None
+    """The picture this message carries, for the kinds that carry one."""
 
     @property
     def has_text(self) -> bool:
@@ -275,6 +318,8 @@ class Message:
             payload["replyTo"] = self.reply.as_json()
         if self.replies_to_me:
             payload["repliesToMe"] = True
+        if self.photo is not None:
+            payload["photo"] = self.photo.as_json()
         return payload
 
 
@@ -374,6 +419,52 @@ def quoted_in(
         text=text if isinstance(text, str) else "",
         type=_identifier(attachment.get("src_type")),
     )
+
+
+def photo_in(attachment: dict[str, Any], type_code: int) -> Optional["Photo"]:
+    """Return the still picture a message carries, or None when it carries none.
+
+    A video is not a photo here even though its attachment looks like one. Both
+    store ``url`` with ``w``/``h``, so the type is what separates them, and a
+    video additionally carries ``d`` for its duration -- checked as well, since
+    the client has more type codes than are known.
+
+    The full-size address wins over the thumbnail.  Measured on live rows, a
+    thumbnail is 110x120 where its original is 384x422, and a terminal showing
+    the thumbnail scaled into the same cells is visibly soft; the stored
+    dimensions follow the address that was chosen so the shape stays right.
+    """
+    if type_code not in _STILL_MESSAGE_TYPES or "d" in attachment:
+        return None
+
+    for address_key, width_key, height_key in (
+        ("url", "w", "h"),
+        ("thumbnailUrl", "thumbnailWidth", "thumbnailHeight"),
+    ):
+        address = attachment.get(address_key)
+        if isinstance(address, str) and address.startswith("http"):
+            return Photo(
+                url=address,
+                width=_identifier(attachment.get(width_key)) or 0,
+                height=_identifier(attachment.get(height_key)) or 0,
+            )
+
+    for key in ("imageUrls", "thumbnailUrls"):
+        addresses = attachment.get(key)
+        if not isinstance(addresses, list):
+            continue
+        usable = [one for one in addresses if isinstance(one, str) and one.startswith("http")]
+        if not usable:
+            continue
+        widths = attachment.get("thumbnailWidths")
+        heights = attachment.get("thumbnailHeights")
+        return Photo(
+            url=usable[0],
+            width=_identifier(widths[0]) or 0 if isinstance(widths, list) and widths else 0,
+            height=_identifier(heights[0]) or 0 if isinstance(heights, list) and heights else 0,
+            count=len(usable),
+        )
+    return None
 
 
 FRIEND_TYPE: Final = 1

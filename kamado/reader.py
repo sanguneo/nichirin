@@ -699,6 +699,7 @@ class Reader:
         extra = model.parse_attachment(attachment)
         mentions = model.mentions_in(extra, known.get)
         reply = model.quoted_in(extra, known.get)
+        photo = model.photo_in(extra, kind)
         return Message(
             id=int(log_id),
             room_id=room_id,
@@ -717,6 +718,7 @@ class Reader:
             mentions_me=own is not None and any(one.user_id == own for one in mentions),
             reply=reply,
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
+            photo=photo,
         )
 
     def feed_details(self, room_id: int, log_ids: Sequence[int]) -> dict[int, str]:

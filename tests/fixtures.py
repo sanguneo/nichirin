@@ -77,6 +77,44 @@ CREATE TABLE NTChatContext (userId INTEGER);
 REPLY_TYPE = 26
 """The client's type for a message written against another one."""
 
+PHOTO_TYPE = 2
+MULTI_PHOTO_TYPE = 27
+VIDEO_TYPE = 3
+
+VIDEO_ATTACHMENT = json.dumps(
+    {
+        "url": "https://talk.kakaocdn.net/synthetic-clip.mp4",
+        "w": 1280,
+        "h": 720,
+        "d": 8600,
+        "s": 4_200_000,
+    }
+)
+"""A video, which stores the same url and size keys a photo does plus ``d``."""
+
+PHOTO_ATTACHMENT = json.dumps(
+    {
+        "thumbnailUrl": "https://talk.kakaocdn.net/synthetic-thumb.jpg",
+        "url": "https://talk.kakaocdn.net/synthetic-full.jpg",
+        "thumbnailWidth": 480,
+        "thumbnailHeight": 270,
+        "w": 1988,
+        "h": 1118,
+    }
+)
+"""A single photo, shaped the way a live client writes one."""
+
+MULTI_PHOTO_ATTACHMENT = json.dumps(
+    {
+        "thumbnailUrls": [
+            "https://talk.kakaocdn.net/synthetic-one.jpg",
+            "https://talk.kakaocdn.net/synthetic-two.jpg",
+        ],
+        "thumbnailWidths": [480, 480],
+        "thumbnailHeights": [270, 270],
+    }
+)
+
 MENTION_OF_OWNER = json.dumps({"mentions": [{"at": [0], "len": 12, "user_id": OWN_ID}]})
 """A mention as the client writes it: an id and where the name sits."""
 
@@ -189,6 +227,12 @@ def build_database(
          REPLY_TO_OWNER, 1_700_000_430, 0),
         (6005, GROUP_ROOM, PEER_ID, 1, "@전체 공지입니다",
          MENTION_OF_EVERYONE, 1_700_000_440, 0),
+        (6006, GROUP_ROOM, PEER_ID, PHOTO_TYPE, "사진",
+         PHOTO_ATTACHMENT, 1_700_000_450, 0),
+        (6007, GROUP_ROOM, FRIEND_ID, MULTI_PHOTO_TYPE, "",
+         MULTI_PHOTO_ATTACHMENT, 1_700_000_460, 0),
+        (6008, GROUP_ROOM, PEER_ID, VIDEO_TYPE, "동상열",
+         VIDEO_ATTACHMENT, 1_700_000_470, 0),
         (HUGE_ID, HUGE_ROOM, HUGE_ID, 1, "huge", None, 1_700_000_500, 0),
     ]
     if with_self_room:

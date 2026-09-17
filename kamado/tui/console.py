@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import select
 import shutil
 import struct
@@ -25,6 +26,14 @@ ALT_SCREEN_ON: Final = "\x1b[?1049h"
 ALT_SCREEN_OFF: Final = "\x1b[?1049l"
 HIDE_CURSOR: Final = "\x1b[?25l"
 SHOW_CURSOR: Final = "\x1b[?25h"
+MOUSE_ON: Final = "\x1b[?1000h\x1b[?1006h"
+"""Report button presses in SGR form, which is the only encoding wide enough.
+
+The original X10 encoding packs a column into one byte, so it cannot address a
+column past 223 -- and a photo can sit anywhere on a wide screen.  Motion is
+deliberately not requested: nothing here reacts to the pointer moving.
+"""
+MOUSE_OFF: Final = "\x1b[?1006l\x1b[?1000l"
 AUTOWRAP_OFF: Final = "\x1b[?7l"
 AUTOWRAP_ON: Final = "\x1b[?7h"
 HOME: Final = "\x1b[H"
@@ -35,6 +44,8 @@ _SAVE_AUTOWRAP: Final = "\x1b[?7s"
 _RESTORE_AUTOWRAP: Final = "\x1b[?7r"
 _ESCAPE_WAIT: Final = 0.12
 """Allow a split terminal key sequence to arrive before yielding Escape."""
+_CELL_QUERY_SECONDS: Final = 0.05
+"""How long to wait for a cell-size reply before giving up on the question."""
 _SHIFT_PRESSED: Final = 0x0010
 CLEAR_BOX: Final = "\x15"
 """Ctrl+U, which empties the composer; it is passed through as itself."""
@@ -69,6 +80,16 @@ class Key:
     DELETE: Final = "delete"
     TAB: Final = "tab"
     INTERRUPT: Final = "interrupt"
+    CLICK: Final = "click"
+    """A left-button press, carrying ``"row,column"`` as its text."""
+    WHEEL_UP: Final = "wheelup"
+    WHEEL_DOWN: Final = "wheeldown"
+    """One wheel notch.
+
+    Asking the terminal to report buttons takes its own wheel scrolling away,
+    so these have to reach the interface or a photo-sized screen has no way to
+    be scrolled with the mouse at all.
+    """
 
 
 _BY_VIRTUAL_KEY: Final = {
@@ -100,6 +121,12 @@ _BY_ESCAPE_FINAL: Final = {
     "H": 0x24, "F": 0x23, "Z": 0x09,
 }
 _BY_TILDE: Final = {1: 0x24, 3: 0x2E, 4: 0x23, 5: 0x21, 6: 0x22, 7: 0x24, 8: 0x23}
+_LEFT_BUTTON: Final = 0
+"""The button field of a left-button SGR mouse report."""
+_WHEEL_UP_BUTTON: Final = 64
+_WHEEL_DOWN_BUTTON: Final = 65
+_MODIFIER_BITS: Final = 0b11100
+"""Shift, meta and control ride in the button field and are ignored here."""
 
 RIGHT_MARGIN_VARIABLE: Final = "KAMADO_TUI_MARGIN"
 DEFAULT_RIGHT_MARGIN: Final = 0
@@ -181,7 +208,7 @@ class Console:
             self._entered = True
             # The alternate screen starts blank, so the first frame is whole.
             self._painted = None
-            _write(_SAVE_AUTOWRAP + ALT_SCREEN_ON + HIDE_CURSOR + AUTOWRAP_OFF)
+            _write(_SAVE_AUTOWRAP + ALT_SCREEN_ON + HIDE_CURSOR + AUTOWRAP_OFF + MOUSE_ON)
         except BaseException:
             self.__exit__()
             raise
@@ -191,7 +218,14 @@ class Console:
         try:
             if self._entered:
                 # ON is also a fallback for terminals without DEC mode saving.
-                _write(_RESET + AUTOWRAP_ON + SHOW_CURSOR + ALT_SCREEN_OFF + _RESTORE_AUTOWRAP)
+                _write(
+                    MOUSE_OFF
+                    + _RESET
+                    + AUTOWRAP_ON
+                    + SHOW_CURSOR
+                    + ALT_SCREEN_OFF
+                    + _RESTORE_AUTOWRAP
+                )
         finally:
             self._entered = False
             if self._mode is not None and self._input_fd is not None:
@@ -202,7 +236,12 @@ class Console:
                 self._mode = None
             self._input_fd = None
 
-    def draw(self, lines: list[str], cursor: Optional[tuple[int, int]] = None) -> None:
+    def draw(
+        self,
+        lines: list[str],
+        cursor: Optional[tuple[int, int]] = None,
+        overlay: str = "",
+    ) -> None:
         """Cut and pad every row, write what changed, and park the caret.
 
         Cursor coordinates are zero-based. The minimum layout size is kept
@@ -221,6 +260,11 @@ class Console:
         rows. What the cache describes is the alternate screen this console
         owns and nothing else writes to; a resize and a re-entry both paint in
         full again.
+
+        *overlay* is written after the rows and before the caret is parked. It
+        carries escapes that are not text -- an image placement addressed by
+        screen position -- so it cannot be diffed against the painted rows and
+        is emitted verbatim whenever the caller supplies one.
         """
         columns, rows = self.size
         physical = _visible_size()
@@ -250,8 +294,10 @@ class Console:
                 for row, body in enumerate(painted)
                 if body != previous[row]
             ]
-            if not frame and cursor == self._painted_cursor:
+            if not frame and cursor == self._painted_cursor and not overlay:
                 return
+        if overlay:
+            frame.append(overlay)
         if cursor is None:
             frame.append(HIDE_CURSOR)
         else:
@@ -349,6 +395,8 @@ class Console:
         try:
             text = sequence.decode("ascii")
             final = text[-1]
+            if final in ("M", "m") and text[:1] == "<":
+                return self._mouse_event(text)
             fields = text[:-1].split(";") if text[:-1] else []
             # CSI-u can carry an event type: 3 denotes key release.
             if len(fields) > 1 and fields[1].endswith(":3"):
@@ -376,6 +424,66 @@ class Console:
             character = chr(ord(character.lower()) - ord("a") + 1)
         return KeyEvent(True, 0, character, control)
 
+    def _mouse_event(self, text: str) -> KeyEvent:
+        """Decode one SGR mouse report into a click, a wheel notch, or nothing.
+
+        Only the left button going *down* becomes a click.  The release that
+        follows every press would otherwise toggle a photo straight back.  A
+        wheel notch has no release and is taken on its own report.  Coordinates
+        are one-based on the wire and zero-based everywhere in this program, so
+        they are converted here rather than at each caller.
+        """
+        ignored = KeyEvent(False, 0, "")
+        try:
+            button, column, row = (int(field) for field in text[1:-1].split(";"))
+        except ValueError:
+            return ignored
+        bare = button & ~_MODIFIER_BITS
+        if bare == _WHEEL_UP_BUTTON:
+            return KeyEvent(True, 0, "\x00wheel:up")
+        if bare == _WHEEL_DOWN_BUTTON:
+            return KeyEvent(True, 0, "\x00wheel:down")
+        if bare != _LEFT_BUTTON or text[-1] != "M":
+            return ignored
+        return KeyEvent(True, 0, f"\x00click:{row - 1},{column - 1}")
+
+    def cell_pixels(self) -> Optional[tuple[int, int]]:
+        """Ask the terminal how large one cell is, in device pixels.
+
+        ``CSI 16 t`` is answered with ``CSI 6 ; height ; width t`` by terminals
+        that support it.  The reply is read with a short deadline and anything
+        else is put back: a terminal that does not answer must not be waited on,
+        and a keystroke that arrives first is still the reader's.
+        """
+        if self._input_fd is None:
+            return None
+        _write("\x1b[16t")
+        deadline = time.monotonic() + _CELL_QUERY_SECONDS
+        collected = bytearray()
+        pattern = re.compile(rb"\x1b\[6;(\d+);(\d+)t")
+        while True:
+            found = pattern.search(bytes(collected))
+            if found is not None:
+                del collected[found.start() : found.end()]
+                self._input[:0] = collected
+                height, width = int(found.group(1)), int(found.group(2))
+                return (width, height) if width > 0 and height > 0 else None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([self._input_fd], [], [], remaining)
+            if not ready:
+                break
+            try:
+                chunk = os.read(self._input_fd, 64)
+            except OSError:
+                break
+            if not chunk:
+                break
+            collected += chunk
+        self._input[:0] = collected
+        return None
+
     def _pending(self) -> bool:
         """Check both read-ahead and the descriptor, without waiting for input."""
         if self._input:
@@ -399,6 +507,15 @@ class Console:
         """Turn one normalized key press into the application's input contract."""
         character = event.character
         if character:
+            if character.startswith("\x00click:"):
+                self._pending_surrogate = ""
+                return Key.CLICK, character[len("\x00click:"):]
+            if character == "\x00wheel:up":
+                self._pending_surrogate = ""
+                return Key.WHEEL_UP, ""
+            if character == "\x00wheel:down":
+                self._pending_surrogate = ""
+                return Key.WHEEL_DOWN, ""
             named = _BY_CHARACTER.get(character)
             if named is not None:
                 self._pending_surrogate = ""
