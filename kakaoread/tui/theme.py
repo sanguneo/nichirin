@@ -216,10 +216,10 @@ _DARK_BODY_SATURATION: Final = 0.10
 _DARK_LIGHTNESS_STEPS: Final = (0.0, -0.04, 0.04)
 
 _LIGHT_BASE_LIGHTNESS: Final = 0.35
-_LIGHT_NAME_LIGHTNESS: Final = 0.36
+_LIGHT_NAME_LIGHTNESS: Final = 0.28  # Ensures high contrast (>=3.5:1) so terminal contrast adjusters never blacken names.
 _LIGHT_NAME_SATURATION: Final = 0.85
 _LIGHT_BODY_SATURATION: Final = 0.15
-_LIGHT_LIGHTNESS_STEPS: Final = (0.0, -0.04, 0.04)
+_LIGHT_LIGHTNESS_STEPS: Final = (0.0, -0.03, 0.03)
 
 _GOLDEN_ANGLE: Final = 137.507764  # Spreads consecutive hues as far as possible.
 """Hue alone stops separating once a room has many speakers, because a small
@@ -285,7 +285,7 @@ class SpeakerPalette:
         if self.dark:
             return _DARK_NAME_LIGHTNESS + _DARK_LIGHTNESS_STEPS[slot % len(_DARK_LIGHTNESS_STEPS)]
         # For light backgrounds, lower lightness for naturally bright hues (yellow/green/cyan)
-        extra_dark = 0.06 if 40 <= hue <= 130 else 0.0
+        extra_dark = 0.04 if 40 <= hue <= 185 else 0.0
         return _LIGHT_NAME_LIGHTNESS - extra_dark + _LIGHT_LIGHTNESS_STEPS[slot % len(_LIGHT_LIGHTNESS_STEPS)]
 
     def name_colour(self, speaker: str) -> str:
