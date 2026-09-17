@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 from . import model, names as names_module, paths
 from .errors import ErrorCode, KanaoError
@@ -433,6 +433,32 @@ class Reader:
         if not forwards:
             rows = list(reversed(rows))
         return [self._message(room_id, row) for row in rows]
+
+    def feed_details(self, room_id: int, log_ids: Sequence[int]) -> dict[int, str]:
+        """Describe each of these feeds from what its own row carries.
+
+        The JSON stays out of the message text, where it reads as words
+        somebody typed and buries the conversation; this is the short account
+        of it, asked for the rows being looked at rather than for a room's
+        whole history.
+
+        Parsing happens here rather than in SQL. A row with no text is not
+        always a feed — a photo has none either — and handing one of those to
+        SQLite's ``json_extract`` fails the whole statement instead of that
+        row.
+        """
+        if not log_ids:
+            return {}
+        places = ",".join("?" for _ in log_ids)
+        found: dict[int, str] = {}
+        for log_id, body in self._logs(room_id).execute(
+            f"SELECT logId, message FROM chatLogs WHERE type = ? AND logId IN ({places})",
+            (model.FEED_MESSAGE, *log_ids),
+        ):
+            detail = model.feed_detail(body)
+            if detail:
+                found[int(log_id)] = detail
+        return found
 
     def count_messages(self, room_id: int) -> int:
         """Return how many undeleted messages are stored locally for a room."""

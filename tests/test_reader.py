@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from kanao.errors import ErrorCode, KanaoError
@@ -293,6 +294,64 @@ class MembershipFeedTests(unittest.TestCase):
     def test_a_feed_cannot_be_found_by_searching_for_its_json(self) -> None:
         with build_reader(messages=self.rows()) as reader:
             self.assertEqual(list(reader.search("feedType")), [])
+
+
+class FeedDetailTests(unittest.TestCase):
+    """A feed can say which kind it is without its JSON reaching the screen.
+
+    The number is passed through as a number because no live client has ever
+    confirmed what a `feedType` means; only what the client wrote in words —
+    a cover reason, a nickname — is quoted.
+    """
+
+    def feeds(self, payload: dict) -> dict[int, str]:
+        messages = [(5100, PEER_ID, 0, json.dumps(payload), None, 1_700_000_900, 0)]
+        with build_reader(messages=messages) as reader:
+            return reader.feed_details(DIRECT_ROOM, [5100])
+
+    def test_a_covered_message_says_what_covered_it(self) -> None:
+        """An open chat's SafeBot records the reason it hid something."""
+        said = self.feeds(
+            {
+                "feedType": 26,
+                "coverType": "openchat_blind",
+                "chatLogInfos": [{"logId": 5099, "type": 1}],
+            }
+        )
+        self.assertEqual(said, {5100: "26 openchat_blind"})
+
+    def test_a_membership_feed_says_who_it_names(self) -> None:
+        said = self.feeds(
+            {"feedType": 4, "members": [{"userId": PEER_ID, "nickName": "합성 닉"}]}
+        )
+        self.assertEqual(said, {5100: "4 합성 닉"})
+
+    def test_a_single_member_is_read_like_a_list_of_one(self) -> None:
+        """The client writes `member` as often as `members` — 1,209 rows of it."""
+        said = self.feeds({"feedType": 6, "member": {"nickName": "혼자 온 이름"}})
+        self.assertEqual(said, {5100: "6 혼자 온 이름"})
+
+    def test_a_feed_with_nothing_to_add_adds_only_its_number(self) -> None:
+        said = self.feeds({"feedType": 21, "logId": 5099, "hidden": True})
+        self.assertEqual(said, {5100: "21"})
+
+    def test_a_row_that_is_not_json_is_left_alone(self) -> None:
+        """A photo shows no text either, and what it stores is not JSON.
+
+        Asking SQLite's json_extract about one of those fails the statement
+        rather than the row, which is why the parsing is done in Python.
+        """
+        messages = [(5100, PEER_ID, 0, "not json at all", None, 1_700_000_900, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [5100]), {})
+
+    def test_nothing_asked_about_is_nothing_read(self) -> None:
+        with build_reader() as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, []), {})
+
+    def test_an_ordinary_message_is_not_described_as_a_feed(self) -> None:
+        with build_reader() as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [5000]), {})
 
 
 if __name__ == "__main__":
