@@ -240,8 +240,21 @@ on a live client, newest 4,000 rows of each readable room.
 - The console must be switched to code page 65001 before drawing or Hangul is
   replaced, and virtual terminal processing must be enabled or escapes print
   literally. Both are restored on exit along with the alternate screen.
-- Frames are rebuilt whole and written once. Partial redraws flicker and strand
-  stale cells.
+- **Frames are rebuilt whole and written by the row that changed.** Every frame
+  is still composed in full — a caller never decides what to repaint, which is
+  what made partial redraws flicker and strand cells — but `Console.draw`
+  remembers the rows it painted and writes only the ones that now differ, at
+  absolute coordinates. A frame the screen already holds writes nothing. The
+  loop redraws after every keystroke and again each time the key wait expires,
+  so a whole frame meant 11 KB at 200x50 several times a second, each ending in
+  a cursor move; a Korean IME anchors its composition to that caret and redraws
+  it with the cells beneath, which is why typing Hangul lagged where ASCII did
+  not. Measured against the fixture room: one keystroke 11,175 B → 275 B, an
+  idle second 89,400 B → **0 B**. Replaying both paths through a terminal model
+  at 120x40, 200x50 and 80x24 left every cell and the caret identical, which is
+  the only thing that licenses writing less. The cache is given up on a resize
+  and on re-entering the alternate screen, and it is sound only because
+  `Console.draw` is the sole writer to that screen.
 - **The frame is cut and filled to the screen by `Console.draw`, not by its
   callers.** One line wider than the console wraps, and every row after it lands
   a row late and at the wrong column: driving a real console left 23 rows

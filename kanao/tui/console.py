@@ -270,6 +270,11 @@ class Console:
         self._kernel32: Optional[ctypes.WinDLL] = None
         self._pending_surrogate = ""
         """Half an astral character; a console delivers the two halves apart."""
+        self._painted: Optional[list[str]] = None
+        """The rows currently on screen, so a redraw can write only the rest."""
+        self._painted_cursor: Optional[tuple[int, int]] = None
+        self._painted_shape: Optional[tuple[int, int]] = None
+        """What those rows were cut to; a different screen invalidates them."""
 
     @property
     def size(self) -> tuple[int, int]:
@@ -286,6 +291,8 @@ class Console:
         reconfigure = getattr(sys.stdout, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
+        # The alternate screen starts blank, so the first frame is whole.
+        self._painted = None
         sys.stdout.write(ALT_SCREEN_ON + HIDE_CURSOR + AUTOWRAP_OFF)
         sys.stdout.flush()
         self._entered = True
@@ -300,26 +307,53 @@ class Console:
         _restore_codepage(self._codepage)
 
     def draw(self, lines: list[str], cursor: Optional[tuple[int, int]] = None) -> None:
-        """Paint one whole frame in a single write.
+        """Cut and pad every row, write what changed, and park the caret.
 
         *cursor* is where the caret is parked afterwards. It matters more than
         it looks: a Korean IME draws its composition at the terminal caret, so
         leaving the caret wherever the frame happened to end puts half-typed
         Hangul next to the footer instead of in the message box.
+
+        Only rows that differ from what this console last painted are written,
+        and a frame the screen already holds writes nothing at all. The
+        interface redraws unconditionally — after every keystroke and again
+        each time the key wait expires — so a whole-screen frame meant 12 KB
+        at 200x50 rewritten several times a second, every one of them ending
+        in a cursor move. That is the same caret the IME anchors its
+        composition to, and it redraws the composition with the cells
+        underneath: typing Korean lagged where ASCII, which composes nothing,
+        did not. A keystroke now writes the composer's own rows. What the
+        cache describes is the alternate screen this console owns and nothing
+        else writes to; a resize and a re-entry both paint in full again.
         """
         columns, rows = self.size
-        frame = [HOME]
+        painted = []
         for row in range(rows):
             body = lines[row] if row < len(lines) else ""
             # Cut to the screen and filled out to it. A line wider than the
             # console wraps, and every row after it lands a row late and at
             # the wrong column; a line narrower than it leaves whatever the
             # last frame put there. Neither is the caller's to get right.
-            body = pad_to_width(truncate_to_width(body, columns), columns)
-            frame.append(body + CLEAR_LINE)
-            if row < rows - 1:
-                frame.append("\r\n")
-        frame.append(CLEAR_BELOW)
+            painted.append(pad_to_width(truncate_to_width(body, columns), columns))
+
+        shape = (columns, rows)
+        previous = self._painted if self._painted_shape == shape else None
+        if previous is None:
+            frame = [HOME]
+            for row, body in enumerate(painted):
+                frame.append(body + CLEAR_LINE)
+                if row < rows - 1:
+                    frame.append("\r\n")
+            # Only a full frame can leave something below its last row.
+            frame.append(CLEAR_BELOW)
+        else:
+            frame = [
+                f"\x1b[{row + 1};1H" + body + CLEAR_LINE
+                for row, body in enumerate(painted)
+                if body != previous[row]
+            ]
+            if not frame and cursor == self._painted_cursor:
+                return
         if cursor is None:
             frame.append(HIDE_CURSOR)
         else:
@@ -327,7 +361,9 @@ class Console:
             frame.append(f"\x1b[{row + 1};{column + 1}H" + SHOW_CURSOR)
         sys.stdout.write("".join(frame))
         sys.stdout.flush()
-        del columns
+        self._painted = painted
+        self._painted_cursor = cursor
+        self._painted_shape = shape
 
     def _events(self, timeout: float) -> Iterator[KeyEvent]:
         """Yield whatever the console queued, waiting at most *timeout*.
