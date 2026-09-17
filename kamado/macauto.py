@@ -70,6 +70,16 @@ _POLL_SECONDS = 0.05
 _ACTIVATE_SECONDS = 0.6
 """How long the client needs to actually come forward before it can be clicked."""
 
+_SEARCH_SECONDS = 6.0
+"""How long the client may take to answer a search with its whole room list."""
+
+_SEARCH_ROW_LIMIT = 2000
+"""How many rows of that list are worth reading before giving up.
+
+Each row's name is one accessibility round trip: 648 of them measured 10.3 s,
+and the wanted room was row 116. The limit is a stop, not a budget.
+"""
+
 _SEND_BUTTON_TITLES = ("전송", "Send")
 """The chat window's send button, pressed to commit a message.
 
@@ -143,6 +153,18 @@ class RoomListBackend(Protocol):
 
     def open_row(self, row: int) -> bool:
         """Open one row of the room list, without moving the cursor."""
+        ...
+
+    def locate_row(self, wanted: set[str]) -> Optional[int]:
+        """Find a row for any of *wanted*, through the client's own search.
+
+        The index is only meaningful until :meth:`clear_row_filter` puts the
+        list back, because the list it counts is not the one normally shown.
+        """
+        ...
+
+    def clear_row_filter(self) -> None:
+        """Put the room list back the way it was found."""
         ...
 
     def main_state(self) -> str:
@@ -303,9 +325,17 @@ class RoomOpener:
                     # parked the moment it exists.
                     self._backend.minimize_window(window.handle)
                     return window
+            found = self._through_search(wanted)
+            if found is not None:
+                return found
             raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
-                f"could not open a chat window for {room!r} from the room list",
+                f"could not open a chat window for {room!r}: the client's list "
+                f"showed {len(rows)} rows and none is that room, with "
+                f"{len(self._backend.chat_windows())} chat windows open. The list "
+                "only exposes rows it has drawn, so open the room once in "
+                "KakaoTalk; a window on another desktop/Space is invisible here "
+                "too, which the Dock icon's 'All Desktops' option fixes",
                 room=room,
             )
         finally:
@@ -324,11 +354,48 @@ class RoomOpener:
             index for index, title in enumerate(rows)
             if title.strip().casefold() in wanted
         ]
-        for candidate in (_recall_row(self._memory, room), hint):
-            if candidate is not None and candidate >= 0 and candidate not in order:
-                order.append(candidate)
+        remembered = _recall_row(self._memory, room)
+        if remembered is not None and remembered >= 0 and remembered not in order:
+            order.append(remembered)
+        if any(title.strip() for title in rows):
+            # The list named its rows, so a row it did not name is not this
+            # room. Opening it anyway puts somebody else's conversation on
+            # screen and marks it read, which is worse than failing here.
+            return order
+        # Only a list that named nothing at all leaves the recency hint and a
+        # scan of the first rows worth trying.
+        if hint is not None and hint >= 0 and hint not in order:
+            order.append(hint)
         order.extend(index for index in range(_SEARCHED_ROWS) if index not in order)
         return order
+
+    def _through_search(self, wanted: set[str]) -> Optional[ChatWindow]:
+        """Reach a room the drawn list does not hold, through the client's search.
+
+        The list exposes only the rows it has drawn — 26 of 653 rooms on the
+        machine this was measured on — so a conversation further down cannot
+        be clicked at all, however patiently the rows are matched. Typing the
+        name into the client's own search box brings its whole list within
+        reach: the wanted room was found at row 116 of 648 that way.
+
+        What is found there is deliberately not remembered. That index counts
+        rows in a list that exists only while the search does, and clicking it
+        afterwards would open whichever conversation had taken its place.
+        """
+        window: Optional[ChatWindow] = None
+        try:
+            index = self._backend.locate_row(wanted)
+            if index is None:
+                return None
+            if not self._backend.open_row(index):
+                return None
+            window = self._await_window(wanted)
+        finally:
+            self._backend.clear_row_filter()
+        if window is None:
+            return None
+        self._backend.minimize_window(window.handle)
+        return window
 
     def _await_window(self, wanted: set[str]) -> Optional[ChatWindow]:
         """Watch for the window rather than sleeping a flat guess.
@@ -480,6 +547,8 @@ class AXBackend:
         self._registry: dict[int, ax.Element] = {}
         self._windows_by_control: dict[int, ax.Element] = {}
         self._next = 1
+        self._search_restore: Optional[str] = None
+        """What the client's search box held before this process typed in it."""
 
     def _register(self, element: ax.Element) -> int:
         handle = self._next
@@ -719,6 +788,53 @@ class AXBackend:
 
     def room_rows(self) -> list[str]:
         return [self._row_title(row) for row in self._room_rows()]
+
+    def _search_field(self) -> Optional[ax.Element]:
+        """The client's own room search box, which is a direct child."""
+        main = self._main_window()
+        if main is None:
+            return None
+        for child in main.children():
+            if child.role == "AXTextField":
+                return child
+        return None
+
+    def locate_row(self, wanted: set[str]) -> Optional[int]:
+        """Find a row for any of *wanted* by searching the client's whole list.
+
+        Writing the name into the search box is one ``AXValue`` write, the
+        same mechanism sending uses, and the client answers by listing far
+        more rooms than it had drawn — 648 against 26, measured here. The wait
+        is for that longer list to appear, and the scan stops at the first
+        match rather than reading every name.
+        """
+        field = self._search_field()
+        if field is None or not wanted:
+            return None
+        if self._search_restore is None:
+            self._search_restore = str(field.attribute("AXValue") or "")
+        drawn = len(self._room_rows())
+        if not field.set_attribute("AXValue", sorted(wanted)[0]):
+            return None
+        rows = []
+        deadline = time.monotonic() + _SEARCH_SECONDS
+        while time.monotonic() < deadline:
+            rows = self._room_rows()
+            if len(rows) > drawn:
+                break
+        for index, row in enumerate(rows[:_SEARCH_ROW_LIMIT]):
+            if self._row_title(row).strip().casefold() in wanted:
+                return index
+        return None
+
+    def clear_row_filter(self) -> None:
+        """Put the search box back to whatever it held, if this wrote in it."""
+        if self._search_restore is None:
+            return
+        field = self._search_field()
+        if field is not None:
+            field.set_attribute("AXValue", self._search_restore)
+        self._search_restore = None
 
     def open_row(self, row: int) -> bool:
         """Open one row of the chat list with a real double-click.

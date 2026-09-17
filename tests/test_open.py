@@ -29,6 +29,10 @@ class FakeDesktop:
         self.minimized: list[int] = []
         self.draft = ""
         self.actions: list[str] = []
+        self.searchable: list[str] = []
+        """Rooms the client only exposes once its own search is used."""
+        self.searching = False
+        self.searches: list[set[str]] = []
         self.appears = True
         self.elapsed = 0.0
         self.waits: list[float] = []
@@ -37,13 +41,26 @@ class FakeDesktop:
         self.log.append("rows")
         return self.titles
 
+    def locate_row(self, wanted: set[str]) -> int | None:
+        self.searches.append(set(wanted))
+        self.searching = True
+        for index, title in enumerate(self.searchable):
+            if title.strip().casefold() in wanted:
+                return index
+        return None
+
+    def clear_row_filter(self) -> None:
+        self.searching = False
+        self.log.append("unsearch")
+
     def open_row(self, row: int) -> bool:
         self.clicks.append(row)
         self.log.append(row)
-        if row >= len(self.rows):
+        listing = self.searchable if self.searching else self.rows
+        if row >= len(listing):
             return False
         if self.appears:
-            title = self.rows[row]
+            title = listing[row]
             if title not in [window.title for window in self.windows]:
                 self.windows.append(ChatWindow(200 + row, title))
         return True
@@ -133,6 +150,33 @@ class OpeningTests(DesktopTests):
         self.assertEqual(desktop.clicks, list(range(8)))
         self.assertEqual(desktop.waits, [])
 
+    def test_a_named_list_without_the_room_opens_nothing(self) -> None:
+        """A row the list named is not this room.
+
+        Clicking it anyway puts somebody else's conversation on screen and
+        marks it read — a side effect on another person, to answer a question
+        the list already answered.
+        """
+        desktop = FakeDesktop(["other", "another"])
+        with self.assertRaises(KamadoError) as raised:
+            self.opener(desktop).open("absent")
+        self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
+        self.assertEqual(desktop.clicks, [])
+        self.assertEqual([window.title for window in desktop.windows], [])
+
+    def test_a_hint_is_not_clicked_when_the_list_named_its_rows(self) -> None:
+        desktop = FakeDesktop(["other", "another"])
+        with self.assertRaises(KamadoError):
+            self.opener(desktop).open("absent", hint=1)
+        self.assertEqual(desktop.clicks, [])
+
+    def test_the_failure_reports_how_much_of_the_list_it_could_see(self) -> None:
+        """A list shows only the rows it has drawn, so the count is the clue."""
+        desktop = FakeDesktop(["other", "another", "third"])
+        with self.assertRaises(KamadoError) as raised:
+            self.opener(desktop).open("absent")
+        self.assertIn("3 rows", raised.exception.message)
+
     def test_a_row_that_opens_no_window_times_out_and_restores_the_main_window(self) -> None:
         desktop = FakeDesktop(["target"])
         desktop.appears = False
@@ -149,6 +193,56 @@ class OpeningTests(DesktopTests):
         desktop = FakeDesktop(["target"])
         self.opener(desktop).open("target")
         self.assertEqual(desktop.waits, [])
+
+
+class SearchFallbackTests(DesktopTests):
+    """The drawn list holds a fraction of the rooms; the client's search holds all.
+
+    Measured on a live client: 26 rows drawn out of 653 rooms, and the wanted
+    conversation sitting at row 116 of the 648 the search brought within reach.
+    Without this there is no way to open anything below the fold at all.
+    """
+
+    def test_a_room_the_list_never_drew_is_reached_through_the_search(self) -> None:
+        desktop = FakeDesktop(["other", "another"])
+        desktop.searchable = ["other", "another", "wanted"]
+        window = self.opener(desktop).open("wanted")
+        self.assertEqual(window.title, "wanted")
+        self.assertEqual(desktop.searches, [{"wanted"}])
+
+    def test_the_drawn_list_is_tried_before_the_search(self) -> None:
+        desktop = FakeDesktop(["wanted", "other"])
+        desktop.searchable = ["other", "wanted"]
+        self.opener(desktop).open("wanted")
+        self.assertEqual(desktop.searches, [], "the search ran for a room already listed")
+
+    def test_the_search_is_put_back_when_it_worked(self) -> None:
+        desktop = FakeDesktop(["other"])
+        desktop.searchable = ["other", "wanted"]
+        self.opener(desktop).open("wanted")
+        self.assertFalse(desktop.searching)
+
+    def test_the_search_is_put_back_when_it_found_nothing(self) -> None:
+        desktop = FakeDesktop(["other"])
+        desktop.searchable = ["other", "different"]
+        with self.assertRaises(KamadoError):
+            self.opener(desktop).open("wanted")
+        self.assertFalse(desktop.searching)
+
+    def test_a_row_found_by_searching_is_not_remembered(self) -> None:
+        """That index counts rows in a list that exists only while the search does.
+
+        Remembered and clicked later, it would open whichever conversation had
+        taken its place in the ordinary list.
+        """
+        desktop = FakeDesktop(["other"])
+        desktop.searchable = ["other", "wanted"]
+        self.opener(desktop).open("wanted")
+
+        again = FakeDesktop(["other", "unrelated"])
+        with self.assertRaises(KamadoError):
+            self.opener(again).open("wanted")
+        self.assertEqual(again.clicks, [], "a remembered search row was clicked")
 
 
 class SendWithOpeningTests(DesktopTests):
