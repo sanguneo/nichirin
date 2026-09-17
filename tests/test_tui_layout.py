@@ -8,8 +8,11 @@ exactly the kind of bug a test has to catch instead of an eye.
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
+from kanao.tui import theme as theme_module
 from kanao.tui.layout import (
     ELLIPSIS,
     Segment,
@@ -22,7 +25,17 @@ from kanao.tui.layout import (
     wrap_to_width,
     wrap_with_links,
 )
-from kanao.tui.theme import TEXT, SpeakerPalette, Theme, to_256
+from kanao.tui.theme import (
+    LIGHT_BACKGROUND,
+    TEXT,
+    THEME_VARIABLE,
+    TOKENS_DARK,
+    TOKENS_LIGHT,
+    SpeakerPalette,
+    Theme,
+    detect_dark_mode,
+    to_256,
+)
 
 RED = "\x1b[38;2;204;102;102m"
 OFF = "\x1b[39m"
@@ -309,6 +322,88 @@ class SpeakerPaletteTests(unittest.TestCase):
             ):
                 with self.subTest(colour=colour):
                     self.assertLessEqual(self._spread(colour), 60, "a tint, never a colour")
+
+
+class LightModeTests(unittest.TestCase):
+    """A light terminal is a different problem, not the dark one inverted.
+
+    Subtlety is what the dark palette is for. On a white field the same tints
+    are simply missing, so the light palette trades some of that calm for
+    contrast — and the number is checked rather than asserted in a comment.
+    """
+
+    BACKGROUNDS = (LIGHT_BACKGROUND, "#ffffff")
+    FLOOR = 3.8
+
+    @staticmethod
+    def _relative_luminance(colour: str) -> float:
+        channels = []
+        for index in (1, 3, 5):
+            srgb = int(colour[index : index + 2], 16) / 255
+            channels.append(
+                srgb / 12.92 if srgb <= 0.04045 else ((srgb + 0.055) / 1.055) ** 2.4
+            )
+        red, green, blue = channels
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    @classmethod
+    def _contrast(cls, colour: str, background: str) -> float:
+        first = cls._relative_luminance(colour)
+        second = cls._relative_luminance(background)
+        return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+
+    def test_every_speaker_is_legible_on_a_light_terminal(self) -> None:
+        palette = SpeakerPalette(dark=False)
+        for index in range(40):
+            speaker = f"speaker{index}"
+            for background in self.BACKGROUNDS:
+                for colour in (palette.name_colour(speaker), palette.body_colour(speaker)):
+                    with self.subTest(colour=colour, background=background):
+                        self.assertGreaterEqual(
+                            self._contrast(colour, background), self.FLOOR
+                        )
+
+    def test_the_marks_that_carry_meaning_are_legible(self) -> None:
+        """✓, ? and @ say whether a message landed and whether it named you."""
+        for token in ("success", "warning", "error", "text", "accent"):
+            for background in self.BACKGROUNDS:
+                with self.subTest(token=token, background=background):
+                    self.assertGreaterEqual(
+                        self._contrast(TOKENS_LIGHT[token], background), self.FLOOR
+                    )
+
+    def test_a_light_room_still_separates_its_speakers(self) -> None:
+        palette = SpeakerPalette(dark=False)
+        speakers = [f"speaker{index}" for index in range(32)]
+        self.assertGreaterEqual(palette.distinct_names(speakers), 30)
+
+    def test_the_dark_palette_is_not_changed_by_any_of_this(self) -> None:
+        palette = SpeakerPalette()
+        self.assertTrue(palette.dark)
+        self.assertEqual(palette.name_colour("speaker0"), "#e8c0c0")
+        self.assertEqual(Theme(truecolor=True, enabled=True).tokens, TOKENS_DARK)
+
+    def test_the_environment_decides_before_anything_else_is_asked(self) -> None:
+        for value, dark in (("light", False), ("dark", True), ("Latte", False)):
+            with self.subTest(value=value):
+                with patch.dict(os.environ, {THEME_VARIABLE: value}):
+                    self.assertIs(detect_dark_mode(), dark)
+
+    def test_a_terminal_that_reports_its_background_is_believed(self) -> None:
+        for background, dark in (("15;15", False), ("15;0", True)):
+            with self.subTest(background=background):
+                with patch.dict(os.environ, {THEME_VARIABLE: "", "COLORFGBG": background}):
+                    self.assertIs(detect_dark_mode(), dark)
+
+    def test_an_unreadable_environment_leaves_the_theme_dark(self) -> None:
+        with patch.dict(os.environ, {THEME_VARIABLE: "chartreuse", "COLORFGBG": "nonsense"}):
+            with patch.object(theme_module, "_apps_use_light_theme", lambda: False):
+                self.assertTrue(detect_dark_mode())
+
+    def test_the_windows_app_theme_is_the_last_word(self) -> None:
+        with patch.dict(os.environ, {THEME_VARIABLE: "", "COLORFGBG": ""}):
+            with patch.object(theme_module, "_apps_use_light_theme", lambda: True):
+                self.assertFalse(detect_dark_mode())
 
 
 if __name__ == "__main__":

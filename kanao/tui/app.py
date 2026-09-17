@@ -122,7 +122,7 @@ class App:
         self.selected = 0
         self.scroll = 0
         self.chat: Optional[ChatState] = None
-        self.palette = SpeakerPalette()
+        self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
         self.running = True
         self.zone = KST
@@ -227,7 +227,7 @@ class App:
 
     def open_room(self, room: Room) -> None:
         messages = self.reader.messages(room.id, limit=HISTORY_WINDOW)
-        self.palette = SpeakerPalette()
+        self.palette = SpeakerPalette(dark=self.theme.dark)
         for message in messages:
             self.palette.hue(message.sender)
         watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)

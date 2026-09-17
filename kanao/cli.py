@@ -333,6 +333,7 @@ def _tui(reader: Reader) -> int:
     """Hand the terminal to the browser, restoring it however it ends."""
     from .tui.app import App
     from .tui.console import Console, supports_tui
+    from .tui.theme import Theme, detect_dark_mode
 
     if not supports_tui():
         raise KanaoError(
@@ -340,8 +341,11 @@ def _tui(reader: Reader) -> int:
             "the terminal interface needs an interactive Windows console; "
             "run it directly rather than through a pipe",
         )
+    # Asked once, here, for the same reason the name ledger is opt-in: a
+    # default that reads the machine makes every test depend on the machine.
+    theme = Theme(dark=detect_dark_mode())
     with Console() as console:
-        App(reader).run(console)
+        App(reader, theme=theme).run(console)
     return 0
 
 

@@ -234,6 +234,22 @@ on a live client, newest 4,000 rows of each readable room.
 
 - The palette is OmO's `dark` theme, duplicated rather than imported, because
   this project must not read another program's install.
+- **The light palette is not the dark one inverted, and it is measured.** A
+  tint that reads as calm on a dark field is simply missing on a white one, so
+  the light speakers carry more saturation and far less lightness, and the
+  yellow-to-cyan arc is darkened again because those hues lose contrast first.
+  Every name and body colour clears **3.8:1** against `#eff1f5` and white — the
+  worst measured 4.11:1 — with all 40 still distinct. `success` and `warning`
+  are darker than the palette they came from (2.96:1 and 2.31:1 originally)
+  because they are not decoration: they are the `✓`, the `?` and the `@` that
+  say whether a message was delivered and whether it named you.
+- **Only `cli` asks what the terminal looks like.** `Theme(dark=True)` is the
+  default and `detect_dark_mode` is called once, in `_tui`, for the same
+  reason the name ledger is opt-in: a default that reads the machine makes
+  every test depend on the machine. Detection is `KANAO_THEME`, then
+  `COLORFGBG`, then the Windows app theme in the registry, then dark — nothing
+  can read Windows Terminal's actual background, which keeps its scheme to
+  itself and reports the legacy attribute table whatever the scheme says.
 - **A URL is clickable, and every line it reaches carries the whole target.**
   `wrap_with_links` binds an OSC 8 hyperlink per line, so a link split across
   two rows opens the same address from either half rather than a truncated one.
@@ -549,6 +565,51 @@ on a live client, newest 4,000 rows of each readable room.
   test pass against an error type production never produces.
 - When patching a module attribute, bind the original **before** patching or
   the wrapper will call itself.
+
+## What was taken from the macOS sister project, and what was not
+
+`kamado-cli` is the macOS port and the two repositories drift. Work crosses
+over by hand, so the reasons for *not* crossing something over are recorded
+here — otherwise the same question gets re-answered every time the gap is
+noticed again.
+
+Taken:
+
+- **Row-level repainting** (`kamado-cli#23`). Reviewed, merged there, ported
+  here with the Windows frame's own per-row `CLEAR_LINE` and trailing
+  `CLEAR_BELOW`, and re-measured on this side.
+- **Clipping the paint to the physical window**, and scrubbing `\r`, `\n` and
+  `\t` out of a line. Not a feature, a latent bug in both.
+- **Clickable URLs** (`kamado-cli#22`), reimplemented. The upstream version
+  maps wrapped lines back to the source with `len()` arithmetic, which drifts
+  by every space the wrapper dropped; here the characters are matched directly.
+- **The light palette and appearance detection** (`kamado-cli#20`), with the
+  macOS `defaults read` probe replaced by the Windows app-theme registry value
+  and the contrast re-measured rather than inherited.
+
+Not taken, and why:
+
+- **Parallel page decryption across cores** (`kamado-cli#21`). The expensive
+  case it speeds up barely happens here: the WAL overlay already means an
+  arriving message costs 100.2 ms rather than 431.5 ms on a 48.3 MB room, and
+  a full decryption is the rare path. Against that, Windows starts
+  subprocesses by spawning, and a `PreparedKey` wraps a CNG handle that cannot
+  cross a process boundary — so this is a redesign of the key handling, not a
+  port, and nothing measured here says it would pay for itself.
+- **The resident daemon on a Unix domain socket.** There is no such socket to
+  bind; it would be a named pipe and a different program, and the command
+  costs that motivated it were already paid down by the context cache and the
+  `os.walk` change.
+- **The louder dark speaker tints** (`kamado-cli#19`, and the dark half of
+  `#20`). That palette raises name saturation to 0.75 and drops lightness to
+  0.72. This repo's dark tints are deliberately near-invisible — one base grey,
+  a slight tint — and `test_tui_layout.py` pins the subtlety and the
+  separability against each other on purpose. Taking the louder version would
+  fail those tests by design rather than by accident, so only the light half
+  crossed over. The dark tints are bit-identical to what they were: checked
+  across 63 speakers, names and bodies, before and after.
+- **The macOS window automation.** `winauto.py` is this side's equivalent and
+  solves the same problems differently; there is nothing to share.
 
 ## Deliberately absent
 
