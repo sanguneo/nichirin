@@ -263,6 +263,42 @@ class MessageTests(unittest.TestCase):
         with build_reader() as reader:
             self.assertEqual(reader.count_messages(DIRECT_ROOM), 3)
 
+    def test_a_borrowed_cache_outlives_the_reader_that_used_it(self) -> None:
+        """Whoever built the cache closes it, because sharing is the point.
+
+        ``serve`` hands one cache to a reader per send. A reader that closed it
+        on the way out would put the whole decryption back on every request --
+        the 2.5 s that sharing exists to avoid -- and would do it silently,
+        since the next reader simply decrypts again and answers correctly.
+        """
+        cache, keyring = build_profile()
+        first = Reader(cache=cache, keyring=keyring)  # type: ignore[arg-type]
+        self.assertTrue(first.rooms())
+        first.close()
+
+        second = Reader(cache=cache, keyring=keyring)  # type: ignore[arg-type]
+        self.addCleanup(second.close)
+        self.assertTrue(
+            second.rooms(), "the first reader closed a cache it had only borrowed"
+        )
+
+    def test_a_reader_still_closes_the_cache_it_made_itself(self) -> None:
+        import kamado.reader as reader_module
+
+        original = reader_module.SnapshotCache  # bound before patching
+        closed: list = []
+
+        class _Recording(original):  # type: ignore[misc,valid-type]
+            def close(self) -> None:
+                closed.append(True)
+                super().close()
+
+        reader_module.SnapshotCache = _Recording
+        self.addCleanup(setattr, reader_module, "SnapshotCache", original)
+
+        Reader().close()
+        self.assertEqual(closed, [True])
+
     def test_the_newest_id_is_available_without_reading_bodies(self) -> None:
         with build_reader() as reader:
             self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 5003)

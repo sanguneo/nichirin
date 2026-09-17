@@ -114,6 +114,10 @@ class Reader:
         one — every reader in the test suite — cannot touch the user's history.
         """
         self._cache = cache if cache is not None else SnapshotCache()
+        # A cache that was handed in belongs to whoever built it, and closing it
+        # would shut every snapshot they are still using -- including the ones
+        # that make a second reader cheap, which is the whole reason to share it.
+        self._owns_cache = cache is None
         self._keyring: Optional[Keyring] = keyring
         self._ledger = ledger
         self._connection = connection
@@ -138,7 +142,8 @@ class Reader:
         return self.account.database
 
     def close(self) -> None:
-        self._cache.close()
+        if self._owns_cache:
+            self._cache.close()
 
     def __enter__(self) -> "Reader":
         return self

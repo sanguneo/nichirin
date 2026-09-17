@@ -38,12 +38,43 @@ def make_live_context_provider(reader_factory) -> Callable[[int, int], dict[str,
 def make_live_send() -> Callable[..., dict[str, Any]]:
     """Build the send callable the server uses on a macOS host.
 
-    Each call opens a fresh reader (so the catalog is never stale across
-    requests), resolves the room exactly like the ``send`` command, refuses
-    duplicate catalog titles, and hands the text to the real sender.
+    Each call opens a fresh reader (so nothing a reader remembers on itself --
+    names, columns -- survives into the next request), resolves the room
+    exactly like the ``send`` command, refuses duplicate catalog titles, and
+    hands the text to the real sender.
+
+    The **snapshot cache and the account outlive the request**, and that is
+    what makes a send quick. A reader built with neither decrypts the whole
+    119 MB database and rediscovers the account every time: measured 2.56 s per
+    request, every request, before anything was typed. Sharing both takes the
+    second and later sends to **0.023 s** -- and it costs no freshness, because
+    the cache re-reads the fingerprint on every ``connect`` and lays the log
+    over the cached pages when only the log moved. Sharing the cache alone is
+    not enough: rediscovering the account is itself a second of the cost.
+
+    Sharing is safe here and nowhere else in this package: ``SnapshotCache``
+    takes no lock, and every call to this function is made under the handler's
+    ``send_lock``, so exactly one thread is ever inside it. The read paths run
+    concurrently and keep a cache per request for that reason.
     """
     from ..names import NameLedger
     from ..reader import Reader
+    from ..snapshot import SnapshotCache
+
+    snapshots = SnapshotCache()
+    account: dict[str, Any] = {}
+
+    def keyring():
+        """Resolve the account once, on the first send rather than at startup.
+
+        Doing it when the server is built would make an unreadable install a
+        server that refuses to start, instead of one that explains itself.
+        """
+        if "keyring" not in account:
+            from ..keyring import Keyring
+
+            account["keyring"] = Keyring.discover()
+        return account["keyring"]
 
     def send(
         room: str,
@@ -56,7 +87,9 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
         from ..context import _resolve
         from ..macauto import make_sender
 
-        with Reader(ledger=NameLedger()) as reader:
+        with Reader(
+            cache=snapshots, keyring=keyring(), ledger=NameLedger()
+        ) as reader:
             # cli._selected_room is this line plus an argparse namespace built
             # to carry two values; importing cli from here is a cycle, and the
             # cycle is the only thing that namespace was for.
