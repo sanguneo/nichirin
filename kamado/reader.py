@@ -49,6 +49,13 @@ MESSAGE_TABLE = "NTChatMessage"
 USER_TABLE = "NTUser"
 LINK_TABLE = "NTOpenLink"
 CONTEXT_TABLE = "NTChatContext"
+META_TABLE = "NTChatMeta"
+_META_NAME_TYPE = 3
+"""The meta row carrying the name the client shows for a room.
+
+Type 1 is the room's notice and the rest is call and counter bookkeeping, so
+the type is what separates a name from the other things kept beside it.
+"""
 
 _ATTACHMENT_COLUMNS = ("attachment", "attachement", "attachments", "extra")
 """What the attachment column may be called; the Windows client misspelled it."""
@@ -399,6 +406,30 @@ class Reader:
 
     # -- rooms ---------------------------------------------------------------
 
+    def _meta_names(self) -> dict[int, str]:
+        """Map each room to the name it was given in the client, where there is one.
+
+        A rename does not touch the room row: ``chatName`` stays null and the
+        name goes to the meta table, which is why a named group otherwise came
+        out titled after the people in it — and why sending to it aimed at a
+        window title the client never shows. ``NTChatRoom.metaRevisions`` names
+        the revision in force, and a rename only ever writes a higher one, so
+        reading them in order and letting the last win lands on the same name
+        without parsing that blob for every room.
+        """
+        columns = self.columns(META_TABLE)
+        if not {"chatId", "type", "content"} <= columns:
+            return {}
+        order = " ORDER BY revision" if "revision" in columns else ""
+        return {
+            int(chat_id): str(content).strip()
+            for chat_id, content in self.connection().execute(
+                f"SELECT chatId, content FROM {META_TABLE} WHERE type = ?{order}",
+                (_META_NAME_TYPE,),
+            )
+            if chat_id and str(content or "").strip()
+        }
+
     def _link_names(self) -> dict[int, str]:
         """Map each open-chat link to its name, when this client keeps any."""
         columns = self.columns(LINK_TABLE)
@@ -474,6 +505,7 @@ class Reader:
 
         own = self.own_user_id()
         links = self._link_names()
+        metas = self._meta_names()
         known = self.names()
 
         found: list[Room] = []
@@ -492,7 +524,8 @@ class Reader:
                     id=room_id,
                     type=kind,
                     title=self._title(
-                        room_id, kind, stored, peer_id, link, member_ids, links, known, own
+                        room_id, kind, stored, peer_id, link, member_ids, links,
+                        metas, known, own
                     ),
                     member_count=int(members or 0) or len(member_ids),
                     unread=int(unread or 0),
@@ -513,6 +546,7 @@ class Reader:
         link_id: int,
         member_ids: list[int],
         links: dict[int, str],
+        metas: dict[int, str],
         known: dict[int, str],
         own: Optional[int],
     ) -> str:
@@ -520,6 +554,9 @@ class Reader:
         title = str(stored or "").strip()
         if title:
             return title
+        named = metas.get(room_id)
+        if named:
+            return named
         if kind == model.SELF_CHAT:
             return _SELF_CHAT_TITLE
         if link_id and links.get(link_id):
@@ -547,7 +584,9 @@ class Reader:
         stored = None if row is None else row[0]
         if isinstance(stored, str) and stored.strip():
             return stored.strip()
-        return None
+        # A renamed room keeps its name in the meta table instead, and that is
+        # the name its window carries.
+        return self._meta_names().get(room_id)
 
     def room(self, room_id: int) -> Optional[Room]:
         """Return one conversation by id."""

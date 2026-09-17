@@ -103,6 +103,37 @@ class RoomTests(unittest.TestCase):
         with build_reader() as reader:
             self.assertEqual(reader.room(NAMED_ROOM).title, "Named Group")
 
+    def test_a_room_renamed_in_the_client_takes_that_name(self) -> None:
+        """A rename never touches the room row; the name goes to the meta table.
+
+        Left to the room row, a two-person group comes out titled after the one
+        other person in it — the same name as the direct chat with that person,
+        which is a collision the send path then has to refuse, and a window
+        title the client never shows.
+        """
+        with build_reader(metas=[(GROUP_ROOM, 3, 10, "합성 스터디방")]) as reader:
+            named = reader.room(GROUP_ROOM)
+        assert named is not None
+        self.assertEqual(named.title, "합성 스터디방")
+
+    def test_the_newest_revision_of_a_name_is_the_one_shown(self) -> None:
+        metas = [(GROUP_ROOM, 3, 10, "옛 이름"), (GROUP_ROOM, 3, 20, "새 이름")]
+        with build_reader(metas=metas) as reader:
+            renamed = reader.room(GROUP_ROOM)
+        assert renamed is not None
+        self.assertEqual(renamed.title, "새 이름")
+
+    def test_a_notice_is_not_a_name(self) -> None:
+        """Type 1 is the room's notice, kept in the same table as its name."""
+        with build_reader(metas=[(GROUP_ROOM, 1, 10, "공지입니다")]) as reader:
+            noticed = reader.room(GROUP_ROOM)
+        assert noticed is not None
+        self.assertIn("Peer Renamed", noticed.title)
+
+    def test_the_stored_title_falls_back_to_the_name_the_window_carries(self) -> None:
+        with build_reader(metas=[(GROUP_ROOM, 3, 10, "합성 스터디방")]) as reader:
+            self.assertEqual(reader.stored_title(GROUP_ROOM), "합성 스터디방")
+
     def test_the_self_chat_is_named_as_such(self) -> None:
         with build_reader() as reader:
             self.assertEqual(reader.room(SELF_ROOM).title, "나와의 채팅")
