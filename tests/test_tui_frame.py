@@ -78,6 +78,73 @@ class FrameWidthTests(unittest.TestCase):
         self.assertEqual(len(rows), ROWS)
 
 
+class RepaintTests(unittest.TestCase):
+    """A redraw must cost the rows that changed, not the screen.
+
+    The interface redraws after every keystroke and again whenever the key
+    wait expires, so a whole-screen frame was rewritten eight times a second
+    whether or not anything moved. Each of those ends in a cursor move, and a
+    Hangul IME draws its composition over that cursor: typing Korean lagged
+    behind the keyboard while ASCII, which composes nothing, did not.
+    """
+
+    def captured(self, action, size: tuple[int, int] = (COLUMNS, ROWS)) -> str:
+        """Run *action* with a known screen and return what it wrote."""
+        buffer = io.StringIO()
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            with patch.object(console_module, "_visible_size", lambda: size):
+                action()
+        finally:
+            sys.stdout = original
+        return buffer.getvalue()
+
+    def test_a_frame_the_screen_already_holds_is_not_written_again(self) -> None:
+        console = Console()
+        lines = ["첫 줄", "둘째 줄"]
+        self.assertNotEqual(self.captured(lambda: console.draw(lines, (1, 2))), "")
+        self.assertEqual(self.captured(lambda: console.draw(lines, (1, 2))), "")
+
+    def test_only_the_row_that_changed_is_written(self) -> None:
+        console = Console()
+        self.captured(lambda: console.draw(["one", "two", "three"], (0, 0)))
+        written = self.captured(lambda: console.draw(["one", "둘", "three"], (0, 0)))
+        self.assertIn("둘", written)
+        self.assertNotIn("three", written)
+        self.assertIn("\x1b[2;1H", written)  # Addressed, not reached by wrapping.
+
+    def test_a_caret_that_moved_costs_only_its_own_escape(self) -> None:
+        console = Console()
+        lines = ["안녕하세요"]
+        self.captured(lambda: console.draw(lines, (0, 0)))
+        written = self.captured(lambda: console.draw(lines, (0, 4)))
+        self.assertEqual(written, "\x1b[1;5H" + SHOW_CURSOR)
+
+    def test_a_resized_screen_is_painted_in_full_again(self) -> None:
+        """Rows cut to the old width describe a screen that no longer exists."""
+        console = Console()
+        lines = ["one", "two"]
+        self.captured(lambda: console.draw(lines))
+        written = self.captured(lambda: console.draw(lines), size=(COLUMNS + 10, ROWS))
+        self.assertTrue(written.startswith(HOME), written[:20])
+        self.assertEqual(written.count("\r\n"), ROWS - 1)
+
+    def test_entering_the_alternate_screen_forgets_what_was_painted(self) -> None:
+        """The screen a fresh alternate buffer shows is blank, not the last frame."""
+        console = Console()
+        lines = ["one", "two"]
+        self.captured(lambda: console.draw(lines))
+
+        def cycle() -> None:
+            with console:  # Not a tty here, so the terminal keeps its mode.
+                pass
+
+        with patch.object(sys, "stdin", io.StringIO()):
+            self.captured(cycle)
+        self.assertTrue(self.captured(lambda: console.draw(lines)).startswith(HOME))
+
+
 class WrapModeTests(unittest.TestCase):
     """Turning wrapping off has to reach the console, not just the terminal.
 
