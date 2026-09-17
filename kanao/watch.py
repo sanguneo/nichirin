@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Mapping, Optional, Sequence
 
 from . import paths
 from .errors import KanaoError
@@ -60,6 +60,24 @@ class Watcher:
 
     def _log_path(self, room_id: int):
         return self._reader.keyring.path_for(paths.chat_log_name(room_id))
+
+    def resume(self, cursor: Mapping[object, object]) -> None:
+        """Start from what a caller has already seen rather than from now.
+
+        *cursor* maps room id to the last log id that reader received. Priming
+        would make the watcher agree that everything up to this instant is old,
+        which is exactly wrong for somebody reconnecting: the messages they
+        missed are the ones between their cursor and now.
+
+        No fingerprints are recorded, so the first poll looks at every watched
+        room and pages each cursored one forward from where its reader stopped.
+        A room the cursor does not name is started from now, because a caller
+        that never saw a message from it has no place to be resumed to; that is
+        a gap, and it is the caller's to close with ``context`` if it matters.
+        """
+        for room, log in cursor.items():
+            self._seen[int(room)] = int(log)
+        self._primed = True
 
     def prime(self) -> None:
         """Record the current state so existing history is not replayed as new."""

@@ -33,6 +33,7 @@ unittest discover tests` breaks the fixture imports.
 | `watch.py` | Stat-gated follow loop |
 | `cli.py` | Argument parsing and the JSON envelope |
 | `winauto.py` | Exact window targeting, draft replacement, background text sending |
+| `digest.py` | The digest the command and the server both ask for |
 | `serve/config.py` | Constants, token and interval validation, error-to-status map |
 | `serve/handler.py` | Auth, routing, and every route that answers and closes |
 | `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
@@ -241,6 +242,52 @@ on a live client, newest 4,000 rows of each readable room.
   name. Skipping that made "who else answers to this name" return strangers
   from other chats, which is indistinguishable from the impersonation the
   question is asking about: six answers where three were real.
+
+## The remote server (`kanao serve`)
+
+- **A remote caller is not a person typing, so the reads are bounded.** The
+  commands cap nothing because whoever runs one is the cap. Over HTTP
+  `limit` reaches SQLite, where a **negative limit means no limit at all** —
+  `/digest?limit=-1` read an entire room, and one observed room holds 445,714
+  messages. `limit` is 1–1000 and `highlights` 1–20, checked in
+  `serve/config.py` **before the reader is opened**, and a `roomId` outside
+  the 64-bit range is a 400 rather than an `OverflowError` out of the driver.
+- **The stream's cursor names every room, because one id cannot stand for an
+  account.** `/stream` follows all readable rooms, so the last message it sent
+  says nothing about where the other rooms had reached — standard SSE
+  `Last-Event-ID` would silently resume the wrong ones. The server emits
+  `event: cursor` with `{roomId: logId}` *after* the messages it covers, and a
+  client hands it back as repeated `since=<roomId>:<logId>`.
+  `Watcher.resume` then seeds `_seen` and records **no** fingerprints, so the
+  first poll pages each named room forward from where its reader stopped. A
+  room the cursor does not name starts from now; that is a gap, and it is
+  documented rather than papered over.
+- **A cursor the server cannot honour is refused, not downgraded.** A watcher
+  without `resume` answers 500 rather than quietly starting from now, because
+  a caller that asked to be resumed and was not would believe it had missed
+  nothing. Same reason the README no longer claims reconnection catches up by
+  itself: it did not, and saying so was worse than the gap.
+- **The connection has a deadline and the streams have a count.** Without the
+  handler's `timeout` a client could promise a body in `Content-Length` and
+  hold a thread for as long as it liked; it now answers `408` after 30 s. Each
+  SSE connection owns a reader and a watcher for its whole life, so eight is
+  the most that may be open and the ninth is `503 BUSY`.
+- **A reader hanging up is SSE's success case.** `socketserver` prints a whole
+  traceback for the `ConnectionResetError` that a closed `curl -N` raises on
+  the next write, so `QuietDisconnects` swallows exactly the four ordinary
+  disconnect errors and escalates everything else. The suite went from printing
+  tracebacks on every stream test to none.
+- **The digest is `digest.py`, not `cli._digest`.** The server wanted what the
+  command does, and reaching into `cli` for it meant assembling an
+  `argparse.Namespace` to satisfy a function that never wanted one — and
+  pointing `serve` at the layer above it. Both now call
+  `digest.build(reader, target, …)`, and `cli.DIGEST_LIMIT` is that module's
+  default rather than a second 400.
+- **The threaded server is tested as the threaded server.** Everything in
+  `tests/serve/` drives a single-threaded `HTTPServer`, which cannot answer a
+  second request while a stream is open — so `test_server.py` runs the real
+  `ServeHTTPServer`, where an open stream must not block `/rooms`, two sends
+  genuinely race for the lock, and the slow-body deadline is observable.
 
 ## Terminal interface
 

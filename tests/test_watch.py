@@ -155,6 +155,74 @@ class CatchUpTests(WatcherTests):
         self.assertEqual(watcher.poll(), [])
 
 
+class ResumeTests(WatcherTests):
+    """Starting from what a reader already saw, rather than from now.
+
+    Priming is the right default for a follower that has just started and the
+    wrong one for a follower that is coming back: the messages it needs are
+    exactly the ones between its cursor and this instant, and priming declares
+    all of them old.
+    """
+
+    def test_a_resumed_watcher_reports_what_arrived_while_it_was_away(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.arrive(DIRECT_ROOM, 5300, text="before the disconnect")
+        seen = [message.id for message in watcher.poll()]
+        self.assertEqual(seen, [5300])
+
+        # The reader goes away, messages arrive, and a new watcher is built for
+        # the reconnection — which is exactly what a new SSE connection does.
+        self.arrive(DIRECT_ROOM, 5301, text="during the gap")
+        self.arrive(DIRECT_ROOM, 5302, text="also during the gap")
+
+        resumed = Watcher(self.reader)
+        resumed.resume({str(DIRECT_ROOM): str(seen[-1])})
+        found = resumed.poll()
+        self.assertEqual([message.id for message in found], [5301, 5302])
+        self.assertEqual(found[0].text, "during the gap")
+
+    def test_a_primed_watcher_would_have_lost_them(self) -> None:
+        """The negative that makes the test above mean something."""
+        self.arrive(DIRECT_ROOM, 5310, text="during the gap")
+        fresh = Watcher(self.reader)
+        fresh.prime()
+        self.assertEqual(fresh.poll(), [])
+
+    def test_a_resumed_burst_larger_than_one_page_still_arrives_whole(self) -> None:
+        from kanao import paths
+
+        connection = self.cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        ids = list(range(5400, 5400 + 520))
+        connection.executemany(
+            "INSERT INTO chatLogs VALUES (?, ?, 1, ?, NULL, ?, 0)",
+            [(i, PEER_ID, f"gap {i}", 1_800_000_000 + i) for i in ids],
+        )
+        connection.commit()
+        touch_log(self.root, DIRECT_ROOM, b"backfilled-during-the-gap")
+
+        resumed = Watcher(self.reader)
+        resumed.resume({DIRECT_ROOM: 5399})
+        self.assertEqual([message.id for message in resumed.poll()], ids)
+
+    def test_a_room_the_cursor_does_not_name_starts_from_now(self) -> None:
+        self.arrive(GROUP_ROOM, 6200, text="not covered by the cursor")
+        resumed = Watcher(self.reader)
+        resumed.resume({DIRECT_ROOM: 5000})
+        reported = {message.room_id for message in resumed.poll()}
+        self.assertNotIn(GROUP_ROOM, reported)
+        # And from then on it is followed like any other room.
+        self.arrive(GROUP_ROOM, 6201, text="after the resume")
+        self.assertEqual([m.id for m in resumed.poll()], [6201])
+
+    def test_a_resumed_message_is_not_reported_twice(self) -> None:
+        self.arrive(DIRECT_ROOM, 5500)
+        resumed = Watcher(self.reader)
+        resumed.resume({DIRECT_ROOM: 5499})
+        self.assertEqual([m.id for m in resumed.poll()], [5500])
+        self.assertEqual(resumed.poll(), [])
+
+
 class CostTests(WatcherTests):
     """An idle conversation must not be decrypted, only stat'ed."""
 

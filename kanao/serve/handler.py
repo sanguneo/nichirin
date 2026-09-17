@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import socket
 import threading
 import time
 import urllib.parse
@@ -19,13 +20,26 @@ from ..errors import ErrorCode, KanaoError, as_envelope
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     MAX_BODY_BYTES,
+    MAX_HIGHLIGHTS,
+    MAX_LIMIT,
+    MAX_STREAMS,
     _status_for,
+    validate_count,
+    validate_cursor,
+    validate_max_streams,
     validate_min_interval,
     validate_poll_interval,
+    validate_request_timeout,
+    validate_room_id,
     validate_token,
 )
 from .stream import serve_stream
+
+
+class _BodyTimeout(Exception):
+    """The caller promised a body in ``Content-Length`` and then stopped."""
 
 
 class _RateLimiter:
@@ -65,6 +79,8 @@ def build_handler(
     digest_provider: Optional[Callable[[int, str, int, int], dict[str, Any]]] = None,
     watcher_factory: Optional[Callable[[], Any]] = None,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    max_streams: int = MAX_STREAMS,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -82,11 +98,17 @@ def build_handler(
     secret = validate_token(token)
     spacing = validate_min_interval(min_interval)
     period = validate_poll_interval(poll_interval)
+    patience = validate_request_timeout(request_timeout)
+    streams_allowed = validate_max_streams(max_streams)
     limiter = _RateLimiter(spacing, clock=clock)
     send_lock = threading.Lock()
+    # Not a lock: a permit per stream, so the ninth caller is refused rather
+    # than queued behind eight connections that intend to stay all day.
+    stream_slots = threading.Semaphore(streams_allowed)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "kanao-serve"
+        timeout = patience
 
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802 - stdlib name
             pass
@@ -111,7 +133,12 @@ def build_handler(
                     ErrorCode.INVALID_REQUEST,
                     "chunked request bodies are not supported",
                 )
-            raw = self.rfile.read(length) if length else b""
+            try:
+                raw = self.rfile.read(length) if length else b""
+            except (socket.timeout, TimeoutError):
+                # Promised a body and then went quiet. Without the connection
+                # timeout this held a thread for as long as the caller liked.
+                raise _BodyTimeout()
             if len(raw) < length:
                 raise KanaoError(
                     ErrorCode.INVALID_REQUEST, "request body ended before Content-Length"
@@ -184,7 +211,7 @@ def build_handler(
             elif parsed.path == "/digest":
                 self._handle_digest(parsed)
             elif parsed.path == "/stream":
-                self._handle_stream()
+                self._handle_stream(parsed)
             else:
                 self._reply(
                     404, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, "not found"))
@@ -248,24 +275,15 @@ def build_handler(
                 )
                 return
             query = urllib.parse.parse_qs(parsed.query)
-            raw_id = query.get("roomId", [""])[0]
             try:
-                room_id = int(raw_id)
-            except (TypeError, ValueError):
-                self._reply(
-                    400,
-                    as_envelope(
-                        KanaoError(ErrorCode.INVALID_REQUEST, "a numeric roomId is required")
-                    ),
+                room_id = validate_room_id(query.get("roomId", [""])[0])
+                limit = validate_count(
+                    query.get("limit", ["40"])[0], name="limit", maximum=MAX_LIMIT
                 )
-                return
-            try:
-                limit = int(query.get("limit", ["40"])[0])
-            except (TypeError, ValueError):
-                self._reply(
-                    400,
-                    as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, "limit must be an integer")),
-                )
+            except KanaoError as error:
+                # Refused before the reader is opened: a bad number should cost
+                # the caller a round trip, not a decryption.
+                self._reply(_status_for(error), as_envelope(error))
                 return
             try:
                 payload = context_provider(room_id, limit)
@@ -298,30 +316,19 @@ def build_handler(
                 )
                 return
             query = urllib.parse.parse_qs(parsed.query)
-            try:
-                room_id = int(query.get("roomId", [""])[0])
-            except (TypeError, ValueError):
-                self._reply(
-                    400,
-                    as_envelope(
-                        KanaoError(ErrorCode.INVALID_REQUEST, "a numeric roomId is required")
-                    ),
-                )
-                return
             span = query.get("span", ["30m"])[0]
             try:
-                limit = int(query.get("limit", ["400"])[0])
-                highlights = int(query.get("highlights", ["3"])[0])
-            except (TypeError, ValueError):
-                self._reply(
-                    400,
-                    as_envelope(
-                        KanaoError(
-                            ErrorCode.INVALID_REQUEST,
-                            "limit and highlights must be integers",
-                        )
-                    ),
+                room_id = validate_room_id(query.get("roomId", [""])[0])
+                limit = validate_count(
+                    query.get("limit", ["400"])[0], name="limit", maximum=MAX_LIMIT
                 )
+                highlights = validate_count(
+                    query.get("highlights", ["3"])[0],
+                    name="highlights",
+                    maximum=MAX_HIGHLIGHTS,
+                )
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
                 return
             try:
                 payload = digest_provider(room_id, span, limit, highlights)
@@ -333,19 +340,54 @@ def build_handler(
                 return
             self._reply(200, {"ok": True, **payload})
 
-        def _handle_stream(self) -> None:
-            serve_stream(
-                self,
-                watcher_factory=watcher_factory,
-                poll_interval=period,
-                reply=self._reply,
-            )
+        def _handle_stream(self, parsed) -> None:
+            try:
+                cursor = validate_cursor(
+                    urllib.parse.parse_qs(parsed.query).get("since", [])
+                )
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            if not stream_slots.acquire(blocking=False):
+                self._reply(
+                    503,
+                    as_envelope(
+                        KanaoError(
+                            ErrorCode.BUSY,
+                            f"this server holds at most {streams_allowed} streams; "
+                            "close one and reconnect",
+                        )
+                    ),
+                )
+                return
+            try:
+                serve_stream(
+                    self,
+                    watcher_factory=watcher_factory,
+                    poll_interval=period,
+                    reply=self._reply,
+                    cursor=cursor,
+                )
+            finally:
+                stream_slots.release()
 
         def _handle_send(self) -> None:
             try:
                 body = self._read_json_body()
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
+                return
+            except _BodyTimeout:
+                self._reply(
+                    408,
+                    as_envelope(
+                        KanaoError(
+                            ErrorCode.INVALID_REQUEST,
+                            "the request body did not arrive in time",
+                        )
+                    ),
+                )
+                self.close_connection = True
                 return
             room = body.get("room", "") if isinstance(body, dict) else ""
             text = body.get("text", "") if isinstance(body, dict) else ""

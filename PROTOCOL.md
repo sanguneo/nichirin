@@ -69,6 +69,34 @@ A `message` event is the same object `messages` and `context` put in their
 lists, with `ok` and `event` added. A consumer reads a line at a time and must
 not assume the stream ends.
 
+## Streaming: `serve`'s `/stream`
+
+`kanao serve` relays the same envelope over HTTP. `GET /stream` is
+Server-Sent Events, and its `data:` payloads are the same objects — a
+`message` event carries the `Message.as_json()` above under `message`.
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `ready` | `{"ok": true, "resumed": bool, "cursor": {roomId: logId}}` | Once, as the stream opens |
+| `message` | `{"ok": true, "message": {…}}` | Per message, oldest first |
+| `cursor` | `{"ok": true, "cursor": {roomId: logId}}` | After the messages it covers |
+| `ping` | `{"ok": true}` | Each poll that found nothing to say |
+| `error` | The error envelope | Once, and the stream then ends |
+
+**The cursor is how a reconnection stops being a hole.** A consumer stores the
+map from the last `cursor` event and hands it back as repeated
+`since=<roomId>:<logId>` parameters; the server pages each named room forward
+from there before going live, and says `resumed: true`. A room the cursor does
+not name starts from the moment of connection, so a consumer that wants no gap
+must carry every room it has seen. One id cannot stand for the whole account —
+the stream covers many rooms, and the newest message says nothing about where
+the others had reached.
+
+Over HTTP the status code carries the failure and the body carries the same
+envelope: `401` for `UNAUTHORIZED`, `429` for `RATE_LIMITED`, `408` for a body
+that never arrived, and `503` with `BUSY` when the server already holds as many
+streams as it will.
+
 ## Compatibility
 
 - **Adding a key is not a breaking change.** A consumer must ignore keys it
@@ -95,6 +123,8 @@ not assume the stream ends.
 | `WINDOW_NOT_FOUND` | The room's chat window is not open in the client |
 | `INPUT_NOT_FOUND` | The window was found but its input box was not |
 | `SEND_FAILED` | The client refused or the write could not be verified |
+| `UNAUTHORIZED` | `serve` only: the bearer token was missing or wrong |
+| `RATE_LIMITED` | `serve` only: a send arrived inside the server's minimum interval |
 
 `kamado-cli` adds `PERMISSION_REQUIRED` for the macOS permissions it needs.
 

@@ -110,6 +110,87 @@ class QueryTests(ServedCase):
         self.assertEqual(status, 404)
         self.assertEqual(body["error"]["code"], "CHAT_NOT_FOUND")
 
+    # ---- how big a read a caller may ask for ---------------------------
+
+    def _counting_providers(self):
+        """Providers that record being called, so a refusal can be proven."""
+        calls = []
+
+        def context_provider(room_id: int, limit: int):
+            calls.append(("context", room_id, limit))
+            return {"room": {"id": str(room_id)}, "messages": []}
+
+        def digest_provider(room_id: int, span: str, limit: int, highlights: int):
+            calls.append(("digest", room_id, limit, highlights))
+            return {"room": {"id": str(room_id)}, "span": span, "slices": [], "note": "…"}
+
+        return calls, context_provider, digest_provider
+
+    def test_a_negative_limit_never_reaches_the_reader(self) -> None:
+        """`LIMIT -1` is SQLite for *no limit*, and a room can hold 445,714 rows.
+
+        The CLI caps nothing because a person typing the command is the cap.
+        A remote caller is not, so the refusal has to happen here — and before
+        the reader is opened, or the damage is already done.
+        """
+        calls, context_provider, digest_provider = self._counting_providers()
+        self.serve(_start_server(StubSender(), context_provider=context_provider,
+                                 digest_provider=digest_provider))
+        for path in ("/context?roomId=1&limit=-1", "/digest?roomId=1&limit=-1"):
+            with self.subTest(path=path):
+                status, body, _ = _request(self.base, "GET", path)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(calls, [])
+
+    def test_counts_outside_their_range_are_refused_untouched(self) -> None:
+        calls, context_provider, digest_provider = self._counting_providers()
+        self.serve(_start_server(StubSender(), context_provider=context_provider,
+                                 digest_provider=digest_provider))
+        refused = (
+            "/context?roomId=1&limit=0",
+            "/context?roomId=1&limit=1001",
+            "/context?roomId=1&limit=many",
+            "/digest?roomId=1&limit=0",
+            "/digest?roomId=1&limit=1001",
+            "/digest?roomId=1&highlights=0",
+            "/digest?roomId=1&highlights=21",
+            "/digest?roomId=1&highlights=lots",
+        )
+        for path in refused:
+            with self.subTest(path=path):
+                status, body, _ = _request(self.base, "GET", path)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(calls, [])
+
+    def test_the_largest_allowed_counts_still_go_through(self) -> None:
+        calls, context_provider, digest_provider = self._counting_providers()
+        self.serve(_start_server(StubSender(), context_provider=context_provider,
+                                 digest_provider=digest_provider))
+        self.assertEqual(_request(self.base, "GET", "/context?roomId=1&limit=1000")[0], 200)
+        self.assertEqual(
+            _request(self.base, "GET", "/digest?roomId=1&limit=1000&highlights=20")[0], 200
+        )
+        self.assertEqual(calls, [("context", 1, 1000), ("digest", 1, 1000, 20)])
+
+    def test_a_room_id_sqlite_could_not_hold_is_a_bad_request(self) -> None:
+        """Out of range is a bad request, not an OverflowError out of the driver."""
+        calls, context_provider, digest_provider = self._counting_providers()
+        self.serve(_start_server(StubSender(), context_provider=context_provider,
+                                 digest_provider=digest_provider))
+        huge = 2 ** 63
+        for path in (f"/context?roomId={huge}", f"/digest?roomId={huge}"):
+            with self.subTest(path=path):
+                status, body, _ = _request(self.base, "GET", path)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(calls, [])
+        # The largest id that fits is still an ordinary lookup.
+        self.assertEqual(
+            _request(self.base, "GET", f"/context?roomId={2 ** 63 - 1}")[0], 200
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

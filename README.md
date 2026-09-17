@@ -260,7 +260,7 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `GET /context?roomId=…&limit=…` | 한 방의 최근 메시지 |
 | `GET /digest?roomId=…&span=…&limit=…&highlights=…` | 같은 창을 추출 요약으로 (원문보다 훨씬 작습니다) |
 | `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
-| `GET /stream` | **SSE** 실시간 새 메시지 — 연결 즉시 `event: ready`, 새 메시지마다 `event: message`, 폴링마다 `event: ping`, 실패 시 `event: error` 한 줄 뒤 종료 |
+| `GET /stream` | **SSE** 실시간 새 메시지 — `event: ready` → `message` → `cursor` → `ping`, 실패 시 `event: error` 한 줄 뒤 종료. `?since=방id:logId`로 끊긴 지점부터 재개 |
 
 연속 전송은 서버에서 2초 간격 규칙을 강제합니다(429 `RATE_LIMITED`, `--min-interval`로
 조절·`0`이면 끔). 토큰은 `--token`이나 `KANAO_TOKEN` 환경 변수로 주고(없으면 서버가
@@ -269,10 +269,25 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
 리버스 프록시 뒤에 두세요 — 평문 HTTP이므로 토큰이 그대로 노출됩니다.
 
-`/stream`은 **연결된 시점부터** 새 메시지를 보냅니다. 끊겨 있던 동안 도착한 것은
-재접속해도 따라오지 않으니, 공백을 메우려면 `/context`나 `messages`로 마지막으로 본
-`logId` 뒤를 되읽으세요. 폴링마다(`--poll-interval`, 기본 1초) `event: ping`이 오고,
-폴링 실패는 `event: error` 한 줄 뒤 연결이 닫힙니다.
+**끊긴 사이는 커서로 메웁니다.** 스트림은 메시지를 보낸 뒤 `event: cursor`로
+`{방id: logId}` 지도를 함께 보냅니다. 클라이언트는 이걸 들고 있다가 재접속할 때
+`?since=방id:logId`로 되돌려 주면 되고(방마다 하나씩, 여러 번 반복 가능), 서버가 그
+지점부터 따라잡은 뒤 실시간으로 넘어갑니다. `event: ready`에 `resumed: true`가 붙습니다.
+
+```bash
+curl -N -H "$H" "$T/stream?since=1001:5300&since=1002:412"
+```
+
+커서가 이름을 대지 않은 방은 **연결 시점부터** 시작합니다 — 본 적 없는 방에는 돌아갈
+지점이 없기 때문이고, 그 공백은 `/context`로 메우면 됩니다. 메시지 id 하나로 계정 전체를
+대신할 수 없어서 커서는 방마다 따로 적습니다. 폴링마다(`--poll-interval`, 기본 1초)
+`event: ping`이 오고, 폴링 실패는 `event: error` 한 줄 뒤 연결이 닫힙니다.
+
+조회량에는 상한이 있습니다. `limit`은 1~1000, `highlights`는 1~20이고 벗어나면
+`400 INVALID_REQUEST`입니다(음수 `limit`은 SQLite에서 "제한 없음"이라 방 하나가
+445,714개인 기록을 통째로 읽게 됩니다). 동시에 열 수 있는 `/stream`은 8개이고, 아홉
+번째는 `503 BUSY`로 거절합니다 — 연결 하나가 리더와 워처를 통째로 붙들기 때문입니다.
+본문을 약속해 놓고 보내지 않는 요청은 30초 뒤 `408`로 끊습니다.
 
 | 무엇을 만났나 | 뜻 | 할 일 |
 | --- | --- | --- |

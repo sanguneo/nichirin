@@ -186,16 +186,33 @@ H="Authorization: Bearer long-shared-secret-at-least-sixteen-characters"
 curl -s $T/health
 curl -s -H "$H" $T/rooms
 curl -s -H "$H" "$T/context?roomId=1&limit=20"
+curl -s -H "$H" "$T/digest?roomId=1&span=30m"
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
   -d '{"room": "Sample Room", "text": "hi"}' $T/send
-curl -N -H "$H" $T/stream      # SSE: event: ready / message / ping
+curl -N -H "$H" $T/stream      # SSE: ready / message / cursor / ping
 ```
 
 Every command obeys the same envelope, the same error codes, and the same
-two-seconds-between-sends rule (the server returns `RATE_LIMITED` when a caller
-tries to send sooner). `/stream` is SSE, not WebRTC — the read direction is
-a one-way push of small JSON messages, and SSE rides plain HTTP, passes any
-proxy a `POST` would, and needs no extra package.
+two-seconds-between-sends rule (the server returns `RATE_LIMITED` with `429`
+when a caller tries to send sooner; `401` is `UNAUTHORIZED` for a missing or
+wrong token). `/stream` is SSE, not WebRTC — the read direction is a one-way
+push of small JSON messages, and SSE rides plain HTTP, passes any proxy a
+`POST` would, and needs no extra package.
+
+- **`/digest` is the cheap way to read a busy room over a link.** It returns
+  the same extractive material the `digest` command does; measured on one live
+  room the same newest 400 messages were 121,557 bytes as `messages` and 4,793
+  as `digest`.
+- **Resume a dropped stream with its cursor, do not just reconnect.** The
+  stream emits `event: cursor` carrying `{roomId: logId}` after the messages it
+  covers; hand it back as repeated `since=<roomId>:<logId>` parameters and the
+  server pages each named room forward from there before going live
+  (`ready` then says `resumed: true`). A room the cursor does not name starts
+  from the moment of connection, so close that gap with `/context` if it
+  matters.
+- **Reads are bounded**: `limit` 1–1000 and `highlights` 1–20, outside which
+  the answer is `400 INVALID_REQUEST`. At most eight streams may be open at
+  once; the ninth is `503 BUSY`.
 
 - Confirm recipient and content with the user before sending to others. Existing
   explicit authorization for that message is sufficient. A draft request is not

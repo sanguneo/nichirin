@@ -21,14 +21,19 @@ import sys
 from typing import Any, Optional, Sequence
 
 from . import __version__
+from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
-DIGEST_LIMIT = 400
-"""How many of the newest messages a digest slices, matching the screen's /sum."""
+DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
+"""How many of the newest messages a digest slices, matching the screen's /sum.
+
+Taken from :mod:`kanao.digest` rather than repeated, so the flag's default and
+the server's default cannot drift apart.
+"""
 
 
 def _positive(value: str) -> int:
@@ -187,31 +192,21 @@ def _selected_room(reader: Reader, arguments: argparse.Namespace):
 def _digest(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any]:
     """Hand a caller the same extractive digest the screen's /sum builds.
 
-    Extractive, not generative: there is no model in this process, so nothing
-    here is invented. What comes back is the material a model would want —
-    how busy each window was, who carried it, which words it was about, and
-    the lines most likely to carry the point — rather than a page of raw
-    messages for the caller to chew through itself.
+    The digest itself is :func:`kanao.digest.build`, so the command and the
+    HTTP server ask one implementation the same question; this is the argument
+    handling around it.
     """
-    from .tui import digest as digest_module
+    from .digest import build
 
-    try:
-        span = digest_module.parse_duration(arguments.span)
-    except digest_module.DurationError as error:
-        raise KanaoError(ErrorCode.INVALID_REQUEST, str(error)) from error
-    room = _selected_room(reader, arguments)
-    found = reader.messages(room.id, limit=arguments.limit)
-    slices = digest_module.slice_messages(found, span)
+    target = arguments.room_id if arguments.room_id is not None else arguments.room
     return success(
-        {
-            "room": room.as_json(),
-            "span": arguments.span,
-            "considered": len(found),
-            "slices": digest_module.as_json(slices, arguments.highlights),
-            "note": "Extractive, not generative: counts, speakers, keywords and "
-            "verbatim highlights from the newest messages only. Nothing here is a "
-            "summary; write one from it.",
-        }
+        build(
+            reader,
+            target,
+            span=arguments.span,
+            limit=arguments.limit,
+            highlights=arguments.highlights,
+        )
     )
 
 

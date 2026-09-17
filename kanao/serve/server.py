@@ -2,12 +2,54 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from http.server import ThreadingHTTPServer
 from typing import Any, Callable, Optional
 
-from .config import DEFAULT_MIN_INTERVAL_SECONDS, DEFAULT_POLL_INTERVAL_SECONDS
+from .config import (
+    DEFAULT_MIN_INTERVAL_SECONDS,
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    MAX_STREAMS,
+)
 from .handler import build_handler
+
+_ORDINARY = (
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionResetError,
+    TimeoutError,
+)
+
+
+class QuietDisconnects:
+    """Treat a client leaving as an event, not as a server error.
+
+    ``socketserver`` prints a full traceback for anything raised out of a
+    request, and a reader closing ``curl -N`` raises ``ConnectionResetError``
+    on the next write. That is the *normal* end of an SSE connection, so the
+    stock behaviour means the one long-lived route in this server cannot be
+    used without filling the log with tracebacks for its own success case.
+    Anything else still gets the stock treatment, because an unexpected
+    exception on a socket is worth seeing.
+    """
+
+    def handle_error(self, request, client_address) -> None:  # noqa: D102 - stdlib name
+        if isinstance(sys.exc_info()[1], _ORDINARY):
+            return
+        super().handle_error(request, client_address)  # type: ignore[misc]
+
+
+class ServeHTTPServer(QuietDisconnects, ThreadingHTTPServer):
+    """The server the command actually runs, and the one the tests drive.
+
+    Threaded because ``GET /stream`` holds its connection for as long as the
+    caller stays: on a single-threaded server one SSE reader is the whole
+    server, and nothing else could be answered until they left.
+    """
+
+    daemon_threads = True
 
 
 def run(
@@ -23,6 +65,8 @@ def run(
     digest_provider: Optional[Callable[[int, str, int, int], dict[str, Any]]] = None,
     watcher_factory: Optional[Callable[[], Any]] = None,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    max_streams: int = MAX_STREAMS,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -35,9 +79,10 @@ def run(
         digest_provider=digest_provider,
         watcher_factory=watcher_factory,
         poll_interval=poll_interval,
+        request_timeout=request_timeout,
+        max_streams=max_streams,
     )
-    server = ThreadingHTTPServer((host, port), handler)
-    server.daemon_threads = True
+    server = ServeHTTPServer((host, port), handler)
     print(f"kanao serve listening on {host}:{server.server_port}", flush=True)
     try:
         server.serve_forever()
