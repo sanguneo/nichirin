@@ -15,7 +15,9 @@ contract without a console.
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from kamado.tui import console as console_module
 from kamado.tui.console import Console, Key, KeyEvent
 
 VK_BACK = 0x08
@@ -95,6 +97,32 @@ class DecodingTests(unittest.TestCase):
         ):
             with self.subTest(virtual_key=virtual_key):
                 self.assertEqual(self.read(down(virtual_key, "")), (expected, ""))
+
+    def test_split_horizontal_arrow_sequences_are_not_treated_as_escape(self) -> None:
+        for suffix, expected in ((b"D", Key.LEFT), (b"C", Key.RIGHT)):
+            with self.subTest(expected=expected):
+                console = Console()
+                console._input_fd = 0
+                console._input = bytearray(b"\x1b")
+                now = [0.0]
+                select_calls = [0]
+
+                def monotonic() -> float:
+                    return now[0]
+
+                def select(_read, _write, _exception, _timeout):
+                    select_calls[0] += 1
+                    if select_calls[0] == 1:
+                        now[0] = 0.031
+                        return [], [], []
+                    return [0], [], []
+
+                with (
+                    patch.object(console_module.time, "monotonic", side_effect=monotonic),
+                    patch.object(console_module.select, "select", side_effect=select),
+                    patch.object(console_module.os, "read", return_value=b"[" + suffix),
+                ):
+                    self.assertEqual(console.read_key(0.12), (expected, ""))
 
     def test_a_modifier_press_is_not_a_keystroke(self) -> None:
         self.assertEqual(self.read(down(VK_SHIFT, "")), ("", ""))
