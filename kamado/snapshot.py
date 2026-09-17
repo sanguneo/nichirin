@@ -50,6 +50,112 @@ _DEFAULT_BUDGET_BYTES: Final = 256 * 1024 * 1024
 _JOURNAL_MODE_OFFSET: Final = 18
 _ROLLBACK_JOURNAL: Final = b"\x01\x01"
 
+_PARALLEL_PAGE_THRESHOLD: Final = 4000
+"""Databases with fewer pages decrypt in a few milliseconds and do not pay
+the multiprocessing overhead; larger live databases decrypt across CPU cores."""
+
+
+def _decrypt_pages_worker(
+    shm_name: str,
+    key_bytes: bytes,
+    page_size: int,
+    reserve: int,
+    start_page: int,
+    end_page: int,
+    encrypted: bytes,
+) -> None:
+    from multiprocessing import shared_memory
+    from .commoncrypto import PreparedKey
+
+    shm = shared_memory.SharedMemory(name=shm_name)
+    try:
+        with PreparedKey(key_bytes) as prepared:
+            for number in range(start_page, end_page + 1):
+                start = (number - 1) * page_size
+                page_data = pages.reconstruct_page(
+                    prepared, number, encrypted[start : start + page_size], page_size, reserve
+                )
+                shm.buf[start : start + page_size] = page_data
+    finally:
+        shm.close()
+
+
+def _decrypt_base_pages(
+    encrypted: bytes,
+    geometry: Geometry,
+    base_pages: int,
+    page_size: int,
+    reserve: int,
+) -> bytes:
+    """Decrypt all base pages, parallelizing across CPU cores for large databases."""
+    total_size = len(encrypted)
+    num_cpus = os.cpu_count() or 4
+    num_workers = min(num_cpus, 8)
+
+    if base_pages < _PARALLEL_PAGE_THRESHOLD or num_workers <= 1:
+        base_image = bytearray(total_size)
+        with geometry.prepared() as prepared:
+            for number in range(1, base_pages + 1):
+                start = (number - 1) * page_size
+                base_image[start : start + page_size] = pages.reconstruct_page(
+                    prepared, number, encrypted[start : start + page_size], page_size, reserve
+                )
+        return bytes(base_image)
+
+    from multiprocessing import get_context, shared_memory
+
+    shm = None
+    try:
+        shm = shared_memory.SharedMemory(create=True, size=total_size)
+        ctx = get_context("fork")
+        chunk_size = (base_pages + num_workers - 1) // num_workers
+        processes = []
+        for w in range(num_workers):
+            start_page = w * chunk_size + 1
+            end_page = min(base_pages, (w + 1) * chunk_size)
+            if start_page > end_page:
+                break
+            proc = ctx.Process(
+                target=_decrypt_pages_worker,
+                args=(
+                    shm.name,
+                    geometry.key,
+                    page_size,
+                    reserve,
+                    start_page,
+                    end_page,
+                    encrypted,
+                ),
+            )
+            proc.start()
+            processes.append(proc)
+
+        for proc in processes:
+            proc.join()
+
+        # Check if all processes succeeded cleanly
+        if any(proc.exitcode != 0 for proc in processes):
+            raise RuntimeError("parallel page decryption worker failed")
+
+        return bytes(shm.buf[:total_size])
+    except Exception:
+        # Transparent fallback to single-threaded decryption on any multiprocessing error
+        base_image = bytearray(total_size)
+        with geometry.prepared() as prepared:
+            for number in range(1, base_pages + 1):
+                start = (number - 1) * page_size
+                base_image[start : start + page_size] = pages.reconstruct_page(
+                    prepared, number, encrypted[start : start + page_size], page_size, reserve
+                )
+        return bytes(base_image)
+    finally:
+        if shm is not None:
+            try:
+                shm.close()
+                shm.unlink()
+            except Exception:
+                pass
+
 
 @dataclass(frozen=True)
 class Fingerprint:
@@ -245,19 +351,16 @@ def build_image(database: Path, geometry: Geometry) -> DecryptedImage:
             f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
         )
 
-    base_image = bytearray(len(encrypted))
+    base_image_bytes = _decrypt_base_pages(
+        encrypted, geometry, base_pages, page_size, reserve
+    )
     with geometry.prepared() as prepared:
-        for number in range(1, base_pages + 1):
-            start = (number - 1) * page_size
-            base_image[start : start + page_size] = pages.reconstruct_page(
-                prepared, number, encrypted[start : start + page_size], page_size, reserve
-            )
-        image = _overlay_log(bytes(base_image), committed, prepared, page_size, reserve)
+        image = _overlay_log(base_image_bytes, committed, prepared, page_size, reserve)
 
     if not _matches(database, encrypted) or not _read_log(database).startswith(log):
         raise ConsistencyError(f"{database.name} changed while it was being read")
     result = DecryptedImage(image)
-    result.base = BasePages(bytes(base_image), log[: wal_format.WAL_HEADER_SIZE])
+    result.base = BasePages(base_image_bytes, log[: wal_format.WAL_HEADER_SIZE])
     return result
 
 
