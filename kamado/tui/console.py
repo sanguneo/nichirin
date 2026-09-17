@@ -33,8 +33,8 @@ CLEAR_LINE: Final = "\x1b[K"
 _RESET: Final = "\x1b[0m"
 _SAVE_AUTOWRAP: Final = "\x1b[?7s"
 _RESTORE_AUTOWRAP: Final = "\x1b[?7r"
-_ESCAPE_WAIT: Final = 0.03
-"""Disambiguate a lone Escape without extending read_key's deadline."""
+_ESCAPE_WAIT: Final = 0.12
+"""Allow a split terminal key sequence to arrive before yielding Escape."""
 _SHIFT_PRESSED: Final = 0x0010
 CLEAR_BOX: Final = "\x15"
 """Ctrl+U, which empties the composer; it is passed through as itself."""
