@@ -12,9 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kakaoread import keyring as keyring_module
-from kakaoread.keyring import Keyring
-from kakaoread.process import CodecContext, resolve_many
+from kanao import keyring as keyring_module
+from kanao.keyring import Keyring
+from kanao.process import CodecContext, resolve_many
 
 SALT = bytes(range(16))
 KEY = bytes(range(100, 132))

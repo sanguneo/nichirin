@@ -111,7 +111,7 @@ def from_feeds(connection: sqlite3.Connection) -> list[NameRecord]:
 def ledger_path() -> Path:
     """Where observed names are remembered, outside the repository."""
     root = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
-    return Path(root) / "kakaoread" / "names.jsonl"
+    return Path(root) / "kanao-cli" / "names.jsonl"
 
 
 class NameLedger:

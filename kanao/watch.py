@@ -24,14 +24,14 @@ import time
 from typing import Iterator, Optional, Sequence
 
 from . import paths
-from .errors import KakaoReadError
+from .errors import KanaoError
 from .model import Message
 from .reader import Reader
 from .snapshot import Fingerprint
 
 DEFAULT_INTERVAL_SECONDS = 1.0
 _CATCH_UP_LIMIT = 500
-_ROOM_FAILURES = (KakaoReadError, OSError, sqlite3.Error)
+_ROOM_FAILURES = (KanaoError, OSError, sqlite3.Error)
 
 
 class Watcher:

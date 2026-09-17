@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Protocol, TypedDict
 
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KanaoError
 
 MAIN_WINDOW_TITLE = "카카오톡"
 INPUT_CLASS = "RICHEDIT50W"
@@ -180,7 +180,7 @@ class WindowBackend(Protocol):
 
 def _remembered_rows() -> Path:
     root = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
-    return Path(root) / "kakaoread" / "rows.json"
+    return Path(root) / "kanao-cli" / "rows.json"
 
 
 def _row_key(room: str) -> str:
@@ -285,7 +285,7 @@ class RoomOpener:
             if self._backend.show_main_window():
                 control = self._backend.room_list()
         if control is None:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 "KakaoTalk's room list is not on screen and the main window "
                 "would not come back; restore it and try again",
@@ -324,7 +324,7 @@ class RoomOpener:
                 self._backend.close_window(window.handle)
         if disturbed is not None:
             self._backend.restore_main_window(disturbed)
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.WINDOW_NOT_FOUND,
             f"{room!r} was not among the first {self._rows} rooms in the list; "
             "scroll it into view or open it once by hand",
@@ -357,9 +357,9 @@ class Sender:
         must never substitute for an unopened, already-resolved room.
         """
         if not room.strip():
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
         if not self._running():
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.KAKAO_NOT_RUNNING,
                 "KakaoTalk is not running; start it and open the conversation first",
             )
@@ -370,13 +370,13 @@ class Sender:
         if not matches:
             if open_if_needed and self._opener is not None:
                 return self._opener.open(room, aliases, hint)
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
                 "KakaoTalk (double-click it so it pops out) and try again",
             )
         if len(matches) > 1:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.AMBIGUOUS_CHAT,
                 f"{len(matches)} open chat windows match {room!r}; use a more specific name",
                 candidates=[window.title for window in matches],
@@ -398,16 +398,16 @@ class Sender:
         typed. Queue acceptance is not proof of network delivery.
         """
         if not text or not text.strip():
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
         if "\x00" in text:
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, "message contains a null character")
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
         window = self.resolve(
             room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
         )
         control = self._backend.input_handle(window.handle)
         if control is None:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.INPUT_NOT_FOUND,
                 f"found the window for {window.title!r} but not its message box; "
                 "the client version may differ",
@@ -433,7 +433,7 @@ class Sender:
             self._backend.set_text(control, text)
             self._backend.submit(control)
         except OSError as error:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.SEND_FAILED, f"could not send to {window.title!r}: {error}",
                 room=window.title,
             ) from error
@@ -706,7 +706,7 @@ def make_sender() -> Sender:
 
     pid = find_pid()
     if pid is None:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.KAKAO_NOT_RUNNING,
             "KakaoTalk is not running; start it and open the conversation first",
         )

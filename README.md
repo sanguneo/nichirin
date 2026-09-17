@@ -1,6 +1,6 @@
 <div align="center">
 
-# kakaoread
+# kanao-cli
 
 **내 PC의 카카오톡을 읽고, 따라가고, 보내는 윈도우용 CLI**
 
@@ -38,13 +38,18 @@ dependencies. Korean-first documentation; every command answers in JSON.*
 ## 5분 안에
 
 ```powershell
-python -m kakaoread status                     # 지금 무엇이 되는지
-python -m kakaoread context --room "이름"       # 방 하나를 통째로 이해하기
-python -m kakaoread follow --interval 1        # 새 메시지를 NDJSON 으로
-python -m kakaoread names --room-id 123 "닉"   # 그 이름을 쓴 계정 전부
-python -m kakaoread send --room "이름" "안녕"   # 실제로 보내기
-python -m kakaoread tui                        # 터미널에서 직접 읽기
+python -m kanao status                     # 지금 무엇이 되는지
+python -m kanao context --room "이름"       # 방 하나를 통째로 이해하기
+python -m kanao follow --interval 1        # 새 메시지를 NDJSON 으로
+python -m kanao names --room-id 123 "닉"   # 그 이름을 쓴 계정 전부
+python -m kanao send --room "이름" "안녕"   # 실제로 보내기
+python -m kanao tui                        # 터미널에서 직접 읽기
 ```
+
+> 이 도구는 `kakaoread` 라는 이름이었습니다. **예전 명령도 그대로 동작합니다** —
+> `python -m kakaoread`, `kakaoread`, `scripts/kakaoread.py`, `import kakaoread` 는
+> 모두 현재 이름으로 이어지고, 바뀐 이름을 stderr 로 한 줄 알려줍니다. 임포트는 같은
+> 모듈 객체로 이어지므로 `KanaoError` 는 어느 이름으로 잡아도 같은 클래스입니다.
 
 `context` 한 번이면 방을 찾고, 최근 대화를 시간순으로 주고, **그 기록이 어디까지
 닿는지**까지 말해줍니다. 에이전트가 `status` → `rooms` → `messages` 로 세 번 물을 이유가
@@ -72,7 +77,7 @@ python -m kakaoread tui                        # 터미널에서 직접 읽기
 **디스크 어디에도 없습니다.** 실행할 때마다 만들어져 클라이언트 프로세스의 메모리에만
 존재합니다. 파일을 아무리 뜯어도 열 수 없다는 뜻입니다.
 
-kakaoread는 실행 중인 `KakaoTalk.exe`의 힙에서 SQLCipher의 `codec_ctx` 구조를 찾아 그
+kanao-cli는 실행 중인 `KakaoTalk.exe`의 힙에서 SQLCipher의 `codec_ctx` 구조를 찾아 그
 열쇠를 **읽기 전용으로** 가져옵니다. 그리고 파일 선두 16바이트 salt가 같은 데이터베이스와
 짝지어, 이름으로 추측하는 일 없이 "이 열쇠는 증명 가능하게 이 파일의 것"임을 확인합니다.
 프로세스는 조회·읽기 권한으로만 열고, 쓰거나 멈추거나 디버거를 붙이지 않습니다.
@@ -84,7 +89,7 @@ kakaoread는 실행 중인 `KakaoTalk.exe`의 힙에서 SQLCipher의 `codec_ctx`
 ## 터미널에서 직접
 
 ```powershell
-python -m kakaoread tui
+python -m kanao tui
 ```
 
 ![대화방 목록](demo/shots/rooms.png)
@@ -160,7 +165,7 @@ python -m kakaoread tui
 | `/` | 대화방·친구 목록 걸러보기 (esc로 해제) |
 
 화면 오른쪽이 잘려 보이면 스크롤바가 마지막 칸을 덮고 있는 것입니다. 기본값으로 한 칸을
-비워두는데, `KAKAOREAD_TUI_MARGIN=2` 처럼 늘리거나 `0` 으로 되돌릴 수 있습니다.
+비워두는데, `KANAO_TUI_MARGIN=2` 처럼 늘리거나 `0` 으로 되돌릴 수 있습니다.
 
 </details>
 
@@ -177,8 +182,8 @@ python -m kakaoread tui
 초대될 때뿐입니다.
 
 ```powershell
-python -m kakaoread names --room-id 123            # 이 방에서 이름을 바꾼 사람들
-python -m kakaoread names --room-id 123 "닉네임"    # 그 이름을 쓴 적 있는 계정 전부
+python -m kanao names --room-id 123            # 이 방에서 이름을 바꾼 사람들
+python -m kanao names --room-id 123 "닉네임"    # 그 이름을 쓴 적 있는 계정 전부
 ```
 
 브라우저에서는 `/real 닉네임` 한 줄이면 됩니다. 답이 둘 이상 나오는 것은 모호함이 아니라
@@ -190,7 +195,7 @@ python -m kakaoread names --room-id 123 "닉네임"    # 그 이름을 쓴 적 �
 둘 중 누가 원래 그 이름이었는지, 누가 나중에 가져다 썼는지.
 
 > [!IMPORTANT]
-> 이름 이력은 `names.py`가 `%LOCALAPPDATA%\kakaoread\names.jsonl`에 스스로 적어 남깁니다.
+> 이름 이력은 `names.py`가 `%LOCALAPPDATA%\kanao-cli\names.jsonl`에 스스로 적어 남깁니다.
 > 주소만 남기는 `contexts.json`과 달리 **이 파일에는 실제 닉네임이 들어갑니다** — 이름
 > 이력은 그것 없이 존재할 수 없습니다.
 
@@ -200,9 +205,9 @@ python -m kakaoread names --room-id 123 "닉네임"    # 그 이름을 쓴 적 �
 최소화해둔 창으로도 그대로 나갑니다. 포커스를 뺏지 않고 마우스 커서도 움직이지 않습니다.
 
 ```powershell
-python -m kakaoread send --room "이름" --dry-run "확인만"
-python -m kakaoread send --room "이름" "보낼 말"
-python -m kakaoread send --room "이름" --open "창이 닫혀 있어도"
+python -m kanao send --room "이름" --dry-run "확인만"
+python -m kanao send --room "이름" "보낼 말"
+python -m kanao send --room "이름" --open "창이 닫혀 있어도"
 ```
 
 `--open`은 창이 닫혀 있을 때 도구가 직접 엽니다. 카카오톡이 트레이에 내려가 있어도
@@ -228,10 +233,10 @@ python -m kakaoread send --room "이름" --open "창이 닫혀 있어도"
 
 ```powershell
 python install.py
-python install.py --target "$HOME/.claude/skills/kakaoread" --force
+python install.py --target "$HOME/.claude/skills/kanao-cli" --force
 ```
 
-`~/.agents/skills/kakaoread`에 스킬·런타임·라이선스를 복사합니다. 설치본은 자립형이라
+`~/.agents/skills/kanao-cli`에 스킬·런타임·라이선스를 복사합니다. 설치본은 자립형이라
 원본 체크아웃을 옮기거나 지워도 계속 동작합니다. 설치 후에는 이렇게 시키면 됩니다.
 
 > "카톡에서 지수랑 최근 대화 요약해줘."
@@ -262,7 +267,7 @@ python install.py --target "$HOME/.claude/skills/kakaoread" --force
 | 대화 20개 다시 읽기 | 1.0 s | **0.6 ms** (스냅샷 캐시) |
 | 놀고 있는 방 1회 확인 | — | **0.3 ms** (stat 한 번) |
 
-열쇠 탐색은 **주소만** `%LOCALAPPDATA%\kakaoread\contexts.json`에 기억합니다. 키도
+열쇠 탐색은 **주소만** `%LOCALAPPDATA%\kanao-cli\contexts.json`에 기억합니다. 키도
 salt도 디스크에 쓰지 않으며, 기억한 주소도 새 후보와 똑같이 검증한 뒤에만 씁니다. 힙이
 움직였으면 조용히 전체 탐색으로 되돌아갑니다.
 

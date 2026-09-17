@@ -12,8 +12,8 @@ dist/
 *.edb-wal
 *.edb-shm
 *.sqlite3
-kakaoread-*-digest.txt
-kakaoread-*.txt
+kanao-cli-*-digest.txt
+kanao-cli-*.txt
 
 # Local scratch
 /_*.py

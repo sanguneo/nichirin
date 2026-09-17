@@ -23,21 +23,23 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_TARGET = Path.home() / ".agents" / "skills" / "kakaoread"
-LAUNCHER = Path("scripts/kakaoread.py")
+DEFAULT_TARGET = Path.home() / ".agents" / "skills" / "kanao-cli"
+LAUNCHER = Path("scripts/kanao-cli.py")
+LEGACY_LAUNCHER = Path("scripts/kakaoread.py")
 
 
 def shipped_files(root: Path) -> dict[Path, Path]:
     """Map each installed path to the source file it comes from."""
-    package = root / "kakaoread"
+    package = root / "kanao"
     payload: dict[Path, Path] = {
         Path("SKILL.md"): root / "skill" / "SKILL.md",
         Path("LICENSE"): root / "LICENSE",
         LAUNCHER: root / "skill" / LAUNCHER,
+        LEGACY_LAUNCHER: root / "skill" / LEGACY_LAUNCHER,
     }
     payload.update(
         {
-            Path("scripts/kakaoread") / source.relative_to(package): source
+            Path("scripts/kanao") / source.relative_to(package): source
             for source in sorted(package.rglob("*.py"))
             if "__pycache__" not in source.relative_to(package).parts
         }
@@ -86,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise IsADirectoryError(destination)
 
         target.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".kakaoread-install-", dir=target) as staging:
+        with tempfile.TemporaryDirectory(prefix=".kanao-cli-install-", dir=target) as staging:
             staged_root = Path(staging)
             for relative, source in payload.items():
                 staged = staged_root / relative
@@ -100,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Installation failed: {error}", file=sys.stderr)
         return 1
 
-    print(f"Installed kakaoread skill: {target}")
+    print(f"Installed kanao-cli skill: {target}")
     print(f"Run it with: python \"{target / LAUNCHER}\" status")
     return 0
 

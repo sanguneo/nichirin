@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.cng import AES_256_KEY_SIZE, PreparedKey, decrypt_cbc
+from kanao.cng import AES_256_KEY_SIZE, PreparedKey, decrypt_cbc
 
 from tests.support import encrypt
 

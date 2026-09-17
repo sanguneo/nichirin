@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from kakaoread.model import (
+from kanao.model import (
     Message,
     everyone_mentioned,
     mentions_in,

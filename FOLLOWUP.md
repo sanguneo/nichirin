@@ -16,9 +16,9 @@ Opus로 진행하며 Astra/Fable에는 위임하지 않는다.
 - 전체 unittest: 325개 통과(작업 트리 7.001초, 새 클론 6.072초).
 - 운영 코드와 새 전송 테스트의 LSP 오류는 없었다.
 - **깨끗한 배포본 확인 완료.** 커밋 `96e6cf4`만 담은 새 클론에서
-  `python -m kakaoread --help`, `send --help`, 전체 테스트 325개가 모두
+  `python -m kanao --help`, `send --help`, 전체 테스트 325개가 모두
   실행됐다. `install.py --target`로 설치한 복사본에서도
-  `scripts/kakaoread.py send --help`가 동작했다. 이전에 누락됐던
+  `scripts/kanao-cli.py send --help`가 동작했다. 이전에 누락됐던
   `__init__.py`, `__main__.py`, `tui/__init__.py`, `tests/__init__.py`는
   모두 추적되고, `.gitignore`의 `/_*.py`는 루트 임시 파일만 제외한다.
 - **이전 실험 잔여물 확인.** `HKCU\Control Panel\Desktop\ForegroundLockTimeout`

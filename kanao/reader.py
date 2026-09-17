@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from . import model, names as names_module, paths
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KanaoError
 from .keyring import Keyring
 from .model import Friend, Message, Room
 from .names import NameLedger, NameRecord
@@ -91,7 +91,7 @@ class Reader:
         try:
             directory = self.user_directory
             profile: Optional[str] = str(directory)
-        except KakaoReadError:
+        except KanaoError:
             return {
                 "running": False,
                 "profile": None,
@@ -501,7 +501,7 @@ class Reader:
                 continue
             try:
                 connection = self._logs(room.id)
-            except KakaoReadError:
+            except KanaoError:
                 continue
             rows = connection.execute(
                 # Feeds are excluded rather than filtered afterwards: their
@@ -523,6 +523,6 @@ class Reader:
         try:
             cursor = connection.execute(sql)
         except sqlite3.Error as error:
-            raise KakaoReadError(ErrorCode.INVALID_REQUEST, str(error)) from error
+            raise KanaoError(ErrorCode.INVALID_REQUEST, str(error)) from error
         columns = [description[0] for description in (cursor.description or ())]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]

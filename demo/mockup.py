@@ -30,10 +30,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from kakaoread import paths  # noqa: E402
-from kakaoread.errors import ErrorCode, KakaoReadError  # noqa: E402
-from kakaoread.keyring import Keyring  # noqa: E402
-from kakaoread.reader import Reader  # noqa: E402
+from kanao import paths  # noqa: E402
+from kanao.errors import ErrorCode, KanaoError  # noqa: E402
+from kanao.keyring import Keyring  # noqa: E402
+from kanao.reader import Reader  # noqa: E402
 
 KST = timezone(timedelta(hours=9))
 PROFILE = Path("C:/mockup-profile")
@@ -143,7 +143,7 @@ class Cache:
         for candidate, connection in self.databases.items():
             if name.endswith(candidate):
                 return connection
-        raise KakaoReadError(ErrorCode.KEY_UNAVAILABLE, f"no key for {name}")
+        raise KanaoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {name}")
 
     def close(self) -> None:
         for connection in self.databases.values():
@@ -340,10 +340,10 @@ def show_cli(reader) -> None:
     is a hundred lines of JSON, which is the right answer for a program and
     the wrong one for a screenshot. Neither envelope here is abridged.
     """
-    from kakaoread.errors import success
-    from kakaoread.names import steps_with_current
+    from kanao.errors import success
+    from kanao.names import steps_with_current
 
-    print("$ kakaoread status")
+    print("$ kanao status")
     print(json.dumps(success(reader.status()), ensure_ascii=False, indent=2, sort_keys=True))
 
     history = reader.name_history(STUDY_ROOM)
@@ -362,7 +362,7 @@ def show_cli(reader) -> None:
         for user_id in reader.users_named(STUDY_ROOM, "지수", history)
     ]
     print()
-    print(f'$ kakaoread names --room-id {STUDY_ROOM} "지수"')
+    print(f'$ kanao names --room-id {STUDY_ROOM} "지수"')
     print(
         json.dumps(
             success({"users": users, "count": len(users)}),
@@ -378,8 +378,8 @@ def main(argv: list[str]) -> int:
     printing = "--print" in argv
     wanted = next((one for one in argv if one in scenes or one == "cli"), "chat")
 
-    from kakaoread.tui.app import App
-    from kakaoread.tui.theme import Theme
+    from kanao.tui.app import App
+    from kanao.tui.theme import Theme
 
     with build_reader() as reader:
         if wanted == "cli":
@@ -392,7 +392,7 @@ def main(argv: list[str]) -> int:
                 print(line)
             return 0
 
-        from kakaoread.tui.console import Console
+        from kanao.tui.console import Console
 
         # Forced rather than detected: a screenshot should show the palette the
         # interface was designed in, whatever the host terminal advertises.

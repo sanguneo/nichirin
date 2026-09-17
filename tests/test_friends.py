@@ -8,8 +8,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from kakaoread import cli
-from kakaoread.model import Friend
+from kanao import cli
+from kanao.model import Friend
 
 from tests.fixtures import FRIEND_ID, PEER_ID, STRANGER_ID, build_reader
 
@@ -100,9 +100,9 @@ class FriendsCommandTests(unittest.TestCase):
 
 class FriendsTuiTests(unittest.TestCase):
     def render(self):
-        from kakaoread.tui.app import App
-        from kakaoread.tui.layout import display_width, strip_ansi
-        from kakaoread.tui.theme import Theme
+        from kanao.tui.app import App
+        from kanao.tui.layout import display_width, strip_ansi
+        from kanao.tui.theme import Theme
 
         reader = build_reader()
         self.addCleanup(reader.close)

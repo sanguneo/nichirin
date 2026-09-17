@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread import paths
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.keyring import Keyring
-from kakaoread.process import CodecContext
+from kanao import paths
+from kanao.errors import ErrorCode, KanaoError
+from kanao.keyring import Keyring
+from kanao.process import CodecContext
 
 USER_KEY = bytes(range(32))
 CATALOG_KEY = bytes(range(32, 64))
@@ -37,8 +37,8 @@ class ProfileFixture(unittest.TestCase):
 
     def discover(self, contexts: list[CodecContext], pid: int | None = 900) -> Keyring:
         with (
-            patch("kakaoread.keyring.find_pid", return_value=pid),
-            patch("kakaoread.keyring.scan_process", return_value=contexts) as scan,
+            patch("kanao.keyring.find_pid", return_value=pid),
+            patch("kanao.keyring.scan_process", return_value=contexts) as scan,
         ):
             ring = Keyring.discover(self.root)
         self.scan = scan
@@ -94,13 +94,13 @@ class DiscoveryTests(ProfileFixture):
 class ExplanationTests(ProfileFixture):
     def test_a_closed_client_is_reported_as_not_running(self) -> None:
         ring = self.discover([], pid=None)
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             ring.key_for(paths.USER_DATABASE)
         self.assertEqual(raised.exception.code, ErrorCode.KAKAO_NOT_RUNNING)
 
     def test_an_open_client_that_never_loaded_a_database_says_exactly_that(self) -> None:
         ring = self.discover([CodecContext(0x1000, USER_SALT, USER_KEY)])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             ring.key_for(paths.chat_log_name(4242))  # salt never matched
         failure = raised.exception
         self.assertEqual(failure.code, ErrorCode.KEY_UNAVAILABLE)
@@ -110,9 +110,9 @@ class ExplanationTests(ProfileFixture):
     def test_the_two_absences_are_never_reported_as_the_same_thing(self) -> None:
         closed = self.discover([], pid=None)
         open_client = self.discover([CodecContext(0x1000, USER_SALT, USER_KEY)])
-        with self.assertRaises(KakaoReadError) as first:
+        with self.assertRaises(KanaoError) as first:
             closed.key_for(paths.USER_DATABASE)
-        with self.assertRaises(KakaoReadError) as second:
+        with self.assertRaises(KanaoError) as second:
             open_client.key_for(paths.chat_log_name(4242))
         self.assertNotEqual(first.exception.code, second.exception.code)
 

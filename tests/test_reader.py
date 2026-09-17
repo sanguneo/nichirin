@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.keyring import Keyring
+from kanao.errors import ErrorCode, KanaoError
+from kanao.keyring import Keyring
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -172,8 +172,8 @@ class MessageTests(unittest.TestCase):
         Every other query excludes deleted rows, so a newest id that counts
         one hands the watcher a position it will never read a message at.
         """
-        from kakaoread import paths
-        from kakaoread.reader import Reader
+        from kanao import paths
+        from kanao.reader import Reader
         from tests.fixtures import build_profile
 
         cache, ring = build_profile()
@@ -198,7 +198,7 @@ class MessageTests(unittest.TestCase):
 
     def test_reading_a_room_without_a_key_explains_which_key_is_missing(self) -> None:
         with build_reader() as reader:
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KanaoError) as raised:
                 reader.messages(UNREADABLE_ROOM)
         self.assertEqual(raised.exception.code, ErrorCode.KEY_UNAVAILABLE)
 
@@ -233,7 +233,7 @@ class StatusTests(unittest.TestCase):
         from tests.fixtures import build_profile
 
         cache, _keyring = build_profile()
-        from kakaoread.reader import Reader
+        from kanao.reader import Reader
 
         closed = Keyring(user_directory=PROFILE, pid=None, keys={})
         with Reader(user_directory=PROFILE, cache=cache, keyring=closed) as reader:
@@ -243,13 +243,13 @@ class StatusTests(unittest.TestCase):
         self.assertIn("not running", str(status["detail"]))
 
     def test_a_closed_client_names_the_reason_a_read_fails(self) -> None:
-        from kakaoread.reader import Reader
+        from kanao.reader import Reader
         from tests.fixtures import build_profile
 
         cache, _keyring = build_profile()
         closed = Keyring(user_directory=PROFILE, pid=None, keys={})
         with Reader(user_directory=PROFILE, cache=cache, keyring=closed) as reader:
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KanaoError) as raised:
                 reader.rooms()
         self.assertEqual(raised.exception.code, ErrorCode.KAKAO_NOT_RUNNING)
 

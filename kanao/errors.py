@@ -49,7 +49,7 @@ class ErrorCode(str, Enum):
     """The message could not be handed to the client's input for another reason."""
 
 
-class KakaoReadError(Exception):
+class KanaoError(Exception):
     """A failure that already knows how it should be reported to an agent."""
 
     def __init__(
@@ -76,6 +76,6 @@ def success(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def as_envelope(error: BaseException) -> dict[str, Any]:
     """Render any exception as a response body, preserving known codes."""
-    if isinstance(error, KakaoReadError):
+    if isinstance(error, KanaoError):
         return error.envelope()
-    return KakaoReadError(ErrorCode.READ_FAILED, str(error) or type(error).__name__).envelope()
+    return KanaoError(ErrorCode.READ_FAILED, str(error) or type(error).__name__).envelope()

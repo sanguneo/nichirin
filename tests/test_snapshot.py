@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.snapshot import (
+from kanao.errors import ErrorCode, KanaoError
+from kanao.snapshot import (
     ConsistencyError,
     Fingerprint,
     SnapshotCache,
@@ -114,13 +114,13 @@ class BuildImageTests(_Fixture):
 
     def test_rejects_a_database_ending_in_a_partial_page(self) -> None:
         self.database.write_bytes(self.database.read_bytes()[:-1])
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             build_image(self.database, KEY)
         self.assertEqual(raised.exception.code, ErrorCode.READ_FAILED)
 
     def test_rejects_an_empty_database(self) -> None:
         self.database.write_bytes(b"")
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KanaoError):
             build_image(self.database, KEY)
 
     def test_rejects_a_commit_that_leaves_pages_undefined(self) -> None:
@@ -129,7 +129,7 @@ class BuildImageTests(_Fixture):
         # base file or the log.
         body = self.encrypted(self.pages_b, 2)
         self.log.write_bytes(make_wal([(2, 0, body), (4, 4, body)]))
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             build_image(self.database, KEY)
         self.assertIn("undefined", raised.exception.message)
 
@@ -144,9 +144,9 @@ class BuildImageTests(_Fixture):
         self.assertEqual(len(encrypt_pages(self.pages_b)), len(self.database.read_bytes()))
 
         with (
-            patch("kakaoread.snapshot.Fingerprint.of", return_value=frozen),
+            patch("kanao.snapshot.Fingerprint.of", return_value=frozen),
             patch(
-                "kakaoread.snapshot.pages.reconstruct_page", side_effect=self._rewriting()
+                "kanao.snapshot.pages.reconstruct_page", side_effect=self._rewriting()
             ),
         ):
             with self.assertRaises(ConsistencyError):
@@ -158,13 +158,13 @@ class BuildImageTests(_Fixture):
 
         # Bind the real function before patching, or the wrapper would look up
         # its own replacement and recurse.
-        from kakaoread.page import reconstruct_page as real_reconstruct
+        from kanao.page import reconstruct_page as real_reconstruct
 
         def swap_log(prepared, number, page, page_size=PAGE_SIZE, reserve=80):
             self.log.write_bytes(replacement)
             return real_reconstruct(prepared, number, page, page_size, reserve)
 
-        with patch("kakaoread.snapshot.pages.reconstruct_page", side_effect=swap_log):
+        with patch("kanao.snapshot.pages.reconstruct_page", side_effect=swap_log):
             with self.assertRaises(ConsistencyError):
                 build_image(self.database, KEY)
 
@@ -174,7 +174,7 @@ class BuildImageTests(_Fixture):
         The real function is captured here, before any patching, so the
         wrapper cannot end up calling itself.
         """
-        from kakaoread.page import reconstruct_page as real_reconstruct
+        from kanao.page import reconstruct_page as real_reconstruct
 
         state = {"done": False}
 
@@ -269,7 +269,7 @@ class CacheTests(_Fixture):
 
     def test_an_unchanged_database_is_not_decrypted_twice(self) -> None:
         first = self.cache.connect(self.database, KEY)
-        with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):
+        with patch("kanao.snapshot.build_image", side_effect=AssertionError("decrypted")):
             second = self.cache.connect(self.database, KEY)
         self.assertIs(first, second)
 
@@ -289,7 +289,7 @@ class CacheTests(_Fixture):
                 ]
             )
         )
-        with patch("kakaoread.snapshot.build_image", side_effect=AssertionError("decrypted")):
+        with patch("kanao.snapshot.build_image", side_effect=AssertionError("decrypted")):
             second = self.cache.connect(self.database, KEY)
         self.assertEqual(
             [row[0] for row in second.execute("SELECT body FROM note ORDER BY id LIMIT 1")],
@@ -330,12 +330,12 @@ class CacheTests(_Fixture):
         naps: list[float] = []
         with (
             patch(
-                "kakaoread.snapshot.build_image",
+                "kanao.snapshot.build_image",
                 side_effect=ConsistencyError("still moving"),
             ),
-            patch("kakaoread.snapshot.time.sleep", naps.append),
+            patch("kanao.snapshot.time.sleep", naps.append),
         ):
-            with self.assertRaises(KakaoReadError) as raised:
+            with self.assertRaises(KanaoError) as raised:
                 self.cache.connect(self.database, KEY)
 
         self.assertEqual(raised.exception.code, ErrorCode.BUSY)
@@ -352,8 +352,8 @@ class CacheTests(_Fixture):
             return real(*args, **kwargs)
 
         with (
-            patch("kakaoread.snapshot.build_image", side_effect=flaky),
-            patch("kakaoread.snapshot.time.sleep", lambda _seconds: None),
+            patch("kanao.snapshot.build_image", side_effect=flaky),
+            patch("kanao.snapshot.time.sleep", lambda _seconds: None),
         ):
             connection = self.cache.connect(self.database, KEY)
         self.assertEqual(attempts["count"], 2)

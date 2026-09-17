@@ -17,9 +17,9 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from kakaoread import cli, names
-from kakaoread.names import NameLedger, NameRecord
-from kakaoread.reader import Reader
+from kanao import cli, names
+from kanao.names import NameLedger, NameRecord
+from kanao.reader import Reader
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -298,8 +298,8 @@ class RealCommandTests(unittest.TestCase):
     """`/real` in the browser, driven the way a reader drives it: by typing."""
 
     def app_with(self, rows: list[tuple], ledger: NameLedger | None = None):
-        from kakaoread.tui.app import App
-        from kakaoread.tui.theme import Theme
+        from kanao.tui.app import App
+        from kanao.tui.theme import Theme
 
         reader = reader_with(rows, ledger=ledger)
         self.addCleanup(reader.close)

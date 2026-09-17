@@ -12,7 +12,7 @@ import struct
 from ctypes import wintypes
 from typing import Iterable, Sequence
 
-from kakaoread import cng, page as page_codec
+from kanao import cng, page as page_codec
 
 PAGE_SIZE = 4096
 RESERVE = 80

@@ -1,4 +1,4 @@
-# AGENTS.md — working on kakaoread
+# AGENTS.md — working on kanao-cli
 
 Windows-only KakaoTalk reader, friend browser and sender in zero-dependency
 Python 3.10+. Reads stay local; the explicit send command drives the client.
@@ -9,7 +9,7 @@ changing it.
 
 ```powershell
 python -m unittest discover -t . -s tests    # the whole suite
-python -m kakaoread status                   # does anything work right now
+python -m kanao status                       # does anything work right now
 python install.py --target <dir> --force     # install the skill
 ```
 
@@ -38,6 +38,7 @@ unittest discover tests` breaks the fixture imports.
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |
 | `tui/digest.py` | Time slicing and extractive slice description |
 | `tui/app.py` | Screen state, rendering, key handling |
+| `kakaoread/` | The old name, aliased onto `kanao`; no behaviour of its own |
 
 Dependencies run strictly downward; nothing below `reader.py` imports anything
 above it.
@@ -65,7 +66,7 @@ Every command pays discovery before it answers, and both halves were slow:
 
 - **The heap scan is remembered, not repeated.** `scan_process` measured 426 ms
   on a quiet client and 2.8 s when its working set was large. The addresses it
-  found are cached per pid in `%LOCALAPPDATA%\kakaoread\contexts.json` and
+  found are cached per pid in `%LOCALAPPDATA%\kanao-cli\contexts.json` and
   re-read in 0.8 ms. **Only addresses are stored — never a key or a salt**, and
   every cached address is decoded and followed exactly like a fresh candidate,
   so a moved heap yields fewer contexts and falls back to a full scan.
@@ -218,7 +219,7 @@ on a live client, newest 4,000 rows of each readable room.
   `nickName` appears **zero** times outside `type = 0`. There is no way to
   recover who a message was signed as when it was sent.
 - Because of that, `names.py` keeps its own append-only ledger at
-  `%LOCALAPPDATA%\kakaoread\names.jsonl`. Unlike `contexts.json`, which stores
+  `%LOCALAPPDATA%\kanao-cli\names.jsonl`. Unlike `contexts.json`, which stores
   no key, and `rows.json`, which stores a hash rather than a title, **this file
   holds real nicknames** — a name history cannot exist without them. It is
   opt-in at the constructor: `Reader(ledger=...)` is set only by `cli.main`, so
@@ -350,7 +351,7 @@ on a live client, newest 4,000 rows of each readable room.
   console buffer, which is wider than the window showing it, so the visible
   region (`srWindow`) is used instead. On top of that Windows Terminal paints
   its scrollbar over the last cells rather than shrinking what it reports, so
-  `right_margin()` leaves one column unused; `KAKAOREAD_TUI_MARGIN` tunes it,
+  `right_margin()` leaves one column unused; `KANAO_TUI_MARGIN` tunes it,
   and 0 takes them back on a terminal that does not need it.
 - **Autowrap is off while the interface owns the screen.** A frame line is
   exactly as wide as the screen, and writing its last cell makes the terminal
@@ -409,6 +410,16 @@ on a live client, newest 4,000 rows of each readable room.
   absent on an ordinary message rather than rendered empty, because a window is
   forty messages and denying five things per line triples the answer. Their
   absence is the negative; `context` also summarises them once in `attention`.
+- **The old name resolves to the same module objects, not to copies.** This
+  project was `kakaoread`, and `python -m kakaoread`, the `kakaoread` script,
+  `scripts/kakaoread.py` and `import kakaoread` all still work. The shim is a
+  meta path finder that hands back the `kanao` module a name stands for, so
+  `KanaoError` is one class under both names — loading a second copy instead
+  would leave an `except` written against one name silently missing the other.
+  Import rewrites `__spec__` on the way through and `exec_module` puts it back,
+  so `kanao` never ends up describing itself as `kakaoread`.
+  `kakaoread.__main__` is excluded from the alias because `python -m` asks the
+  loader for a code object, which an alias has none of.
 
 ## Friends and sending
 
@@ -466,7 +477,7 @@ on a live client, newest 4,000 rows of each readable room.
 - **Scanning rows opens real rooms, and opening a room marks it read.** That
   is the true cost of a miss, not the flicker, so the rows are aimed at
   rather than swept. A row that worked is remembered per room in
-  `%LOCALAPPDATA%\kakaoread\rows.json` under a hash of the title, never the
+  `%LOCALAPPDATA%\kanao-cli\rows.json` under a hash of the title, never the
   title itself. Before that memory exists the guesses alternate between two
   truths — a room sits where the catalog's recency order puts it, or it is
   pinned and near the top — because exhausting the first hypothesis measured
@@ -502,7 +513,7 @@ on a live client, newest 4,000 rows of each readable room.
   Fixtures are synthetic; `tests/fixtures.py` mirrors the real schema.
 - No sleeps and no timing assumptions. `Watcher.poll` exists separately from
   `Watcher.follow` precisely so the suite never waits on a clock; test `poll`.
-- Stubs must fail the way production fails. `StubCache` raises `KakaoReadError`
+- Stubs must fail the way production fails. `StubCache` raises `KanaoError`
   because the real cache does — a stub raising `FileNotFoundError` once made a
   test pass against an error type production never produces.
 - When patching a module attribute, bind the original **before** patching or

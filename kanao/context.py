@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Sequence, Union
 
-from .errors import ErrorCode, KakaoReadError, success
+from .errors import ErrorCode, KanaoError, success
 from .model import Message
 from .reader import Reader
 
@@ -28,11 +28,11 @@ def read_context(
     happened to sort first.
     """
     if limit <= 0:
-        raise KakaoReadError(ErrorCode.INVALID_REQUEST, "limit must be greater than zero")
+        raise KanaoError(ErrorCode.INVALID_REQUEST, "limit must be greater than zero")
 
     room = _resolve(reader, target)
     if not room.readable:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.KEY_UNAVAILABLE,
             f"KakaoTalk has not opened this conversation, so its messages cannot be read; "
             f"open it in KakaoTalk and try again",
@@ -93,19 +93,19 @@ def _resolve(reader: Reader, target: Union[int, str]):
     if isinstance(target, int):
         room = reader.room(target)
         if room is None:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.CHAT_NOT_FOUND, f"No conversation has id {target}"
             )
         return room
 
     matches = reader.resolve(target)
     if not matches:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.CHAT_NOT_FOUND,
             f"No conversation is titled {target!r}; list conversations to see the stored titles",
         )
     if len(matches) > 1:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.AMBIGUOUS_CHAT,
             f"{len(matches)} conversations match {target!r}; choose one and retry with its id",
             candidates=[match.as_json() for match in matches],

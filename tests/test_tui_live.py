@@ -12,11 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kakaoread import paths
-from kakaoread.tui.app import App
-from kakaoread.tui.console import Key
-from kakaoread.tui.layout import strip_ansi
-from kakaoread.tui.theme import Theme
+from kanao import paths
+from kanao.tui.app import App
+from kanao.tui.console import Key
+from kanao.tui.layout import strip_ansi
+from kanao.tui.theme import Theme
 
 from tests.fixtures import DIRECT_ROOM, GROUP_ROOM, OWN_ID, PEER_ID, build_reader_on_disk, touch_log
 

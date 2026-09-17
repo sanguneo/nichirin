@@ -11,7 +11,7 @@ from __future__ import annotations
 import struct
 import unittest
 
-from kakaoread.process import (
+from kanao.process import (
     CONTEXT_SIZE,
     KEY_SIZE,
     SALT_SIZE,

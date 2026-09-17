@@ -21,7 +21,7 @@ from typing import Any, Optional, Sequence
 
 from . import __version__
 from .context import DEFAULT_LIMIT, read_context
-from .errors import ErrorCode, KakaoReadError, as_envelope, success
+from .errors import ErrorCode, KanaoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
@@ -49,7 +49,7 @@ def _add_room_selector(parser: argparse.ArgumentParser, required: bool) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kakaoread",
+        prog="kanao",
         description="Read KakaoTalk conversations and friends, and send through the Windows client",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -236,7 +236,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         _emit(success({"tables": described}))
         return 0
 
-    raise KakaoReadError(ErrorCode.INVALID_REQUEST, f"unsupported command {arguments.command}")
+    raise KanaoError(ErrorCode.INVALID_REQUEST, f"unsupported command {arguments.command}")
 
 
 def _names(reader: Reader, arguments: argparse.Namespace) -> int:
@@ -295,14 +295,14 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     from .winauto import make_sender
 
     if arguments.room is not None and not arguments.room.strip():
-        raise KakaoReadError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+        raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
     room = _selected_room(reader, arguments)
     catalogued = reader.rooms()
     # A window title cannot distinguish two catalog rooms with the same name,
     # even if the caller supplied an id and only one window is currently open.
     duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
     if len(duplicates) != 1:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.AMBIGUOUS_CHAT,
             "multiple catalog rooms share this window title; give the target a unique title",
             candidates=[r.as_json() for r in duplicates],
@@ -324,7 +324,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             hint=hint,
         )
     except OSError as error:
-        raise KakaoReadError(ErrorCode.SEND_FAILED, str(error)) from error
+        raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
     _emit(success({**result, "roomId": str(room.id)}))
     return 0
 
@@ -335,7 +335,7 @@ def _tui(reader: Reader) -> int:
     from .tui.console import Console, supports_tui
 
     if not supports_tui():
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.INVALID_REQUEST,
             "the terminal interface needs an interactive Windows console; "
             "run it directly rather than through a pipe",

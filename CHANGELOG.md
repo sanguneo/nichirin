@@ -4,6 +4,27 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [미출시]
+
+### 변경
+
+- **이름이 `kanao-cli` 가 되었습니다.** 저장소는 `sanguneo/kanao-cli`, 명령은
+  `python -m kanao` 입니다. 파이썬 패키지가 `kanao` 인 것은 하이픈이 임포트할 수 있는
+  이름이 아니기 때문입니다. `KakaoReadError` 는 `KanaoError` 가 되었고, 환경 변수는
+  `KAKAOREAD_*` 에서 `KANAO_*` 로 바뀌었습니다.
+- **주소 캐시와 이름 이력은 `%LOCALAPPDATA%\kanao-cli\` 로 옮겼습니다.** 예전 폴더가
+  남아 있다면 `names.jsonl` 을 복사해 오세요 — 이름 이력은 이 파일 말고 어디에도
+  없어서, 두고 오면 다시 만들 방법이 없습니다.
+
+### 유지
+
+- **예전 이름으로도 그대로 실행됩니다.** `python -m kakaoread`, `kakaoread` 명령,
+  `scripts/kakaoread.py`, `import kakaoread` 가 모두 동작하고 현재 이름을 stderr 로
+  한 줄 알립니다 — stdout 은 호출자가 파싱하는 JSON 봉투라서 건드리지 않습니다.
+- 그 임포트는 **같은 모듈 객체**로 이어집니다. 사본을 한 번 더 적재했다면 두 이름이
+  서로 다른 `KanaoError` 를 갖게 되어, 한쪽으로 쓴 `except` 가 다른 쪽에서 올라온
+  예외를 조용히 놓쳤을 것입니다.
+
 ## [0.5.1] — 2026-09-16
 
 새 메시지 하나 때문에 데이터베이스를 통째로 다시 푸는 일을 그만뒀고, 그 과정에서
@@ -143,7 +164,7 @@
 ### 수정
 
 - 성공한 행을 방별로 기억해 다음부터는 대상만 엽니다. 저장 위치는
-  `%LOCALAPPDATA%\kakaoread\rows.json` 이고 **방 이름 대신 이름의 해시**를 키로 씁니다.
+  `%LOCALAPPDATA%\kanao-cli\rows.json` 이고 **방 이름 대신 이름의 해시**를 키로 씁니다.
 - 기억이 없을 때는 "카탈로그 최신순 순위에 있다" 와 "고정된 방이라 맨 위에 있다" 두
   가설을 번갈아 시도합니다. 고정된 방은 아무리 오래됐어도 목록 맨 위로 뜨기 때문에,
   한쪽만 끝까지 파고들면 엉뚱한 방을 여럿 열게 됩니다.
@@ -165,7 +186,7 @@
 - 도구가 연 대화방 창은 **최소화된 채로** 둡니다. 이미 열어두신 창은 건드리지 않습니다.
 - 터미널 입력창에서 보낸 메시지의 상태를 오른쪽 끝에 표시합니다. `*` 는 클라이언트가
   받아간 상태, `✓` 는 대화에서 되읽혀 실제로 나간 것이 확인된 상태입니다.
-- `KAKAOREAD_TUI_MARGIN`: 오른쪽 여백(기본 1칸) 조절. 스크롤바가 마지막 칸을 덮는
+- `KANAO_TUI_MARGIN`: 오른쪽 여백(기본 1칸) 조절. 스크롤바가 마지막 칸을 덮는
   터미널을 위한 값이며, `0` 이면 전부 사용합니다.
 - `reader.stored_title()`: 카탈로그에 저장된 원본 제목. 창 제목이 표시 제목과 다른
   방(자기 채팅 등)을 찾는 데 씁니다.
@@ -244,9 +265,9 @@
   `search` 는 읽을 수 있는 방 전체 검색입니다.
 - 터미널 브라우저: 대화방 목록, 대화, 시간 구간 다이제스트(`/sum`).
 
-[0.4.0]: https://github.com/sanguneo/kakaoread/compare/v0.3.2...v0.4.0
-[0.3.2]: https://github.com/sanguneo/kakaoread/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/sanguneo/kakaoread/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/sanguneo/kakaoread/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/sanguneo/kakaoread/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/sanguneo/kakaoread/releases/tag/v0.1.0
+[0.4.0]: https://github.com/sanguneo/kanao-cli/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/sanguneo/kanao-cli/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/sanguneo/kanao-cli/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/sanguneo/kanao-cli/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/sanguneo/kanao-cli/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/sanguneo/kanao-cli/releases/tag/v0.1.0

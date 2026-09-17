@@ -216,7 +216,7 @@ class _ScreenInfo(ctypes.Structure):
     ]
 
 
-RIGHT_MARGIN_VARIABLE: Final = "KAKAOREAD_TUI_MARGIN"
+RIGHT_MARGIN_VARIABLE: Final = "KANAO_TUI_MARGIN"
 DEFAULT_RIGHT_MARGIN: Final = 1
 """Columns left unused at the right edge.
 
@@ -474,7 +474,7 @@ def terminal_size() -> tuple[int, int]:
 
 def force_size() -> Optional[tuple[int, int]]:
     """Honour an explicit size, which is how the UI is captured for review."""
-    raw = os.environ.get("KAKAOREAD_TUI_SIZE")
+    raw = os.environ.get("KANAO_TUI_SIZE")
     if not raw or "x" not in raw:
         return None
     columns, _, rows = raw.partition("x")

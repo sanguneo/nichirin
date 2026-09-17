@@ -50,7 +50,7 @@ from typing import Final, Optional
 
 from . import PAGE_SIZE, RESERVE_SIZE, page as pages, wal as wal_format
 from .cng import PreparedKey
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KanaoError
 
 _READ_ATTEMPTS: Final = 4
 _BACKOFF_SECONDS: Final = (0.05, 0.15, 0.4)
@@ -200,9 +200,9 @@ def build_image(
     encrypted = database.read_bytes()
 
     if not encrypted:
-        raise KakaoReadError(ErrorCode.READ_FAILED, f"{database.name} is empty")
+        raise KanaoError(ErrorCode.READ_FAILED, f"{database.name} is empty")
     if len(encrypted) % page_size:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.READ_FAILED,
             f"{database.name} ends with a partial page ({len(encrypted) % page_size} bytes)",
         )
@@ -212,7 +212,7 @@ def build_image(
 
     missing = _undefined_pages(committed, base_pages)
     if missing:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.READ_FAILED,
             f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
         )
@@ -325,7 +325,7 @@ def open_image(image: bytes, label: str) -> sqlite3.Connection:
     connection = _connect(image)
     try:
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.READ_FAILED, f"{label} did not decrypt to a valid database"
             )
     except BaseException:
@@ -457,7 +457,7 @@ class SnapshotCache:
                 raise
         except (
             ConsistencyError,
-            KakaoReadError,
+            KanaoError,
             wal_format.WalFormatError,
             sqlite3.DatabaseError,
         ):
@@ -498,14 +498,14 @@ class SnapshotCache:
                 if attempt < len(_BACKOFF_SECONDS):
                     time.sleep(_BACKOFF_SECONDS[attempt])
             except FileNotFoundError as error:
-                raise KakaoReadError(
+                raise KanaoError(
                     ErrorCode.READ_FAILED, f"{database.name} no longer exists"
                 ) from error
             except wal_format.WalFormatError as error:
-                raise KakaoReadError(
+                raise KanaoError(
                     ErrorCode.READ_FAILED, f"{database.name}: {error}"
                 ) from error
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.BUSY,
             f"KakaoTalk kept writing {database.name} during "
             f"{_READ_ATTEMPTS} read attempts; try again in a moment",

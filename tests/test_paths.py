@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kakaoread import paths
-from kakaoread.errors import ErrorCode, KakaoReadError
+from kanao import paths
+from kanao.errors import ErrorCode, KanaoError
 
 
 class UserDirectoryTests(unittest.TestCase):
@@ -48,18 +48,18 @@ class UserDirectoryTests(unittest.TestCase):
         self.assertEqual(paths.user_directory({"LOCALAPPDATA": str(self.local)}), complete)
 
     def test_explains_an_unset_environment_rather_than_raising_a_key_error(self) -> None:
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             paths.user_directory({})
         self.assertEqual(raised.exception.code, ErrorCode.NO_USER_DATA)
 
     def test_explains_a_machine_with_no_kakaotalk_at_all(self) -> None:
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             paths.user_directory({"LOCALAPPDATA": str(self.local)})
         self.assertEqual(raised.exception.code, ErrorCode.NO_USER_DATA)
 
     def test_explains_a_profile_directory_that_holds_no_account(self) -> None:
         self.profiles.mkdir(parents=True)
-        with self.assertRaises(KakaoReadError) as raised:
+        with self.assertRaises(KanaoError) as raised:
             paths.user_directory({"LOCALAPPDATA": str(self.local)})
         self.assertEqual(raised.exception.code, ErrorCode.NO_USER_DATA)
         self.assertIn("sign in", raised.exception.message)

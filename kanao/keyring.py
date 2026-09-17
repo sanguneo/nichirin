@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from . import paths
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KanaoError
 from .page import SALT_SIZE
 from .process import CodecContext, find_pid, resolve_addresses, scan_process
 
@@ -23,7 +23,7 @@ from .process import CodecContext, find_pid, resolve_addresses, scan_process
 def _cache_path() -> Path:
     """Where the addresses of a previous scan are remembered, outside the repo."""
     root = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
-    return Path(root) / "kakaoread" / "contexts.json"
+    return Path(root) / "kanao-cli" / "contexts.json"
 
 
 def _remembered(pid: int) -> tuple[list[int], int]:
@@ -146,12 +146,12 @@ class Keyring:
         if key is not None:
             return key
         if not self.running:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.KAKAO_NOT_RUNNING,
                 "KakaoTalk is not running, so no decryption key is available; "
                 "start and sign in to the desktop client",
             )
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.KEY_UNAVAILABLE,
             f"KakaoTalk has not opened {name}, so its key is not in memory; "
             "open that conversation in KakaoTalk and try again",

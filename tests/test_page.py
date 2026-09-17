@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.cng import PreparedKey
-from kakaoread.page import (
+from kanao.cng import PreparedKey
+from kanao.page import (
     SALT_SIZE,
     SQLITE_HEADER,
     read_salt,

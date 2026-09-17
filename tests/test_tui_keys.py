@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import unittest
 
-from kakaoread.tui.console import Console, Key, KeyEvent
+from kanao.tui.console import Console, Key, KeyEvent
 
 VK_BACK = 0x08
 VK_RETURN = 0x0D

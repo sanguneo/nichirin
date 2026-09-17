@@ -131,7 +131,7 @@ class Theme:
 def _colour_supported() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
-    if os.environ.get("KAKAOREAD_FORCE_COLOR"):
+    if os.environ.get("KANAO_FORCE_COLOR"):
         return True
     return sys.stdout.isatty()
 

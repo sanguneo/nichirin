@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
-from ..errors import ErrorCode, KakaoReadError
+from ..errors import ErrorCode, KanaoError
 from ..model import Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
@@ -251,7 +251,7 @@ class App:
             return False
         try:
             arrived = chat.watcher.poll()
-        except KakaoReadError as error:
+        except KanaoError as error:
             chat.notice = error.message
             return True
         if not arrived:
@@ -294,7 +294,7 @@ class App:
         """Re-read the catalog so unread counts and ordering stay current."""
         try:
             catalogued = self.reader.rooms()
-        except KakaoReadError:
+        except KanaoError:
             return False
         self.titles = [room.title for room in catalogued]
         rooms = [room for room in catalogued if room.readable]
@@ -736,7 +736,7 @@ class App:
 
     def _footer_rooms(self, width: int) -> str:
         ring = self.reader.keyring
-        anchor = [Segment("kakaoread", self.theme.fg("accent", "kakaoread"))]
+        anchor = [Segment("kanao-cli", self.theme.fg("accent", "kanao-cli"))]
         middle = [
             Segment(f"{len(self.rooms)} rooms", self.theme.fg("muted", f"{len(self.rooms)} rooms")),
             Segment(f"{len(ring)} keys", self.theme.fg("dim", f"{len(ring)} keys")),
@@ -821,7 +821,7 @@ class App:
                 self.open_room(shown[min(self.selected, len(shown) - 1)])
                 self._forget_filter()
                 self.status = ""
-            except KakaoReadError as error:
+            except KanaoError as error:
                 self.status = error.message
         elif kind == "char" and text in ("r", "R"):
             self.load_rooms()
@@ -854,7 +854,7 @@ class App:
             try:
                 self.open_friend(shown[min(self.friend_selected, len(shown) - 1)])
                 self._forget_filter()
-            except KakaoReadError as error:
+            except KanaoError as error:
                 self.status = error.message
 
     def _handle_chat(self, kind: str, text: str) -> None:
@@ -965,7 +965,7 @@ class App:
         census = self.titles or [other.title for other in self.reader.rooms()]
         same = [title for title in census if title == room.title]
         if len(same) != 1:
-            raise KakaoReadError(
+            raise KanaoError(
                 ErrorCode.AMBIGUOUS_CHAT,
                 f"'{room.title}' 이름의 대화방이 {len(same)}개라 창을 특정할 수 없습니다",
             )
@@ -992,7 +992,7 @@ class App:
                 if chat.room.title in self.titles
                 else None,
             )
-        except KakaoReadError as error:
+        except KanaoError as error:
             chat.notice = f"전송 실패: {error.message}"
             return
         except OSError as error:
@@ -1073,7 +1073,7 @@ class App:
         try:
             history = self.reader.name_history(chat.room.id)
             found = self.reader.users_named(chat.room.id, who, history)
-        except KakaoReadError as error:
+        except KanaoError as error:
             chat.notice = f"이름 이력을 읽지 못했습니다: {error.message}"
             return
         current = self.reader.names()
@@ -1099,7 +1099,7 @@ class App:
     def _export(self, chat: ChatState) -> None:
         """Write the sliced text beside the user's other files, never into the repo."""
         target = os.path.join(
-            os.path.expanduser("~"), f"kakaoread-{chat.room.id}-digest.txt"
+            os.path.expanduser("~"), f"kanao-cli-{chat.room.id}-digest.txt"
         )
         try:
             with open(target, "w", encoding="utf-8") as handle:

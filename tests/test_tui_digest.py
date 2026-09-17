@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from kakaoread.model import Message
-from kakaoread.tui import digest
+from kanao.model import Message
+from kanao.tui import digest
 
 BASE = int(datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc).timestamp())
 ROOM = 7

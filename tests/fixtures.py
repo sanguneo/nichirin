@@ -16,10 +16,10 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from kakaoread import paths
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.keyring import Keyring
-from kakaoread.reader import Reader
+from kanao import paths
+from kanao.errors import ErrorCode, KanaoError
+from kanao.keyring import Keyring
+from kanao.reader import Reader
 
 PROFILE = Path("C:/synthetic-profile")
 OWN_ID = 80133957
@@ -110,7 +110,7 @@ class StubCache:
                 return connection
         # Match what the real cache raises when a database cannot be opened,
         # so tests cannot pass against an error type production never produces.
-        raise KakaoReadError(ErrorCode.KEY_UNAVAILABLE, f"no key for {name}")
+        raise KanaoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {name}")
 
     def close(self) -> None:
         for connection in self.databases.values():

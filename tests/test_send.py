@@ -4,8 +4,8 @@ import unittest
 import ctypes
 from unittest.mock import Mock, patch
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.winauto import ChatWindow, Sender, Win32Backend
+from kanao.errors import ErrorCode, KanaoError
+from kanao.winauto import ChatWindow, Sender, Win32Backend
 
 
 class FakeWindows:
@@ -41,7 +41,7 @@ class SendTests(unittest.TestCase):
         self.sender = Sender(self.backend, running=lambda: True)
 
     def test_empty_target_cannot_resolve_the_only_window(self) -> None:
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             self.sender.send("  ", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, [])
@@ -80,7 +80,7 @@ class SendTests(unittest.TestCase):
 
     def test_duplicate_exact_titles_are_refused(self) -> None:
         self.backend.windows.append(ChatWindow(43, "Synthetic room"))
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.AMBIGUOUS_CHAT)
         self.assertEqual(self.backend.actions, [])
@@ -91,7 +91,7 @@ class SendTests(unittest.TestCase):
 
     def test_unopened_exact_room_cannot_target_a_longer_title(self) -> None:
         self.backend.windows = [ChatWindow(43, "Synthetic room extra")]
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(self.backend.actions, [])
@@ -99,27 +99,27 @@ class SendTests(unittest.TestCase):
     def test_invalid_message_is_refused_without_writes(self) -> None:
         for text in ("", " \n", "hello\x00world"):
             with self.subTest(text=text):
-                with self.assertRaises(KakaoReadError) as caught:
+                with self.assertRaises(KanaoError) as caught:
                     self.sender.send("Synthetic room", text)
                 self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, [])
 
     def test_closed_client_is_a_typed_failure(self) -> None:
         sender = Sender(self.backend, running=lambda: False)
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.KAKAO_NOT_RUNNING)
 
     def test_missing_input_is_a_typed_failure(self) -> None:
         self.backend.control = 0
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.INPUT_NOT_FOUND)
         self.assertEqual(self.backend.actions, [])
 
     def test_submit_failure_does_not_retry_or_erase_draft(self) -> None:
         self.backend.fail_submit = True
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             self.sender.send("Synthetic room", "synthetic text")
         self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
         self.assertEqual(self.backend.actions, ["fill", "submit"])

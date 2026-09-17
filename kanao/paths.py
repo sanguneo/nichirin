@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Final, Iterator
 
-from .errors import ErrorCode, KakaoReadError
+from .errors import ErrorCode, KanaoError
 
 CHAT_DATA_DIRECTORY: Final = "chat_data"
 USER_DATABASE: Final = "TalkUserDB.edb"
@@ -30,14 +30,14 @@ def user_directory(environment: os._Environ[str] | dict[str, str] | None = None)
     env = os.environ if environment is None else environment
     local_app_data = env.get("LOCALAPPDATA")
     if not local_app_data:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.NO_USER_DATA,
             "LOCALAPPDATA is not set, so the KakaoTalk profile directory cannot be located",
         )
 
     profiles_root = Path(local_app_data) / "Kakao" / "KakaoTalk" / "users"
     if not profiles_root.is_dir():
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.NO_USER_DATA,
             f"No KakaoTalk profile directory exists at {profiles_root}",
         )
@@ -50,7 +50,7 @@ def user_directory(environment: os._Environ[str] | dict[str, str] | None = None)
         and (profile / CHAT_DATA_DIRECTORY).is_dir()
     ]
     if not candidates:
-        raise KakaoReadError(
+        raise KanaoError(
             ErrorCode.NO_USER_DATA,
             f"No signed-in KakaoTalk profile was found under {profiles_root}; "
             "sign in to the KakaoTalk desktop client first",

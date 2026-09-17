@@ -12,8 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kakaoread.errors import ErrorCode, KakaoReadError
-from kakaoread.winauto import ChatWindow, RoomOpener, Sender, row_geometry
+from kanao.errors import ErrorCode, KanaoError
+from kanao.winauto import ChatWindow, RoomOpener, Sender, row_geometry
 
 LIST_CONTROL = 900
 
@@ -130,19 +130,19 @@ class OpeningTests(unittest.TestCase):
 
     def test_a_room_that_is_not_in_the_list_is_refused(self) -> None:
         desktop = FakeDesktop(["하나", "둘"])
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             opener(desktop).open("없는 방")
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
 
     def test_every_room_opened_while_searching_is_closed_again(self) -> None:
         desktop = FakeDesktop(["하나", "둘"])
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KanaoError):
             opener(desktop).open("없는 방")
         self.assertEqual(sorted(desktop.closed), ["둘", "하나"])
 
     def test_the_search_stops_at_the_row_budget(self) -> None:
         desktop = FakeDesktop(["a", "b", "c", "d"])
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KanaoError):
             opener(desktop, rows=2).open("d")
         self.assertEqual(desktop.clicks, [0, 1])
 
@@ -160,7 +160,7 @@ class SendWithOpeningTests(unittest.TestCase):
 
     def test_without_the_flag_a_closed_room_is_still_refused(self) -> None:
         desktop = FakeDesktop(["받는 방"])
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             self.sender(desktop).send("받는 방", "안녕")
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(desktop.clicks, [], "a send without --open touched the room list")
@@ -194,7 +194,7 @@ class AliasTests(unittest.TestCase):
 
     def test_an_alias_does_not_widen_an_ordinary_match(self) -> None:
         desktop = FakeDesktop(["다른 방"])
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KanaoError):
             opener(desktop).open("받는 방", aliases=["또 다른 방"])
 
 
@@ -212,7 +212,7 @@ class MainWindowTests(unittest.TestCase):
         desktop = FakeDesktop(["받는 방"])
         desktop.list_control = None
         desktop.restorable = False
-        with self.assertRaises(KakaoReadError) as caught:
+        with self.assertRaises(KanaoError) as caught:
             opener(desktop).open("받는 방")
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
 
@@ -357,7 +357,7 @@ class FlashTests(unittest.TestCase):
 
     def test_a_row_that_opens_nothing_gives_up(self) -> None:
         desktop = FakeDesktop([])
-        with self.assertRaises(KakaoReadError):
+        with self.assertRaises(KanaoError):
             opener(desktop, rows=2).open("없는 방")
         self.assertLessEqual(desktop.waits, 2 * 40, "the give-up budget grew")
 

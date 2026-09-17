@@ -1,5 +1,5 @@
 ---
-name: kakaoread
+name: kanao-cli
 description: "Read, search, and follow the user's local KakaoTalk conversations, list friends, draft replies, and send explicitly authorized text through the Windows client. Use for kakao, kakaotalk, katok, katalk, 카톡, 카카오톡, 대화 요약, 친구 목록, 답장 써줘, 메시지 보내줘. Ships a self-contained Python CLI; no account paths or keys need configuring."
 compatibility: "Windows 10/11, 64-bit Python 3.10+, KakaoTalk desktop client running and signed in."
 ---
@@ -13,14 +13,18 @@ and content; the `send` command operates the real client.
 
 ## Locate the CLI
 
-Resolve `scripts/kakaoread.py` relative to **this SKILL.md**, not the working
+Resolve `scripts/kanao-cli.py` relative to **this SKILL.md**, not the working
 directory. Replace `<skill-dir>` below with that absolute path and quote it.
 No global command, checkout, `pip install`, or credentials are needed.
+
+This skill used to be called `kakaoread`. `scripts/kakaoread.py` still ships
+and still works, so an older instruction naming it is not broken — it prints
+one line to stderr and runs. Prefer `scripts/kanao-cli.py` in anything new.
 
 ## One call answers a conversation
 
 ```powershell
-python "<skill-dir>/scripts/kakaoread.py" context --room "Sample Contact"
+python "<skill-dir>/scripts/kanao-cli.py" context --room "Sample Contact"
 ```
 
 Do not run `status`, `verify`, or `rooms` first. `context` resolves the room,
@@ -95,8 +99,8 @@ noticed as it arrives.
 ## Following a conversation live
 
 ```powershell
-python "<skill-dir>/scripts/kakaoread.py" follow --interval 1
-python "<skill-dir>/scripts/kakaoread.py" follow --room-id 12345 --room-id 67890
+python "<skill-dir>/scripts/kanao-cli.py" follow --interval 1
+python "<skill-dir>/scripts/kanao-cli.py" follow --room-id 12345 --room-id 67890
 ```
 
 This streams NDJSON: one `{"event":"watching",...}` line, then one
@@ -108,19 +112,19 @@ exit.
 ## Everything else
 
 ```powershell
-python "<skill-dir>/scripts/kakaoread.py" rooms --readable-only --limit 50
-python "<skill-dir>/scripts/kakaoread.py" friends
-python "<skill-dir>/scripts/kakaoread.py" friends --favorites
-python "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --limit 100
-python "<skill-dir>/scripts/kakaoread.py" messages --room-id 12345 --before-id 9876
-python "<skill-dir>/scripts/kakaoread.py" search "meeting time" --limit 20
-python "<skill-dir>/scripts/kakaoread.py" names --room-id 12345
-python "<skill-dir>/scripts/kakaoread.py" names --room-id 12345 "Sample Nickname"
-python "<skill-dir>/scripts/kakaoread.py" names --room-id 12345 --user-id 98765
-python "<skill-dir>/scripts/kakaoread.py" status
-python "<skill-dir>/scripts/kakaoread.py" verify
-python "<skill-dir>/scripts/kakaoread.py" schema
-python "<skill-dir>/scripts/kakaoread.py" query "SELECT COUNT(*) FROM chatLogs" --room-id 12345
+python "<skill-dir>/scripts/kanao-cli.py" rooms --readable-only --limit 50
+python "<skill-dir>/scripts/kanao-cli.py" friends
+python "<skill-dir>/scripts/kanao-cli.py" friends --favorites
+python "<skill-dir>/scripts/kanao-cli.py" messages --room-id 12345 --limit 100
+python "<skill-dir>/scripts/kanao-cli.py" messages --room-id 12345 --before-id 9876
+python "<skill-dir>/scripts/kanao-cli.py" search "meeting time" --limit 20
+python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345
+python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345 "Sample Nickname"
+python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345 --user-id 98765
+python "<skill-dir>/scripts/kanao-cli.py" status
+python "<skill-dir>/scripts/kanao-cli.py" verify
+python "<skill-dir>/scripts/kanao-cli.py" schema
+python "<skill-dir>/scripts/kanao-cli.py" query "SELECT COUNT(*) FROM chatLogs" --room-id 12345
 ```
 
 `rooms` marks each room `readable`. An unreadable room is listed but cannot be
@@ -148,9 +152,9 @@ window is closed, even with KakaoTalk sitting in the tray. The CLI resolves the
 room in the local catalog, then requires an exact window-title match.
 
 ```powershell
-python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --dry-run "Approved text"
-python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" "Approved text"
-python "<skill-dir>/scripts/kakaoread.py" send --room "Sample Room" --open "Approved text"
+python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --dry-run "Approved text"
+python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" "Approved text"
+python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --open "Approved text"
 ```
 
 - Confirm recipient and content with the user before sending to others. Existing

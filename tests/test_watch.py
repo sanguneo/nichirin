@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kakaoread.watch import Watcher
+from kanao.watch import Watcher
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -33,7 +33,7 @@ class WatcherTests(unittest.TestCase):
 
     def arrive(self, room_id: int, log_id: int, author: int = PEER_ID, text: str = "new") -> None:
         """Append a message the way the client would: row plus a changed log."""
-        from kakaoread import paths
+        from kanao import paths
 
         connection = self.cache.databases[paths.chat_log_name(room_id)]
         connection.execute(
@@ -123,7 +123,7 @@ class CatchUpTests(WatcherTests):
 
     def burst(self, room_id: int, first_id: int, count: int) -> list[int]:
         """Insert *count* messages and touch the log once, as a backfill does."""
-        from kakaoread import paths
+        from kanao import paths
 
         connection = self.cache.databases[paths.chat_log_name(room_id)]
         ids = list(range(first_id, first_id + count))
@@ -171,7 +171,7 @@ class CostTests(WatcherTests):
         )
 
     def test_only_the_room_that_changed_is_opened(self) -> None:
-        from kakaoread import paths
+        from kanao import paths
 
         watcher = Watcher(self.reader)
         watcher.prime()
@@ -192,7 +192,7 @@ class ResilienceTests(WatcherTests):
         look unchanged forever after — and the arrival that caused the change
         would never be reported.
         """
-        from kakaoread import paths
+        from kanao import paths
 
         watcher = Watcher(self.reader)
         watcher.prime()
@@ -209,7 +209,7 @@ class ResilienceTests(WatcherTests):
         )
 
     def test_a_room_that_becomes_unreadable_does_not_stop_the_others(self) -> None:
-        from kakaoread import paths
+        from kanao import paths
 
         watcher = Watcher(self.reader)
         watcher.prime()
