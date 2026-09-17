@@ -1,8 +1,8 @@
 """CLI tests for the ``serve`` subcommand: arg parsing only.
 
-The HTTP surface itself is covered by ``tests/test_serve.py``. Here we pin
-that the CLI exposes the right flags, accepts a long token via ``--token``
-or ``KANAO_TOKEN``, refuses too-short tokens, validates ``--min-interval``,
+The HTTP surface itself is covered by ``tests/serve/``. Here we pin that the
+CLI exposes the right flags, accepts a long token via ``--token`` or
+``KANAO_TOKEN``, refuses too-short tokens, validates ``--min-interval``,
 and falls through to the runtime handler when both pieces are present.
 """
 
@@ -13,7 +13,6 @@ import unittest
 from unittest import mock
 
 from kanao import cli
-from kanao.errors import ErrorCode, KanaoError
 from kanao.errors import ErrorCode, KanaoError
 
 

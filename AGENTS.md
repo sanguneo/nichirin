@@ -33,6 +33,11 @@ unittest discover tests` breaks the fixture imports.
 | `watch.py` | Stat-gated follow loop |
 | `cli.py` | Argument parsing and the JSON envelope |
 | `winauto.py` | Exact window targeting, draft replacement, background text sending |
+| `serve/config.py` | Constants, token and interval validation, error-to-status map |
+| `serve/handler.py` | Auth, routing, and every route that answers and closes |
+| `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
+| `serve/backends.py` | Reader, Sender and Watcher wiring for a live host |
+| `serve/server.py` | Binding the socket and serving until interrupted |
 | `tui/theme.py` | OmO dark-theme tokens, 256-colour fallback, speaker tints |
 | `tui/layout.py` | Column-accurate width, truncation, wrapping, footer plan |
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |

@@ -247,6 +247,7 @@ T=http://127.0.0.1:8765; H="Authorization: Bearer 열여섯-글자-이상의-공
 curl -s $T/health
 curl -s -H "$H" $T/rooms
 curl -s -H "$H" "$T/context?roomId=1&limit=20"
+curl -s -H "$H" "$T/digest?roomId=1&span=30m"
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
   -d '{"room": "가족", "text": "원격에서 보냄"}' $T/send
 curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
@@ -257,8 +258,9 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `GET /health` | 살아있는지 (토큰 불필요) |
 | `GET /rooms` | 읽을 수 있는 방 목록 |
 | `GET /context?roomId=…&limit=…` | 한 방의 최근 메시지 |
-| `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로, `roomId` 지정도 됨 |
-| `GET /stream` | **SSE** 실시간 새 메시지 — 매 연결 따라잡기 후 `event: message`, 30초마다 `event: ping`, 실패 시 `event: error` |
+| `GET /digest?roomId=…&span=…&limit=…&highlights=…` | 같은 창을 추출 요약으로 (원문보다 훨씬 작습니다) |
+| `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
+| `GET /stream` | **SSE** 실시간 새 메시지 — 연결 즉시 `event: ready`, 새 메시지마다 `event: message`, 폴링마다 `event: ping`, 실패 시 `event: error` 한 줄 뒤 종료 |
 
 연속 전송은 서버에서 2초 간격 규칙을 강제합니다(429 `RATE_LIMITED`, `--min-interval`로
 조절·`0`이면 끔). 토큰은 `--token`이나 `KANAO_TOKEN` 환경 변수로 주고(없으면 서버가
@@ -267,13 +269,14 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
 리버스 프록시 뒤에 두세요 — 평문 HTTP이므로 토큰이 그대로 노출됩니다.
 
-`/stream`이 끊기면 그냥 다시 붙으면 됩니다 — 매 연결마다 서버가 따라잡기부터 하므로
-끊긴 사이 도착한 메시지는 재접속 시 `event: message`로 따라옵니다. 30초마다
-`event: ping`이 오고, 폴링 실패는 `event: error` 한 줄 뒤 연결이 닫힙니다.
+`/stream`은 **연결된 시점부터** 새 메시지를 보냅니다. 끊겨 있던 동안 도착한 것은
+재접속해도 따라오지 않으니, 공백을 메우려면 `/context`나 `messages`로 마지막으로 본
+`logId` 뒤를 되읽으세요. 폴링마다(`--poll-interval`, 기본 1초) `event: ping`이 오고,
+폴링 실패는 `event: error` 한 줄 뒤 연결이 닫힙니다.
 
 | 무엇을 만났나 | 뜻 | 할 일 |
 | --- | --- | --- |
-| `401 INVALID_TOKEN` | 토큰이 틀림 | `Authorization: Bearer …` 확인 |
+| `401 UNAUTHORIZED` | 토큰이 없거나 틀림 | `Authorization: Bearer …` 확인 |
 | `429 RATE_LIMITED` | 2초 안에 또 보냄 | 잠깐 기다렸다 재시도 |
 | `503 KEY_UNAVAILABLE` | 카카오톡이 그 DB를 안 열어둠 | **채팅 탭·방 창을 한 번 띄우기** |
 | `status`에서 `decryptableDatabases: 0` | 힙 스캔이 빈손 | 아래 64비트 주의 |

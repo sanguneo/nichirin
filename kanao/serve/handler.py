@@ -1,114 +1,31 @@
-"""Remote access to the send + read + stream paths over HTTP.
+"""The request/response half of the server: auth, routing, and the envelope.
 
-Windows hosts this process next to the KakaoTalk client. A Linux or remote
-machine connects with a bearer token and can then:
-
-- ``POST /send`` — hand a message to the same ``winauto.Sender`` the ``send``
-  command drives, with the two-seconds-between-sends rule enforced server-side.
-- ``GET /rooms`` — list readable rooms in the same shape as the CLI command.
-- ``GET /context?roomId=…`` — read one room's recent messages.
-- ``GET /stream`` — Server-Sent Events carrying new messages as ``watch.Watcher``
-  finds them. Programmable SSE clients and ``curl -N`` consume this, and the
-  same channel works for a remote build that forwards chat into an LLM.
-
-SSE, not WebRTC: this is a one-way push of small JSON payloads, not
-latency-sensitive media. WebRTC would add a signalling server, SDP exchange,
-and STUN/TURN traversal for zero benefit here; SSE rides plain HTTP, passes
-through any proxy a ``POST`` would, and needs no stdlib-external package.
-``curl -N`` alone reads the stream, which is exactly the surface a remote
-Linux caller has.
-
-Security posture: a shared bearer token (``--token`` or ``KANAO_TOKEN``, ASCII
-letters/digits plus ``-._~+/=``, at least 16 characters), loopback binding by
-default, no TLS of its own. Reach it from another machine over SSH port
-forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a
-wildcard address on an open network with a weak token.
-
-Sends are serialized under one lock and spaced ``min_interval`` seconds apart,
-because the client's input box is a single shared resource.
+Every route that answers and closes lives here. ``GET /stream`` does not — it
+holds its socket for as long as the caller stays, so its lifetime is
+:mod:`kanao.serve.stream`'s problem and this module only hands off to it.
 """
 
 from __future__ import annotations
 
-import argparse
 import hmac
 import json
-import math
-import re
 import threading
 import time
 import urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable, Optional, Type
 
-from .errors import ErrorCode, KanaoError, as_envelope
-
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
-DEFAULT_MIN_INTERVAL_SECONDS = 2.0
-DEFAULT_POLL_INTERVAL_SECONDS = 1.0
-MAX_BODY_BYTES = 1024 * 1024
-MIN_TOKEN_LENGTH = 16
-_TOKEN_RE = re.compile(r"^[A-Za-z0-9\-._~+/=]+$")
-
-_STATUS_BY_CODE = {
-    ErrorCode.INVALID_REQUEST: 400,
-    ErrorCode.AMBIGUOUS_CHAT: 409,
-    ErrorCode.CHAT_NOT_FOUND: 404,
-    ErrorCode.WINDOW_NOT_FOUND: 404,
-    ErrorCode.KEY_UNAVAILABLE: 503,
-    ErrorCode.KAKAO_NOT_RUNNING: 503,
-    ErrorCode.BUSY: 503,
-}
-
-
-def _status_for(error: KanaoError) -> int:
-    if error.code is ErrorCode.UNAUTHORIZED:
-        return 401
-    if error.code is ErrorCode.RATE_LIMITED:
-        return 429
-    return _STATUS_BY_CODE.get(error.code, 500)
-
-
-def validate_token(token: object) -> str:
-    """Accept an ASCII bearer secret and return it, else raise INVALID_REQUEST."""
-    if not isinstance(token, str) or len(token) < MIN_TOKEN_LENGTH:
-        raise KanaoError(
-            ErrorCode.INVALID_REQUEST,
-            f"a bearer token of at least {MIN_TOKEN_LENGTH} characters is required",
-        )
-    if not _TOKEN_RE.fullmatch(token):
-        raise KanaoError(
-            ErrorCode.INVALID_REQUEST,
-            "the bearer token must be ASCII letters, digits, or -._~+/=",
-        )
-    return token
-
-
-def validate_min_interval(value: object) -> float:
-    """Accept 0 (disabled) or a positive finite interval, else raise."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise KanaoError(ErrorCode.INVALID_REQUEST, "min-interval must be a number")
-    interval = float(value)
-    if interval == 0.0:
-        return 0.0
-    if not math.isfinite(interval) or interval <= 0:
-        raise KanaoError(
-            ErrorCode.INVALID_REQUEST, "min-interval must be 0 or a positive number"
-        )
-    return interval
-
-
-def validate_poll_interval(value: object) -> float:
-    """Accept a positive finite poll interval, else raise."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise KanaoError(ErrorCode.INVALID_REQUEST, "poll-interval must be a number")
-    interval = float(value)
-    if not math.isfinite(interval) or interval <= 0:
-        raise KanaoError(
-            ErrorCode.INVALID_REQUEST, "poll-interval must be a positive number"
-        )
-    return interval
+from ..errors import ErrorCode, KanaoError, as_envelope
+from .config import (
+    DEFAULT_MIN_INTERVAL_SECONDS,
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    MAX_BODY_BYTES,
+    _status_for,
+    validate_min_interval,
+    validate_poll_interval,
+    validate_token,
+)
+from .stream import serve_stream
 
 
 class _RateLimiter:
@@ -145,6 +62,7 @@ def build_handler(
     clock: Callable[[], float] = time.monotonic,
     rooms_provider: Optional[Callable[[], list[Any]]] = None,
     context_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
+    digest_provider: Optional[Callable[[int, str, int, int], dict[str, Any]]] = None,
     watcher_factory: Optional[Callable[[], Any]] = None,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
 ) -> Type[BaseHTTPRequestHandler]:
@@ -263,6 +181,8 @@ def build_handler(
                 self._handle_rooms()
             elif parsed.path == "/context":
                 self._handle_context(parsed)
+            elif parsed.path == "/digest":
+                self._handle_digest(parsed)
             elif parsed.path == "/stream":
                 self._handle_stream()
             else:
@@ -357,87 +277,69 @@ def build_handler(
                 return
             self._reply(200, {"ok": True, **payload})
 
-        def _sse_emit(self, kind: str, payload: dict[str, Any]) -> bool:
-            data = json.dumps(payload, ensure_ascii=False)
-            try:
-                self.wfile.write(f"event: {kind}\ndata: {data}\n\n".encode("utf-8"))
-                self.wfile.flush()
-                return True
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                return False
+        def _handle_digest(self, parsed) -> None:
+            """Hand over the extractive digest rather than the raw window.
 
-        def _handle_stream(self) -> None:
-            if watcher_factory is None:
+            A remote caller asked to summarise a busy room otherwise pages the
+            messages themselves: measured on this account, the same newest 400
+            were 116,269 bytes through `messages` and 3,989 through `digest`.
+            Over a link that is the whole point of this server, that gap is the
+            feature.
+            """
+            if digest_provider is None:
                 self._reply(
                     500,
                     as_envelope(
                         KanaoError(
                             ErrorCode.READ_FAILED,
-                            "no watcher is configured on this server",
+                            "no digest source is configured on this server",
                         )
                     ),
                 )
                 return
+            query = urllib.parse.parse_qs(parsed.query)
             try:
-                watcher = watcher_factory()
-            except Exception:
+                room_id = int(query.get("roomId", [""])[0])
+            except (TypeError, ValueError):
                 self._reply(
-                    500,
+                    400,
                     as_envelope(
-                        KanaoError(ErrorCode.READ_FAILED, "the watcher failed to start")
+                        KanaoError(ErrorCode.INVALID_REQUEST, "a numeric roomId is required")
                     ),
                 )
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.send_header("X-Accel-Buffering", "no")
-            self.end_headers()
+            span = query.get("span", ["30m"])[0]
             try:
-                try:
-                    watcher.prime()
-                except Exception:
-                    self._sse_emit(
-                        "error",
-                        as_envelope(
-                            KanaoError(ErrorCode.READ_FAILED, "the watcher failed to prime")
-                        ),
-                    )
-                    return
-                if not self._sse_emit("ready", {"ok": True}):
-                    return
-                while True:
-                    try:
-                        fresh = watcher.poll()
-                    except Exception:
-                        self._sse_emit(
-                            "error",
-                            as_envelope(
-                                KanaoError(
-                                    ErrorCode.READ_FAILED, "the watcher stopped responding"
-                                )
-                            ),
+                limit = int(query.get("limit", ["400"])[0])
+                highlights = int(query.get("highlights", ["3"])[0])
+            except (TypeError, ValueError):
+                self._reply(
+                    400,
+                    as_envelope(
+                        KanaoError(
+                            ErrorCode.INVALID_REQUEST,
+                            "limit and highlights must be integers",
                         )
-                        return
-                    for message in fresh:
-                        payload = (
-                            message.as_json()
-                            if hasattr(message, "as_json")
-                            else dict(message)
-                        )
-                        if not self._sse_emit("message", {"ok": True, "message": payload}):
-                            return
-                    if not self._sse_emit("ping", {"ok": True}):
-                        return
-                    time.sleep(period)
-            finally:
-                close = getattr(watcher, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
+                    ),
+                )
+                return
+            try:
+                payload = digest_provider(room_id, span, limit, highlights)
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            except OSError as error:
+                self._reply(500, as_envelope(KanaoError(ErrorCode.READ_FAILED, str(error))))
+                return
+            self._reply(200, {"ok": True, **payload})
+
+        def _handle_stream(self) -> None:
+            serve_stream(
+                self,
+                watcher_factory=watcher_factory,
+                poll_interval=period,
+                reply=self._reply,
+            )
 
         def _handle_send(self) -> None:
             try:
@@ -508,151 +410,3 @@ def build_handler(
     # reviewer can see what each connection closes over.
     Handler._serve_secret = secret  # type: ignore[attr-defined]
     return Handler
-
-
-def make_live_rooms_provider(reader_factory) -> Callable[[], list[Any]]:
-    """Return the rooms a live server lists on each ``GET /rooms``."""
-
-    def provider() -> list[Any]:
-        with reader_factory() as reader:
-            return list(reader.rooms())
-
-    return provider
-
-
-def make_live_context_provider(reader_factory) -> Callable[[int, int], dict[str, Any]]:
-    """Return the context a live server reads on each ``GET /context``."""
-
-    def provider(room_id: int, limit: int) -> dict[str, Any]:
-        from .context import read_context
-
-        with reader_factory() as reader:
-            answer = read_context(reader, room_id, limit=limit)
-        return {key: value for key, value in answer.items() if key != "ok"}
-
-    return provider
-
-
-def make_live_send() -> Callable[..., dict[str, Any]]:
-    """Build the send callable the server uses on a Windows host.
-
-    Each call opens a fresh reader (so the catalog is never stale across
-    requests), resolves the room exactly like the ``send`` command, refuses
-    duplicate catalog titles, and hands the text to the real sender.
-    """
-    from .names import NameLedger
-    from .reader import Reader
-
-    def send(
-        room: str,
-        text: str,
-        dry_run: bool = False,
-        open_if_needed: bool = False,
-        aliases=(),
-        hint=None,
-    ) -> dict[str, Any]:
-        from .context import _resolve
-        from .winauto import make_sender
-
-        with Reader(ledger=NameLedger()) as reader:
-            # cli._selected_room is this line plus an argparse namespace built
-            # to carry two values; importing cli from here is a cycle, and the
-            # cycle is the only thing that namespace was for.
-            resolved = _resolve(reader, room)
-            catalogued = reader.rooms()
-            duplicates = [
-                r for r in catalogued if r.title.casefold() == resolved.title.casefold()
-            ]
-            if len(duplicates) != 1:
-                raise KanaoError(
-                    ErrorCode.AMBIGUOUS_CHAT,
-                    "multiple catalog rooms share this window title; "
-                    "give the target a unique title",
-                    candidates=[r.as_json() for r in duplicates],
-                )
-            stored = reader.stored_title(resolved.id)
-            window_aliases = [stored] if stored and stored != resolved.title else []
-            position = next(
-                (index for index, r in enumerate(catalogued) if r.id == resolved.id),
-                None,
-            )
-            try:
-                result = make_sender().send(
-                    resolved.title,
-                    text,
-                    dry_run=dry_run,
-                    open_if_needed=open_if_needed,
-                    aliases=window_aliases,
-                    hint=position,
-                )
-            except OSError as error:
-                raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
-            return {**result, "roomId": str(resolved.id)}
-
-    return send
-
-
-def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], Any]:
-    """Return one ``watch.Watcher`` per SSE connection on a live server."""
-
-    class _LiveWatcher:
-        """Own the reader alongside the watcher so disconnect closes both."""
-
-        def __init__(self) -> None:
-            self._reader = reader_factory()
-            from .watch import Watcher
-
-            self._watcher = Watcher(self._reader, interval=interval)
-
-        def prime(self) -> None:
-            self._watcher.prime()
-
-        def poll(self):
-            return self._watcher.poll()
-
-        def close(self) -> None:
-            try:
-                self._reader.close()
-            except Exception:
-                pass
-
-    def factory() -> Any:
-        return _LiveWatcher()
-
-    return factory
-
-
-def run(
-    host: str,
-    port: int,
-    send: Callable[..., dict[str, Any]],
-    *,
-    token: str,
-    min_interval: float = DEFAULT_MIN_INTERVAL_SECONDS,
-    clock: Callable[[], float] = time.monotonic,
-    rooms_provider: Optional[Callable[[], list[Any]]] = None,
-    context_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
-    watcher_factory: Optional[Callable[[], Any]] = None,
-    poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
-) -> int:
-    """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
-    handler = build_handler(
-        send,
-        token=token,
-        min_interval=min_interval,
-        clock=clock,
-        rooms_provider=rooms_provider,
-        context_provider=context_provider,
-        watcher_factory=watcher_factory,
-        poll_interval=poll_interval,
-    )
-    server = ThreadingHTTPServer((host, port), handler)
-    server.daemon_threads = True
-    print(f"kanao serve listening on {host}:{server.server_port}", flush=True)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 130
-    finally:
-        server.server_close()
-    return 0

@@ -11,7 +11,16 @@
 - **원격 인터페이스 `kanao serve`.** Windows 상주 프로세스가 HTTP 서버를 열어
   리눅스·원격 외부에서 같은 전송 경로를 호출합니다. 표준 라이브러리만 씁니다.
   - `GET /health`(토큰 불필요), `GET /rooms`, `GET /context?roomId=…`,
-    `POST /send`, `GET /stream`(SSE: `ready`/`message`/`ping`).
+    `GET /digest?roomId=…`, `POST /send`, `GET /stream`(SSE:
+    `ready`/`message`/`ping`/`error`).
+  - `/digest`는 원격 링크를 아끼려고 있습니다. 실제 방 하나의 같은 최신 400개가
+    `messages`로는 121,557바이트, `digest`로는 4,793바이트였습니다(25배).
+  - **`kanao/serve.py`(760줄)를 `kanao/serve/` 패키지로 나눴습니다.**
+    `config`(상수와 검증) · `handler`(답하고 닫는 경로) · `stream`(연결이 요청보다
+    오래 사는 유일한 경로) · `backends`(실기 배선) · `server`(소켓). 공개 이름은
+    `kanao.serve`에서 그대로 나오므로 `from kanao import serve` 도,
+    `kakaoread.serve` 별칭도 전과 같습니다. 동작은 바꾸지 않았습니다.
+    테스트도 `tests/serve/`(auth · send · queries · stream)로 함께 나눴습니다.
   - Bearer 토큰(`--token`/`KANAO_TOKEN`, 최소 16자), 기본 바인딩 `127.0.0.1`,
     전송 직렬화 + 서버 강제 2초 간격(429 `RATE_LIMITED`).
   - 새 오류 코드 `UNAUTHORIZED`, `RATE_LIMITED` — 다른 대응을 요구하므로

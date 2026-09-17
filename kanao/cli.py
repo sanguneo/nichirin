@@ -278,6 +278,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
     if arguments.command == "serve":
         from .serve import (
             make_live_context_provider,
+            make_live_digest_provider,
             make_live_rooms_provider,
             make_live_send,
             make_live_watcher_factory,
@@ -302,6 +303,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             min_interval=arguments.min_interval,
             rooms_provider=make_live_rooms_provider(lambda: Reader()),
             context_provider=make_live_context_provider(lambda: Reader()),
+            digest_provider=make_live_digest_provider(lambda: Reader()),
             watcher_factory=make_live_watcher_factory(
                 lambda: Reader(), interval=arguments.poll_interval
             ),
