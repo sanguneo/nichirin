@@ -615,6 +615,22 @@ Taken:
 
 Not taken, and why:
 
+- **Expiring the delivery tick after 1.6 s** (`kamado-cli#27`). There the tick
+  is a whole row above the composer, and that row is shared: `_status_line`
+  gives a delivery priority over the notice and the unseen count, so a tick
+  that never expires hides them. Here the mark is a single cell on the
+  composer's right border, where it displaces nothing and hides nothing —
+  `delivered` is read in exactly one place, the box. A ✓ still standing an
+  hour later is not stale either; it says the last thing sent did arrive,
+  which stays true until the next send, and typing already clears it. Adding
+  a clock would retire the one fact worth keeping for no room reclaimed.
+- **Waiting longer for a split escape sequence** (`kamado-cli#28`). A macOS
+  terminal delivers Escape and the arrow keys as bytes, so a lone `\x1b` is
+  only telling apart from `\x1b[D` by waiting — and 30 ms was too short when
+  the two halves arrived in separate reads, which quit the interface instead
+  of moving the caret. This console reads `ReadConsoleInputW` records, so an
+  arrow arrives as `VK_LEFT` and Escape as `VK_ESCAPE`: two different records,
+  nothing to disambiguate and no delay to tune.
 - **Parallel page decryption across cores** (`kamado-cli#21`). The expensive
   case it speeds up barely happens here: the WAL overlay already means an
   arriving message costs 100.2 ms rather than 431.5 ms on a 48.3 MB room, and
