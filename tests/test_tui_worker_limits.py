@@ -6,6 +6,10 @@ import queue
 from dataclasses import replace
 from unittest.mock import patch
 
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.model import FEED_MESSAGE
 from kamado.tui.console import Key
 from kamado.tui.worker import Job, QUEUE_LIMIT, ROOMS

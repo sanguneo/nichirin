@@ -22,6 +22,10 @@ import unittest
 from pathlib import Path
 from typing import Callable, Optional
 
+from tests.platform import require_posix_console
+
+require_posix_console()
+
 from kamado.errors import ErrorCode, KamadoError
 from kamado.reader import Reader
 from kamado.snapshot import SnapshotCache
