@@ -800,23 +800,36 @@ class App:
         bottom_divider = self.theme.fg("borderMuted", "─" * width)
         return [top_divider, *content_lines, bottom_divider], caret_cursor
 
+    def _delivery_shown(self) -> bool:
+        """Whether the tick still has something to say.
+
+        The clock alone answers this, and both the row's presence and its
+        contents ask the same question. Expiring the flag from inside the
+        draw made the two disagree for exactly one frame: `_status_line`
+        still saw a delivery and asked for the row, while the row had just
+        expired and came back as a bare rule — a horizontal line flashing
+        across the screen on its way to nothing.
+        """
+        chat = self.chat
+        if chat is None or not chat.delivered:
+            return False
+        return self._clock() - chat.delivered_at < DELIVERED_TIMEOUT_SECONDS
+
     def _status_divider(self, width: int) -> str:
         """Draw the OmO-style active status divider right above the input."""
         chat = self.chat
-        if chat is not None and chat.delivered:
-            if self._clock() - chat.delivered_at < DELIVERED_TIMEOUT_SECONDS:
-                bullet = "✓"
-                text = "전송 완료"
-                left = f"── {bullet} {text} "
-                fill = max(0, width - display_width(left))
-                content = (
-                    self.theme.fg("accent", "── ")
-                    + self.theme.fg("success", bullet)
-                    + self.theme.fg("accent", f" {text} ")
-                    + self.theme.fg("borderMuted", "─" * fill)
-                )
-                return truncate_to_width(content, width)
-            chat.delivered = False
+        if self._delivery_shown():
+            bullet = "✓"
+            text = "전송 완료"
+            left = f"── {bullet} {text} "
+            fill = max(0, width - display_width(left))
+            content = (
+                self.theme.fg("accent", "── ")
+                + self.theme.fg("success", bullet)
+                + self.theme.fg("accent", f" {text} ")
+                + self.theme.fg("borderMuted", "─" * fill)
+            )
+            return truncate_to_width(content, width)
 
         if chat is not None and chat.outbox is not None:
             elapsed_sec = self._clock() - chat.outbox_at
@@ -863,7 +876,7 @@ class App:
 
     def _status_line(self, width: int) -> str:
         chat = self.chat
-        if chat is not None and (chat.outbox is not None or chat.delivered):
+        if (chat is not None and chat.outbox is not None) or self._delivery_shown():
             return self._status_divider(width)
         if chat is not None and chat.notice:
             return self._status_divider(width)

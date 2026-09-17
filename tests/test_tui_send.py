@@ -594,6 +594,25 @@ class DeliveryMarkTests(ComposerCase):
         self.assertNotIn("✓", self.composer())
         self.assertNotIn("전송 완료", self.composer())
 
+    def test_the_expiring_tick_does_not_flash_a_bare_rule(self) -> None:
+        """The row it leaves must be the row it was always going to leave.
+
+        Expiring the flag while drawing made the two readers disagree for one
+        frame: the status line still saw a delivery and asked for the row,
+        and the row had already expired and answered with a bare rule. At a
+        redraw every keystroke that is a horizontal line flashing across the
+        screen, so the same clock has to answer both.
+        """
+        now = [1_000.0]
+        self.app._clock = lambda: now[0]
+        self.send("안녕")
+        self.arrive("안녕")
+        now[0] += 2.0
+        first = strip_ansi(self.app._status_line(WIDTH))
+        second = strip_ansi(self.app._status_line(WIDTH))
+        self.assertEqual(first, second)
+        self.assertNotIn("─", first)
+
 
 if __name__ == "__main__":
     unittest.main()
