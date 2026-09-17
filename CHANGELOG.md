@@ -4,6 +4,31 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [Unreleased]
+
+### 추가
+
+- **원격 인터페이스 `kamado serve`.** Windows 갈래(`kanao-cli`)에서 넘어온 기능입니다.
+  카카오톡이 도는 맥의 상주 프로세스가 HTTP 서버를 열어 다른 머신에서 같은 전송·읽기
+  경로를 부릅니다. 표준 라이브러리만 씁니다.
+  - `GET /health`(토큰 불필요), `GET /rooms`, `GET /context?roomId=…`,
+    `GET /digest?roomId=…`, `POST /send`, `GET /stream`(SSE:
+    `ready`/`message`/`ping`/`error`).
+  - Bearer 토큰(`--token`/`KAMADO_TOKEN`, 최소 16자), 기본 바인딩 `127.0.0.1`,
+    전송 직렬화 + 서버 강제 2초 간격(429 `RATE_LIMITED`).
+  - 새 오류 코드 `UNAUTHORIZED`, `RATE_LIMITED` — 대응이 다르므로 기존 코드와
+    분리했습니다.
+  - `serve`는 데몬으로 전달되지 않습니다. 데몬은 질의 하나에 답하고 끝나므로,
+    소켓을 붙들고 있어야 할 서버가 데몬의 답만 찍고 종료해 버립니다.
+  - **HTTP 계층은 스텁으로 검증했고, 맥 실기 검증은 남아 있습니다.**
+    `tests/serve/` 46개가 통과하지만 이들은 `Sender`·`Reader`·`Watcher`를 스텁으로
+    대신합니다. 실제 창에 글자를 넣는 `make_live_send`는 맥에서 한 번 돌려봐야
+    합니다.
+- **`kamado/serve/`는 처음부터 패키지입니다.** Windows 쪽에서 단일 모듈이 760줄까지
+  자란 뒤 쪼갠 결과를 그대로 가져왔습니다: `config`(상수와 검증), `handler`(답하고
+  닫는 경로), `stream`(연결이 요청보다 오래 사는 유일한 경로), `backends`(실기 배선),
+  `server`(소켓). 공개 이름은 `kamado.serve`에서 그대로 나옵니다.
+
 ## [0.10.1] — 2026-09-17
 
 ### 추가

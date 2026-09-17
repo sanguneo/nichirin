@@ -178,6 +178,42 @@ keystrokes. Everything below is what it took to get there.
 - Shots are committed as **lossless WebP**; the same nine frames as PNG weigh
   four times as much.
 
+### The remote server (`kamado serve`)
+
+Ported from the Windows branch, where it grew to 760 lines in one module before
+being split. It arrived here already split, so the layout below is the shape to
+keep rather than one to rediscover.
+
+| Module | Responsibility |
+| --- | --- |
+| `serve/config.py` | Constants, token and interval validation, error-to-status map |
+| `serve/handler.py` | Auth, routing, and every route that answers and closes |
+| `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
+| `serve/backends.py` | Reader, Sender and Watcher wiring for a live host |
+| `serve/server.py` | Binding the socket and serving until interrupted |
+
+- **`serve` must never be forwarded to the daemon.** `cli.main` hands query
+  commands to a running daemon, which answers one request and returns — a
+  server that is supposed to hold a socket open would print that answer and
+  exit. It is on the exclusion list beside `tui`, `follow` and `send`.
+- **SSE, not WebSockets.** This is a one-way push of small JSON payloads, so
+  `curl -N` is a complete client and no dependency is needed for either side.
+- **Sends are serialized under one lock and spaced by the server**, because the
+  client's composer is a single shared resource and a remote caller may be
+  several callers. The local CLI still only asks callers to wait two seconds;
+  here it is enforced.
+- **The HTTP layer is proven by stubs on any platform; the live wiring is not.**
+  `tests/serve/` stands a stub sender, watcher and reader in front of the same
+  handler, which is why those 46 tests run on a machine with no KakaoTalk at
+  all. What they do not touch is `backends.make_live_send` — the path that
+  resolves a room, refuses a duplicate title and types into a real window.
+  That one needs a Mac with the client running, and until it has had one, the
+  route is unproven however green the suite is.
+- **`/stream` reports from the moment it connects.** Whatever arrived while a
+  caller was disconnected is not replayed, so a client that cares about the gap
+  re-reads it with `/context` from the last `logId` it saw. Do not document it
+  as a catch-up until it is one.
+
 ## Conventions
 
 - Every command returns `{"ok": true, ...}` or

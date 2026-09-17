@@ -152,6 +152,7 @@ PBKDF2-HMAC-SHA256을 100,000회 적용해 유도합니다. 힙 스캔도, 실�
 | `query` | `SQL [--room-id ID]` — 읽기 전용 SQL |
 | `schema` | `[--room-id ID]` — 테이블과 열 |
 | `daemon` | `(start [--foreground] \| stop \| status)` — 백그라운드 상주 데몬 (쿼리 즉각 응답) |
+| `serve` | `[--host H] [--port N] [--token T] [--min-interval S] [--poll-interval S]` — 전송·읽기·스트림을 HTTP + SSE로 (아래 "원격에서 보내고 읽기") |
 | `tui` | 대화형 POSIX 터미널에서 실행 |
 
 macOS에서는 한 열쇠로 모든 저장된 방을 엽니다. `readable`은 모두 참이고,
@@ -295,6 +296,62 @@ python3 -m kamado send --room "이름" --open "창이 닫혀 있어도"
 - 다른 사람에게는 **받는 방과 내용에 대한 명시적 허락**을 받은 뒤 보내세요.
 - 호출하는 쪽에서 전송 간격을 **최소 2초**로 유지하세요. 도구가 강제하는 제한은 아닙니다.
 - 실제 전송 테스트는 **나와의 채팅**이나 테스트를 명시적으로 허락받은 방에서만 하세요.
+
+## 원격에서 보내고 읽기
+
+카카오톡이 돌아가는 맥에 상주하는 프로세스가 HTTP 서버를 열면, 다른 머신에서 같은
+전송·읽기 경로를 부를 수 있습니다. 표준 라이브러리만 쓰므로 설치할 것이 없습니다.
+
+```bash
+# macOS (카카오톡이 실행 중인 머신)
+export KAMADO_TOKEN="열여섯-글자-이상의-공유-비밀"
+python3 -m kamado serve
+```
+
+```bash
+# 원격 (SSH 포트포워딩: ssh -L 8765:127.0.0.1:8765 mac-host)
+T=http://127.0.0.1:8765; H="Authorization: Bearer 열여섯-글자-이상의-공유-비밀"
+curl -s $T/health
+curl -s -H "$H" $T/rooms
+curl -s -H "$H" "$T/context?roomId=1&limit=20"
+curl -s -H "$H" "$T/digest?roomId=1&span=30m"
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d '{"room": "가족", "text": "원격에서 보냄"}' $T/send
+curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
+```
+
+| 메서드·경로 | 하는 일 |
+| --- | --- |
+| `GET /health` | 프로세스가 살아있는지 (토큰 불필요, 카카오톡 상태는 보지 않습니다) |
+| `GET /rooms` | 방 목록, `rooms` 명령과 같은 모양 |
+| `GET /context?roomId=…&limit=…` | 한 방의 최근 메시지 |
+| `GET /digest?roomId=…&span=…&limit=…&highlights=…` | 같은 창을 추출 요약으로 (원문보다 훨씬 작습니다) |
+| `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
+| `GET /stream` | **SSE** — 연결 즉시 `event: ready`, 새 메시지마다 `event: message`, 폴링마다 `event: ping`, 실패 시 `event: error` 한 줄 뒤 종료 |
+
+연속 전송은 **서버가** 2초 간격을 강제합니다(429 `RATE_LIMITED`, `--min-interval`로
+조절하고 `0`이면 끕니다). 로컬 CLI에는 없는 제한이고, 원격에서는 호출자가 여럿일 수
+있으니 입력창이라는 하나뿐인 자원을 서버가 지킵니다. 토큰은 `--token`이나
+`KAMADO_TOKEN`으로 주며(없으면 기동을 거부합니다) 16자 이상의 영숫자와 `-._~+/=`만
+받습니다. 바인딩은 기본 `127.0.0.1`, `--port`(기본 8765)와 `--poll-interval`(스트림
+폴링, 기본 1초)이 있습니다. `--host 0.0.0.0`은 경고를 찍습니다 — 평문 HTTP이므로 SSH
+터널·VPN·TLS를 끝내는 리버스 프록시 뒤에 두세요.
+
+| 무엇을 만났나 | 뜻 | 할 일 |
+| --- | --- | --- |
+| `401 UNAUTHORIZED` | 토큰이 없거나 틀림 | `Authorization: Bearer …` 확인 |
+| `429 RATE_LIMITED` | 직전 전송과 2초가 안 됨 | 답에 적힌 만큼 기다렸다 재시도 |
+| `404 CHAT_NOT_FOUND` | 그 방이 카탈로그에 없음 | `/rooms`로 id 확인 |
+| `409 AMBIGUOUS_CHAT` | 같은 제목의 방이 여럿 | 방 이름을 클라이언트에서 바꾸기 |
+
+> [!IMPORTANT]
+> `/stream`은 **연결된 시점부터** 새 메시지를 보냅니다. 끊겨 있던 동안 도착한 것은
+> 재접속해도 따라오지 않으니, 공백을 메우려면 `/context`나 `messages`로 마지막으로 본
+> `logId` 뒤를 되읽으세요.
+
+전송 계약은 로컬과 같습니다. `submitted: true`는 입력창이 비워졌다는 뜻이고, 쓰다 만
+초안은 지우고 보내며 답에 `clearedDraft`가 붙습니다. 불확실한 전송을 자동으로
+재시도하지 마세요.
 
 ## AI 에이전트에 붙이기
 

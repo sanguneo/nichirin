@@ -255,6 +255,51 @@ python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --open "Ap
 - Real tests belong only in self-chat or a room explicitly authorized for tests.
   Repository tests are synthetic and never send.
 
+## Remote send, read, and live stream
+
+The same primitives are reachable over HTTP from another machine. Start the
+server on the Mac that runs KakaoTalk:
+
+```bash
+export KAMADO_TOKEN="long-shared-secret-at-least-sixteen-characters"
+python3 "<skill-dir>/scripts/kamado-cli.py" serve
+```
+
+From the remote machine (after `ssh -L 8765:127.0.0.1:8765 <mac-host>`):
+
+```bash
+T=http://127.0.0.1:8765
+H="Authorization: Bearer long-shared-secret-at-least-sixteen-characters"
+curl -s $T/health
+curl -s -H "$H" $T/rooms
+curl -s -H "$H" "$T/context?roomId=1&limit=20"
+curl -s -H "$H" "$T/digest?roomId=1&span=30m"
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d '{"room": "Sample Room", "text": "hi"}' $T/send
+curl -N -H "$H" $T/stream      # SSE: event: ready / message / ping / error
+```
+
+Every route returns the same envelope and the same `error.code` values as the
+CLI, with two additions: `401 UNAUTHORIZED` for a missing or wrong bearer
+token, and `429 RATE_LIMITED` when a send arrives less than two seconds after
+the last one. Unlike the local CLI, **the server enforces that interval**, so a
+429 is the answer to retry after — not a reason to send again immediately.
+
+- `/stream` reports from the moment it connects. Messages that arrived while a
+  client was disconnected are **not** replayed, so close the gap with
+  `/context` or `messages` from the last `logId` seen rather than assuming the
+  stream caught up.
+- `/digest` exists because paging a busy room over a link is wasteful: it is
+  the same extractive material the `digest` command returns, and it is far
+  smaller than the messages it describes.
+- The token is passed with `--token` or `KAMADO_TOKEN` and must be at least 16
+  characters; the server refuses to start without one. It binds `127.0.0.1` by
+  default and speaks plain HTTP, so reach it through an SSH tunnel, a VPN, or a
+  TLS-terminating proxy — never a wildcard bind on an open network.
+- Sending rules do not relax remotely. Confirm recipient and content, treat
+  `submitted: true` as queue acceptance rather than delivery, and never retry an
+  uncertain send automatically.
+
 ## Errors
 
 | `error.code` | Action |
@@ -271,6 +316,8 @@ python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --open "Ap
 | `WINDOW_NOT_FOUND` | Ask the user to open the chat as a separate window, or use `--open` with awareness of read-state changes. |
 | `INPUT_NOT_FOUND` | The composer is unavailable or the client's accessibility layout changed. Ask the user to check that window. |
 | `SEND_FAILED` | Native input/submission failed. Inspect and read back before deciding what happened; do not automatically retry. |
+| `UNAUTHORIZED` | Remote only: the bearer token was missing or wrong. Fix `Authorization: Bearer …`; never send the token anywhere else. |
+| `RATE_LIMITED` | Remote only: a send arrived within the server's minimum interval. Wait the reported seconds and retry that one send. |
 
 ## Limits and data handling
 

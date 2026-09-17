@@ -74,7 +74,48 @@ Opus로 진행하며 Astra/Fable에는 위임하지 않는다.
 - 미커밋 변경이나 남은 스크래치 파일은 없다.
 - 따라서 중단으로 유실된 코드 작업은 없으며, 남은 일은 이 문서의 항목들이다.
 
-### 5. 자동 채팅 운영 규칙
+### 5. `kamado serve` — 맥 실기에서 남은 검증 (2026-09-17 이식)
+
+Windows 갈래의 `serve`를 이 저장소로 옮겼다. 이식과 테스트는 **Windows 머신에서**
+했으므로, 플랫폼에 의존하지 않는 절반만 증명된 상태다.
+
+증명된 것:
+
+- `tests/serve/` 46개 통과(스텁 sender·watcher·reader, 실제 HTTP 소켓 사용).
+- 전체 스위트 499개 중 실패 1 · 오류 62는 **이식 전과 같은 수**다. 전부
+  Windows에서 맥 코드를 돌려서 생기는 것(`fcntl` 없는 TUI, Unix 소켓 데몬)이고
+  `serve`와 무관하다.
+- `kamado serve --help`, 인자 기본값, 토큰 검증, `KAMADO_TOKEN` 우선순위.
+
+맥에서 확인해야 하는 것 — 여기서는 확인할 수 없다:
+
+1. `python3 -m kamado serve` 기동 후 `GET /health` · `/rooms` · `/context` ·
+   `/digest`가 실제 계정 데이터로 응답하는지. (Windows에서는 같은 순서로
+   `kanao serve`가 응답했고 273개 방을 냈다.)
+2. `GET /stream`이 `event: ready` → `event: ping`을 내는지. 맥 `Watcher`는
+   계정 전체에 지문 하나를 쓰므로 Windows와 폴링 비용이 다르다. 실제로 새
+   메시지가 도착할 때 `event: message`가 나오는지 한 번 봐야 한다.
+3. **`POST /send`.** 이것만은 반드시 나와의 채팅에서 먼저 한다.
+   `backends.make_live_send`가 `macauto.make_sender()`를 부르는데, 이 경로는
+   스텁으로 덮이지 않는다. `{"dryRun": true}`로 창 해석까지 확인한 뒤 실제
+   전송을 한 번만 한다. 남의 방으로는 승인 없이 보내지 않는다.
+4. Accessibility 권한이 없을 때 `/send`가 어떤 코드로 떨어지는지.
+   `PERMISSION_REQUIRED`는 `_STATUS_BY_CODE`에 없어 현재 **500**으로 나간다.
+   맥에서 실제로 그 상황을 만들어 보고, 503 같은 값이 맞다고 판단되면
+   `serve/config.py`의 표에 한 줄 추가한다. 이건 이식 중에 발견한 갭이지
+   Windows에서 재현할 수 있는 것이 아니다.
+5. Python 3.9에서의 구동. 이 저장소는 3.9+를 지원하는데 검증은 3.13에서만
+   했다. 새 문법은 쓰지 않았고 모든 모듈에 `from __future__ import annotations`
+   가 있으므로 문제는 없을 것으로 보지만, 확인은 맥에서 `python3.9 -m unittest
+   tests.serve.test_auth …` 한 줄이면 된다.
+
+이식하지 않은 것: Windows의 `rows.json` 같은 실기 세부는 각 플랫폼 자동화 모듈이
+이미 따로 갖고 있으므로 건드리지 않았다. 재접속 커서, 요청 상한, 연결 수명 같은
+후속 개선은 양쪽 모두 아직 없다 —
+`kanao-cli`의 `.omo/plans/serve-package-work-order-2026-09-17.md`에 목록이 있고,
+맥 쪽에도 같은 순서로 적용하면 된다.
+
+### 6. 자동 채팅 운영 규칙
 
 사용자가 지정한 테스트 방에서 봇으로 응답하는 세션을 시작했다.
 소개 메시지를 보냈고, `follow` 스트림을 구독해 새 메시지에 반응한다.
