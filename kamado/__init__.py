@@ -1,3 +1,3 @@
 """Local KakaoTalk reading and friends, plus client-driven sending on macOS."""
 
-__version__ = "0.15.1"
+__version__ = "0.16.0"
