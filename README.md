@@ -204,6 +204,7 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 | `KAMADO_TUI_MARGIN` | 오른쪽 여백 칸 수(0–10, 기본 0). 스크롤바가 마지막 칸을 덮을 때 |
 | `KAMADO_TUI_SIZE` | `110x30` 처럼 화면 크기를 고정. 화면을 그대로 찍어 볼 때 씁니다 |
 | `KAMADO_FORCE_COLOR` | 파이프로 연결해도 색을 켭니다. `NO_COLOR`가 있으면 그쪽이 이깁니다 |
+| `KAMADO_IMAGE` | 사진을 그릴 방법을 지정: `kitty`·`iterm2`·`sixel`·`none`. 자동 감지를 건너뜁니다 |
 
 ### 사진
 
@@ -223,8 +224,26 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 캐시는 지워도 됩니다. 지우면 다음에 열 때 다시 받습니다. 사진은 `tui` 에서만
 보이며, CLI 가 내는 JSON 은 이 기능이 없을 때와 바이트 단위로 동일합니다.
 
-터미널이 Kitty 그래픽 프로토콜을 지원해야 그림이 보입니다(Ghostty·kitty·WezTerm).
-지원하지 않는 터미널에서는 여는 표시 없는 `[사진]` 으로 남습니다.
+그림을 그리는 방법은 터미널에 맞춰 셋 중에서 고릅니다.
+
+| 프로토콜 | 터미널 | 어떻게 알아내나 |
+| --- | --- | --- |
+| Kitty 그래픽 | Ghostty · kitty · WezTerm | `TERM_PROGRAM`·`TERM` |
+| iTerm2 인라인 | iTerm2 | `TERM_PROGRAM`·`LC_TERMINAL` |
+| sixel | Windows Terminal 1.22+ 등 | 첫 프레임 뒤에 터미널에 직접 물어봅니다 (`CSI c`) |
+
+셋 중 Kitty 가 가장 쌉니다. 그림을 터미널이 들고 있어서 사진이 움직여도 다시
+보내지 않기 때문입니다. iTerm2 와 sixel 은 아무것도 들고 있지 않아 옮길 때마다
+다시 그립니다. sixel 은 파일이 아니라 픽셀을 받으므로 사진을 풀어서 색을 줄이고
+다시 짜야 하고, 그래서 한 장을 처음 띄울 때 1초쯤 걸립니다(그 뒤로는 만든 것을
+그대로 씁니다).
+
+**sixel 은 어떤 환경 변수도 알려주지 않습니다.** ssh 로 접속하면 `TERM` 말고는
+넘어오지 않아서, sixel 을 그리는 Windows Terminal 이 아무것도 못 그리는 터미널과
+똑같이 보입니다. 그래서 터미널에 직접 물어보고, 그 답을 못 받으면
+`KAMADO_IMAGE` 로 지정하면 됩니다.
+
+어느 것도 쓸 수 없는 터미널에서는 여는 표시 없는 `[사진]` 으로 남습니다.
 
 <table>
 <tr>
