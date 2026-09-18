@@ -11,11 +11,18 @@ from unittest.mock import patch
 
 from kanao.errors import ErrorCode, KanaoError
 from kanao.snapshot import (
+    _BUDGET_HEADROOM,
+    _DEFAULT_BUDGET_BYTES,
+    _MEMORY_SHARE,
+    _CachedSnapshot,
+    _adaptive_budget,
+    _physical_memory,
     ConsistencyError,
     Fingerprint,
     SnapshotCache,
     build_image,
     open_image,
+    physical_memory_bytes,
     update_image_with_wal,
 )
 
@@ -431,6 +438,82 @@ class CacheTests(_Fixture):
         cache.connect(other, KEY)
         with self.assertRaises(sqlite3.ProgrammingError):
             first.execute("SELECT 1")
+
+
+class BudgetTests(unittest.TestCase):
+    """What the cache may hold, and why a fixed number was the wrong answer.
+
+    A fixed 256 MiB is a bet on the account being small. One entry costs the
+    snapshot *plus* the base pages kept beside it, so a database past roughly
+    128 MiB sheds those pages every time -- and a shed entry means the next
+    arriving message pays a full decryption where it should have paid an
+    overlay. This account already holds a 73.0 MB room beside a 56.6 MB one.
+    """
+
+    def setUp(self) -> None:
+        remembered = list(_physical_memory)
+        _physical_memory.clear()
+        self.addCleanup(_physical_memory.extend, remembered)
+        self.addCleanup(_physical_memory.clear)
+
+    def say_memory(self, total) -> None:
+        """Answer the memory probe without asking the machine underneath."""
+        _physical_memory.clear()
+        _physical_memory.append(total)
+
+    def test_this_machine_answers_how_much_memory_it_has(self) -> None:
+        """The probe is the whole mechanism; a silent None disables it."""
+        self.assertIsNotNone(physical_memory_bytes())
+
+    def test_a_machine_that_will_not_say_keeps_the_budget_it_always_had(self) -> None:
+        self.say_memory(None)
+        self.assertEqual(_adaptive_budget(900 * 1024 * 1024), _DEFAULT_BUDGET_BYTES)
+
+    def test_the_budget_follows_the_database_once_it_outgrows_the_default(self) -> None:
+        self.say_memory(64 * 1024 * 1024 * 1024)
+        image = 200 * 1024 * 1024
+        self.assertEqual(_adaptive_budget(image), image * _BUDGET_HEADROOM)
+
+    def test_a_small_database_does_not_shrink_the_budget(self) -> None:
+        self.say_memory(64 * 1024 * 1024 * 1024)
+        self.assertEqual(_adaptive_budget(4 * 1024 * 1024), _DEFAULT_BUDGET_BYTES)
+
+    def test_the_machine_caps_what_the_database_may_ask_for(self) -> None:
+        memory = 8 * 1024 * 1024 * 1024
+        self.say_memory(memory)
+        huge = 4 * 1024 * 1024 * 1024
+        self.assertEqual(_adaptive_budget(huge), int(memory * _MEMORY_SHARE))
+
+    def test_a_large_database_can_now_keep_its_base_pages(self) -> None:
+        """The bug and the fix, stated as the two numbers that differ.
+
+        An entry is charged its image and the base pages it keeps -- about
+        twice the image. The fixed budget cannot hold that for a 200 MiB
+        database, so the pages went; the derived budget can, so they stay.
+        """
+        self.say_memory(64 * 1024 * 1024 * 1024)
+        image = 200 * 1024 * 1024
+        self.assertLess(_DEFAULT_BUDGET_BYTES, image * 2)
+        self.assertGreaterEqual(_adaptive_budget(image), image * 2)
+
+    def test_a_stated_budget_is_not_second_guessed(self) -> None:
+        cache = SnapshotCache(budget_bytes=123456)
+        self.say_memory(64 * 1024 * 1024 * 1024)
+        self.assertEqual(cache._budget, 123456)
+
+    def test_an_unstated_budget_is_derived_from_the_largest_image_held(self) -> None:
+        self.say_memory(64 * 1024 * 1024 * 1024)
+        cache = SnapshotCache()
+        self.assertEqual(cache._budget, _DEFAULT_BUDGET_BYTES)
+        cache._entries[Path("synthetic.edb")] = _CachedSnapshot(
+            fingerprint=Fingerprint(database=(0, 0), log=(0, 0)),
+            connection=sqlite3.connect(":memory:"),
+            size=0,
+            base=None,
+            image_bytes=300 * 1024 * 1024,
+        )
+        self.addCleanup(cache.close)
+        self.assertEqual(cache._budget, 300 * 1024 * 1024 * _BUDGET_HEADROOM)
 
 
 if __name__ == "__main__":

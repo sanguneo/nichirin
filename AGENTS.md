@@ -94,6 +94,17 @@ Every command pays discovery before it answers, and both halves were slow:
   to the full decryption** in both. The base pages are charged to the cache
   budget too, because an entry that quietly costs twice what the cache believes
   is how a budget stops meaning anything.
+- **The budget follows the database, because a fixed one is a bet on the
+  account being small.** An entry costs about twice its image, so a fixed
+  256 MiB starts shedding base pages at roughly a 128 MiB database — and a
+  shed entry turns the next arriving message back into a full decryption.
+  This account is already past it: a **73.0 MB** room beside a **56.6 MB** one
+  is 259 MB of entries before the catalog is counted, and the screen opens
+  three panes. The budget is now `min(max(256 MiB, largest image × 3),
+  physical memory / 4)`, derived on each use because the size it follows is
+  not known until something has been read. A stated `budget_bytes` is honoured
+  exactly, and a machine that will not say how much memory it has keeps the
+  fixed number it always had.
 - **The image reaches SQLite as memory, and that is worth a whole Python
   version.** `_connect` hands the decrypted bytes to `sqlite3`'s `deserialize`,
   which exists from 3.11; before that the image has to be written to a
@@ -836,6 +847,18 @@ Not taken, and why:
   of moving the caret. This console reads `ReadConsoleInputW` records, so an
   arrow arrives as `VK_LEFT` and Escape as `VK_ESCAPE`: two different records,
   nothing to disambiguate and no delay to tune.
+- **Moving the TUI's reads onto a worker thread** (`kamado-cli#39`). Half of
+  that change crossed over and half of it cannot. The half taken is the cache
+  budget above, which is a bug on any platform. The half left is
+  `DatabaseWorker`, and its motivation is mostly **fork safety**: that build
+  decrypts pages in forked children, and a fork from a threaded process hands
+  the child locks with no thread left to release them. This build has no such
+  fork — see the entry below on why parallel decryption was never taken — so
+  the hazard does not exist here. What remains is jitter, and the numbers do
+  not carry it: a poll that opens a room costs 171–355 ms here against
+  1.3–1.9 s there, and `_poll_due` already defers it while somebody is typing.
+  Against that, the port is a 500-line rewrite of `tui/app.py` plus a new
+  417-line module.
 - **Parallel page decryption across cores** (`kamado-cli#21`). The expensive
   case it speeds up barely happens here: the WAL overlay already means an
   arriving message costs 100.2 ms rather than 431.5 ms on a 48.3 MB room, and

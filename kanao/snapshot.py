@@ -39,6 +39,7 @@ erasure and that limitation is documented rather than hidden.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sqlite3
 import tempfile
@@ -46,7 +47,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final, Optional, Protocol
 
 from . import PAGE_SIZE, RESERVE_SIZE, page as pages, wal as wal_format
 from .cng import PreparedKey
@@ -55,6 +56,30 @@ from .errors import ErrorCode, KanaoError
 _READ_ATTEMPTS: Final = 4
 _BACKOFF_SECONDS: Final = (0.05, 0.15, 0.4)
 _DEFAULT_BUDGET_BYTES: Final = 256 * 1024 * 1024
+
+_BUDGET_HEADROOM: Final = 3
+"""How many copies of the largest image a cache without a stated budget holds.
+
+One entry costs roughly two: the snapshot, and the base pages kept so a log
+that moved can be laid over them instead of decrypting the file again. The
+third leaves room for the other databases a reader opens beside it. A fixed
+256 MiB therefore starts shedding base pages at a database of about 128 MiB,
+and this account already holds a 73.0 MB room beside a 56.6 MB one — two
+entries, 259 MB charged, over the fixed budget before the catalog is counted.
+This bounds what the cache retains, not what the process allocates.
+"""
+
+_MEMORY_SHARE: Final = 0.25
+"""The share of physical memory a derived budget may claim.
+
+Following the database is only safe while the machine can hold it, so the
+scaling is capped rather than allowed to grow with the file. On a machine too
+small for the cap the base pages are shed exactly as they were before, which
+is the behaviour the cap is there to keep.
+"""
+
+_physical_memory: "list[Optional[int]]" = []
+"""Memoised answer from :func:`physical_memory_bytes`; empty until first asked."""
 
 _JOURNAL_MODE_OFFSET: Final = 18
 _ROLLBACK_JOURNAL: Final = b"\x01\x01"
@@ -345,6 +370,105 @@ def open_image(image: bytes, label: str) -> sqlite3.Connection:
     return connection
 
 
+def _read_physical_memory() -> Optional[int]:
+    """Ask the OS how much RAM this machine has, or give up quietly.
+
+    ``GlobalMemoryStatusEx`` is the answer on the platform this tool runs on,
+    and it costs one call into a library already loaded.  ``sysconf`` is what
+    the suite reaches on the macOS and Linux hosts the shared code is written
+    from, so the scaling is exercised there rather than silently falling back.
+    A machine that answers neither is treated as unknown instead of guessed
+    at, and an unknown machine keeps the fixed budget it always had.
+
+    ``ctypes.wintypes`` is deliberately not imported: reading it off Windows
+    raises, and it would take this module — and everything that imports it —
+    down with it. The three fields needed are plain C types.
+    """
+    library = getattr(ctypes, "WinDLL", None)
+    if library is not None:
+        class _MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatus()
+        status.dwLength = ctypes.sizeof(_MemoryStatus)
+        try:
+            if not library("kernel32").GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None
+        except (OSError, AttributeError):
+            return None
+        total = int(status.ullTotalPhys)
+        return total if total > 0 else None
+
+    try:
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+    if page_count > 0 and page_size > 0:
+        return page_count * page_size
+    return None
+
+
+def physical_memory_bytes() -> Optional[int]:
+    """How much RAM this machine has, asked once and remembered.
+
+    Lazy on purpose: a cache is built before anyone knows whether it will be
+    used, and nothing expensive belongs in a constructor.
+    """
+    if not _physical_memory:
+        _physical_memory.append(_read_physical_memory())
+    return _physical_memory[0]
+
+
+def _adaptive_budget(largest_image: int) -> int:
+    """The budget for a cache that was not given one.
+
+    ``_BUDGET_HEADROOM`` copies of the largest image being held, with the
+    fixed default as a floor unless the memory cap is lower. A machine that
+    will not say how much memory it has gets the fixed default, which is what
+    it got before this scaled at all.
+    """
+    memory = physical_memory_bytes()
+    if memory is None:
+        return _DEFAULT_BUDGET_BYTES
+    wanted = max(_DEFAULT_BUDGET_BYTES, largest_image * _BUDGET_HEADROOM)
+    return min(wanted, int(memory * _MEMORY_SHARE))
+
+
+class SnapshotSource(Protocol):
+    """What a reader needs from a cache: a connection, and a way to let go.
+
+    :class:`Reader` takes one of these rather than a :class:`SnapshotCache`
+    because both real substitutions are worth being able to state. The server
+    hands the send path a cache that outlives the request, and the suite hands
+    a stub that serves prepared plaintext; naming the two methods a reader
+    actually calls says so, where the concrete class would have made the stub
+    a lie about the type.
+    """
+
+    def connect(
+        self,
+        database: Path,
+        key: bytes,
+        page_size: int = PAGE_SIZE,
+        reserve: int = RESERVE_SIZE,
+    ) -> sqlite3.Connection:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
 @dataclass
 class _CachedSnapshot:
     """One decrypted database, and the base pages the next read can reuse."""
@@ -353,6 +477,12 @@ class _CachedSnapshot:
     connection: sqlite3.Connection
     size: int
     base: Optional[BasePages]
+    image_bytes: int = 0
+    """The snapshot alone, which is what a derived budget scales against.
+
+    ``size`` is what the entry is charged and it shrinks when the base pages
+    are shed, so it cannot stand in for the size of the database being read.
+    """
 
 
 class SnapshotCache:
@@ -361,12 +491,31 @@ class SnapshotCache:
     The cache owns every connection it returns; callers read and must not
     close them.  Eviction is least-recently-used against a byte budget, which
     counts the base pages an entry keeps as well as the snapshot itself.
+
+    *budget_bytes* is honoured exactly as given.  Left out, the budget follows
+    the largest database the cache is actually holding rather than a constant
+    chosen against a smaller account; see :func:`_adaptive_budget`.
     """
 
-    def __init__(self, budget_bytes: int = _DEFAULT_BUDGET_BYTES) -> None:
-        self._budget = budget_bytes
+    def __init__(self, budget_bytes: Optional[int] = None) -> None:
+        self._stated_budget = budget_bytes
         self._entries: OrderedDict[Path, _CachedSnapshot] = OrderedDict()
         self._bytes = 0
+
+    @property
+    def _budget(self) -> int:
+        """What this cache may hold right now.
+
+        A stated budget is returned untouched. Otherwise it is derived on each
+        use rather than at construction, because the size it scales with is
+        not known until a database has actually been read.
+        """
+        if self._stated_budget is not None:
+            return self._stated_budget
+        largest = max(
+            (entry.image_bytes for entry in self._entries.values()), default=0
+        )
+        return _adaptive_budget(largest)
 
     def fingerprint(self, database: Path) -> Fingerprint:
         """Sample a database without decrypting anything."""
@@ -538,7 +687,9 @@ class SnapshotCache:
         if previous is not None:
             self._bytes -= previous.size
             previous.connection.close()
-        self._entries[database] = _CachedSnapshot(fingerprint, connection, held, base)
+        self._entries[database] = _CachedSnapshot(
+            fingerprint, connection, held, base, image_bytes=size
+        )
         self._bytes += held
         self._make_room()
 
@@ -552,15 +703,16 @@ class SnapshotCache:
         them was still not enough — which keeps the number of live connections
         exactly where it was before any pages were kept at all.
         """
+        budget = self._budget
         for entry in self._entries.values():
-            if self._bytes <= self._budget:
+            if self._bytes <= budget:
                 return
             if entry.base is not None:
                 self._bytes -= len(entry.base)
                 entry.size -= len(entry.base)
                 entry.base = None
 
-        while self._bytes > self._budget and len(self._entries) > 1:
+        while self._bytes > budget and len(self._entries) > 1:
             _evicted, stale = self._entries.popitem(last=False)
             self._bytes -= stale.size
             stale.connection.close()
