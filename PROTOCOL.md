@@ -124,7 +124,7 @@ streams as it will.
 | `INPUT_NOT_FOUND` | The window was found but its input box was not |
 | `SEND_FAILED` | The client refused or the write could not be verified |
 | `UNAUTHORIZED` | `serve` only: the bearer token was missing or wrong |
-| `RATE_LIMITED` | `serve` only: a send arrived inside the server's minimum interval |
+| `RATE_LIMITED` | `serve` only: the send queue was full. A send that merely arrives early waits its turn instead |
 
 `kamado-cli` adds `PERMISSION_REQUIRED` for the macOS permissions it needs.
 
@@ -136,7 +136,11 @@ reads the room back and looks for a new `fromMe` message. `clearedDraft`
 reports that an unfinished line was in the box and is now gone — it is
 reported rather than refused, so a caller can say so.
 
-Keep at least two seconds between sends.
+Keep at least two seconds between sends. `serve` holds that spacing for you:
+a send that arrives sooner waits its turn rather than being refused, and the
+answer still comes back on the same request, so the wire contract does not
+change. `429 RATE_LIMITED` is what a caller gets when the queue itself is
+full — four sends, counting the one being sent.
 
 ## The samples are the normative copy
 

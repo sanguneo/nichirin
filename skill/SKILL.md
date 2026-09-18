@@ -193,9 +193,11 @@ curl -N -H "$H" $T/stream      # SSE: ready / message / cursor / ping
 ```
 
 Every command obeys the same envelope, the same error codes, and the same
-two-seconds-between-sends rule (the server returns `RATE_LIMITED` with `429`
-when a caller tries to send sooner; `401` is `UNAUTHORIZED` for a missing or
-wrong token). `/stream` is SSE, not WebRTC — the read direction is a one-way
+two-seconds-between-sends rule — but a send that arrives early **waits its
+turn and then goes**, so two in a row both arrive, in the order they were
+sent. `429 RATE_LIMITED` now means the queue is full (four, counting the one
+being sent), not "too soon"; `401` is `UNAUTHORIZED` for a missing or wrong
+token. `/stream` is SSE, not WebRTC — the read direction is a one-way
 push of small JSON messages, and SSE rides plain HTTP, passes any proxy a
 `POST` would, and needs no extra package.
 

@@ -78,8 +78,11 @@ Every command pays discovery before it answers, and both halves were slow:
   so a moved heap yields fewer contexts and falls back to a full scan.
 - **The profile is walked, not globbed.** `rglob("*")` stats every entry in a
   profile that also holds media and caches: 1.36 s for 298 databases against
-  92.8 ms with `os.walk`. `test_paths.py` pins the resulting order, which folds
-  case because Windows path comparison does.
+  92.8 ms with `os.walk`. `test_paths.py` pins the resulting order, which the
+  walk folds case for **itself**: `Path` comparison folds on Windows and
+  nowhere else, so leaving it to the platform gave one answer here and another
+  on the macOS sibling's machine — same order on Windows, and now the same
+  order everywhere.
 - Together: `status` 2.43 s → 0.30 s, `rooms` 2.54 s → 0.63 s, `friends` 2.06 s
   → 0.38 s, with byte-identical output.
 - **A message that arrives is not a reason to decrypt the file again.** SQLite
@@ -252,6 +255,59 @@ on a live client, newest 4,000 rows of each readable room.
   messages. `limit` is 1–1000 and `highlights` 1–20, checked in
   `serve/config.py` **before the reader is opened**, and a `roomId` outside
   the 64-bit range is a 400 rather than an `OverflowError` out of the driver.
+- **The send path keeps its snapshot cache and key ring; the read paths do
+  not.** `make_live_send` used to build a bare `Reader` per request, so every
+  `POST /send` found the account again and decrypted the catalog again before
+  a character reached the input box — the rule *a send must not re-read the
+  catalog* being broken by the one caller that sends most. Measured live at
+  `--min-interval 0`, six requests: **478·469·505·458·474·457 ms → 469·100·110·
+  109·113·153 ms**. The first is unchanged and the rest are the saving.
+  Sharing only the cache is not enough; finding the account is most of a
+  second by itself. Freshness is not what is traded away — `SnapshotCache.
+  connect` re-reads the fingerprint on every call and overlays a log that
+  moved — and the reader is still new per request, so nothing it memoises
+  about names or columns leaks into the next one. **Do not widen this to the
+  read routes**: they run concurrently and `SnapshotCache` takes no locks,
+  where sends are one at a time under `send_lock`.
+- **A `Reader` does not close a cache it was handed.** `_owns_cache` is
+  `cache is None`. Without it the sharing above fails *silently*: the next
+  reader simply decrypts again and answers correctly, only slowly. The test
+  fixtures hand their stub cache over outright (`reader._owns_cache = True`),
+  because nobody else holds it and 232 synthetic databases were left open
+  when they did not.
+- **A cached snapshot outlives the thread that decrypted it, so it is opened
+  with `check_same_thread=False`.** Each request arrives on its own thread, so
+  the second send reads a connection the first one opened; sqlite3 refuses
+  that by default and the refusal is a request that **dies with no answer at
+  all**. Found by sending twice against a live client — the suite had no
+  threaded send — and pinned since by
+  `test_a_cached_snapshot_is_readable_from_another_thread`. The images are
+  read-only bytes already in memory and sends are serialized, so nothing here
+  is concurrent. `kamado-cli` already carries the same flag, and its work
+  order for this change did not mention it — sharing a cache across threads
+  and opening the connections for it are one change, so port them together.
+- **A send that arrives early waits its turn; it is not thrown away.** What
+  `min_interval` protects is one input box, and a caller refused for being
+  early can only sleep and retry, which is every client reimplementing the
+  queue. `429 RATE_LIMITED` therefore means **the line is full**
+  (`MAX_QUEUED_SENDS`, four counting the one being sent), and the queue is
+  what gives that number a meaning. Live: two sends fired at the same instant
+  both arrived, **exactly 2 s apart**, both read back as `fromMe`; and eight
+  fired at once against the running server put **four in the line and turned
+  four away**, each refusal answered in 5–7 ms having touched nothing.
+- **The pacing is measured from when a send started, and only after it was
+  delivered.** From the finish, the next caller pays again for time the last
+  send already spent. The old limiter recorded the start too — but *before*
+  the send, and for sends that never delivered: one `POST` to a room with no
+  window left the next real send refused for two seconds. Measured, old
+  against new: `[404, 429]` with nothing delivered, against `[404, 200]` with
+  one. It also never fired at all when a send took longer than the interval,
+  which is exactly when it was needed.
+- **Ctrl-C answers whoever is still in line.** `ServeHTTPServer` sets
+  `daemon_threads`, so shutting down would kill an accepted-but-unsent request
+  without a word — queueing sends is what creates that state, and a queue that
+  swallows one at exit is worse than the refusal it replaced. `run` closes the
+  queue, and each waiter answers `503 BUSY` saying the message was not sent.
 - **The stream's cursor names every room, because one id cannot stand for an
   account.** `/stream` follows all readable rooms, so the last message it sent
   says nothing about where the other rooms had reached — standard SSE
@@ -660,6 +716,20 @@ on a live client, newest 4,000 rows of each readable room.
 - Stubs must fail the way production fails. `StubCache` raises `KanaoError`
   because the real cache does — a stub raising `FileNotFoundError` once made a
   test pass against an error type production never produces.
+- **A stub that answers instantly is a timing production never has.**
+  `tests/serve/test_send.py` gave the rate limiter 60 s and 3600 s intervals
+  against a `StubSender` that returns in microseconds, so it passed on the one
+  timing it could not fail; the variable that mattered — how long a send takes
+  — was the thing the stub erased, and a real send was slower than the
+  interval it was supposed to be held to. Pacing is driven by an injected
+  clock now, and `_SendQueue._wait` is a method so a test can replace the one
+  place it really blocks. An HTTP-level test that steps that clock must step
+  it **further than the interval, derived from it** rather than written down,
+  or the suite genuinely waits minutes.
+- **A test that needs a queue full must fill the queue, not hold a request.**
+  `QuietHTTPServer` answers one request at a time on purpose, so a send parked
+  inside the handler cannot be overtaken by the request meant to be refused —
+  the test deadlocks against its own harness. Reserve the places directly.
 - When patching a module attribute, bind the original **before** patching or
   the wrapper will call itself.
 - **A test that needs Windows says so and is skipped elsewhere.** Most of this
@@ -667,11 +737,19 @@ on a live client, newest 4,000 rows of each readable room.
   shared code is written there; before `tests/platform.py` that run answered
   with a wall of import errors, which says nothing except "not Windows" and
   hides the one real failure somebody just introduced. `require_windows_console`,
-  `require_windows_crypto` and `import_app` guard the modules that reach for
-  `WinDLL`, and `tests/support.py` imports `ctypes.wintypes` **inside**
-  `encrypt` for the same reason — reading it off Windows raises and would take
-  down every module that imports the fixtures. On Windows nothing is skipped:
-  the suite is 753 tests with a skip count of zero, and that is the check that
+  `require_windows_crypto`, `require_windows_libraries` and `import_app` guard
+  the modules that reach for `WinDLL`, and `tests/support.py` imports
+  `ctypes.wintypes` **inside** `encrypt` for the same reason — reading it off
+  Windows raises and would take down every module that imports the fixtures.
+  The guards can be exercised from here rather than guessed at: `python -c
+  "import ctypes; del ctypes.WinDLL; import unittest; unittest.main(
+  module=None, argv=['x','discover','-t','.','-s','tests'], exit=False)"` runs
+  the suite the way a host without those libraries sees it, and that is how
+  the seven `Win32MessageTests` errors were found — they patch `ctypes.WinDLL`
+  itself, and `patch` refuses an attribute that is not there. It does **not**
+  model POSIX path comparison, which is the other half of what differs and is
+  why the profile walk folds case itself. On Windows nothing is skipped:
+  the suite is 767 tests with a skip count of zero, and that is the check that
   a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not

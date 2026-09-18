@@ -262,8 +262,10 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
 | `GET /stream` | **SSE** 실시간 새 메시지 — `event: ready` → `message` → `cursor` → `ping`, 실패 시 `event: error` 한 줄 뒤 종료. `?since=방id:logId`로 끊긴 지점부터 재개 |
 
-연속 전송은 서버에서 2초 간격 규칙을 강제합니다(429 `RATE_LIMITED`, `--min-interval`로
-조절·`0`이면 끔). 토큰은 `--token`이나 `KANAO_TOKEN` 환경 변수로 주고(없으면 서버가
+연속 전송은 서버에서 2초 간격을 강제하되 **버리지 않고 줄을 세웁니다** — 일찍 도착한
+전송은 차례를 기다렸다 나가므로 연달아 보낸 둘이 순서대로 모두 도착합니다.
+`429 RATE_LIMITED`는 "너무 이르다"가 아니라 **줄이 찼다**(전송 중인 것까지 4건)는
+뜻이고, 간격은 `--min-interval`로 조절·`0`이면 끕니다. 토큰은 `--token`이나 `KANAO_TOKEN` 환경 변수로 주고(없으면 서버가
 기동 거부), 16자 이상의 영숫자·`-._~+/=` 만 됩니다. 바인딩은 기본 `127.0.0.1` 이고
 `--port`(기본 8765)·`--poll-interval`(스트림 폴링, 기본 1초)이 있습니다.
 다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
@@ -292,7 +294,7 @@ curl -N -H "$H" "$T/stream?since=1001:5300&since=1002:412"
 | 무엇을 만났나 | 뜻 | 할 일 |
 | --- | --- | --- |
 | `401 UNAUTHORIZED` | 토큰이 없거나 틀림 | `Authorization: Bearer …` 확인 |
-| `429 RATE_LIMITED` | 2초 안에 또 보냄 | 잠깐 기다렸다 재시도 |
+| `429 RATE_LIMITED` | 전송 대기열(4건)이 참 | 앞선 전송이 나간 뒤 재시도 |
 | `503 KEY_UNAVAILABLE` | 카카오톡이 그 DB를 안 열어둠 | **채팅 탭·방 창을 한 번 띄우기** |
 | `status`에서 `decryptableDatabases: 0` | 힙 스캔이 빈손 | 아래 64비트 주의 |
 
