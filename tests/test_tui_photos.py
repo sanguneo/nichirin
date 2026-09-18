@@ -9,7 +9,10 @@ that is the whole of what the terminal ever sees.
 from __future__ import annotations
 
 import re
+import struct
 import unittest
+import zlib
+from unittest.mock import patch
 
 from kamado.tui.app import App
 from kamado.tui import images
@@ -481,6 +484,94 @@ class PaneTests(PhotoCase):
         self.second_pane()
         (top, _rows, cell, _panes), _pane = self.group_pane()
         self.assertIsNone(self.app._pane_at(top, cell))
+
+
+def _real_png(width: int = 4, height: int = 4) -> bytes:
+    """A decodable PNG: the sixel path really decodes, unlike the stub blob."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    rows = b"".join(b"\x00" + bytes((30, 170, 90) * width) for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+class InlineProtocolTests(PhotoCase):
+    """Terminals that keep no image of their own: iTerm2 and sixel."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.app._photos = FakeStore(_real_png())
+        self.app._bytes.clear()
+
+    def open_photo(self) -> str:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.app.render(WIDTH, HEIGHT)
+        return self.app.photo_escapes()
+
+    def test_iterm2_writes_the_file_itself_at_the_row(self) -> None:
+        self.app._protocol = images.ITERM2
+        escapes = self.open_photo()
+        self.assertIn("\x1b]1337;File=inline=1;", escapes)
+        self.assertRegex(escapes, r"\x1b\[\d+;\d+H")
+        # Nothing is transmitted against an id, so no kitty control appears.
+        self.assertNotIn("\x1b_G", escapes)
+
+    def test_sixel_writes_pixels_at_the_row(self) -> None:
+        self.app._protocol = images.SIXEL
+        escapes = self.open_photo()
+        self.assertIn("\x1bP", escapes)
+        self.assertTrue(escapes.endswith("\x1b\\"))
+        self.assertRegex(escapes, r"\x1b\[\d+;\d+H")
+        self.assertNotIn("\x1b_G", escapes)
+
+    def test_a_moved_picture_gives_up_the_frame_and_a_still_one_does_not(self) -> None:
+        # Inline pixels live in cells the transcript left blank, which the
+        # row-diff painter skips -- so a move has to invalidate the whole frame.
+        self.app._protocol = images.SIXEL
+        self.assertTrue(self.open_photo())
+        self.assertTrue(self.app._images_moved)
+        self.app._images_moved = False
+        for _ in range(3):
+            self.app.render(WIDTH, HEIGHT)
+            self.assertEqual(self.app.photo_escapes(), "")
+        self.assertFalse(self.app._images_moved)
+
+    def test_the_escape_is_built_once_and_then_reused(self) -> None:
+        self.app._protocol = images.SIXEL
+        calls: list[str] = []
+        real = images.inline_escape
+
+        def counted(*arguments: object, **keywords: object) -> object:
+            calls.append("built")
+            return real(*arguments, **keywords)  # type: ignore[arg-type]
+
+        with patch.object(images, "inline_escape", counted):
+            self.assertTrue(self.open_photo())
+            self.assertEqual(len(calls), 1)
+            self.app.toggle_photo(PHOTO_MESSAGE)
+            self.app.render(WIDTH, HEIGHT)
+            self.app.photo_escapes()
+            self.app.toggle_photo(PHOTO_MESSAGE)
+            self.app.render(WIDTH, HEIGHT)
+            self.assertTrue(self.app.photo_escapes())
+        self.assertEqual(len(calls), 1, "the same box was encoded twice")
+
+    def test_a_terminal_that_draws_nothing_writes_nothing(self) -> None:
+        self.app._protocol = images.NONE
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.app.render(WIDTH, HEIGHT)
+        self.assertEqual(self.app.photo_escapes(), "")
 
 
 class PlacementTests(PhotoCase):
