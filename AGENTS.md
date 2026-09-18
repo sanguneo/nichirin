@@ -815,6 +815,43 @@ Not taken, and why:
   one means fetching it. This repo's description is "네트워크 0회" and its
   README says the client does the network talking, so that is a promise to
   change deliberately rather than a detail to inherit.
+
+  **Two of those three reasons have since been measured rather than assumed.**
+
+  *Display is no longer the blocker.* Sixel is a real path on this platform —
+  `Yeachan-Heo/gajae-code` draws images in Windows Terminal that way, choosing
+  between kitty, iTerm and sixel at runtime — but it pays for it with a Rust
+  `encodeSixel` and `Bun.Image` for decoding. Pure Python can encode sixel;
+  what it cannot do is decode the WebP and JPEG this client stores, so the
+  dependency-free version of that half is `windowscodecs.dll` through
+  `ctypes`, the same shape as the CNG binding.
+
+  *The pixels really are on this machine, and are really encrypted.*
+  `chat_data\*.cng` is 12,068 files and `chat_data\cli\cli_<40 hex>` a further
+  4,893. Entropy is 7.1–7.3 bits per byte at head, middle and tail, with no
+  image magic in the first 4 KB — but the **first 16 bytes repeat**: 454 of
+  800 sampled share one first block and the sample holds six distinct ones,
+  which is a fixed IV over a constant first plaintext block and **a handful of
+  keys for the whole cache**, not one per file. Four key sources have been
+  tried and all failed: `jiru/kakaodecrypt`'s Android schedule across all 32
+  `encType` values with this account's id; the 30 distinct SQLCipher keys this
+  tool already extracts; the fixed-key 128-byte XOR below; and — the serious
+  one — **every AES key schedule in the client's entire readable memory**
+  (709,132,288 bytes, 56 schedules, 25 distinct keys, against 288 blobs, CBC
+  and ECB, offsets 0/16/32, five IV strategies including one back-derived from
+  an assumed PNG/JFIF header): **zero valid images**. That does not prove the
+  key is absent — an unexpanded key, a non-AES cipher or an unguessed
+  container would all survive it — but it does mean the cheap version of "read
+  it locally" is dead, and a viewer that wants photos today has to fetch them.
+
+- **Stickers and emoticons are the opposite case, and are worth taking.**
+  `DigitalItem\e` holds them already: of 300 sampled, 248 `.png` are stored
+  **in the clear**, and the 51 `.webp` and one `.gif` are obfuscated only by
+  **XOR of the first 128 bytes** with an LFSR keystream from a fixed key —
+  every one of them decoded to a valid image in the check. Ninety lines of
+  pure standard library, no network, no CDN, no promise to renegotiate. The
+  owner's `k-emo` project implements exactly this and is the reference; the
+  algorithm, not the code, is what crosses over.
 - **Opening a room through the client's search box** (`kamado-cli#29`). There
   the fix works because accessibility hands over the *name* of every row: type
   the room into the search field, read 648 row names, click the one that
