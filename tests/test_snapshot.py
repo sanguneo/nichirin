@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +27,9 @@ from tests.support import PAGE_SIZE, build_database, encrypt_pages, make_wal, ge
 
 ROWS_A = [(index, f"alpha {index}") for index in range(1, 40)]
 ROWS_B = [(index, f"bravo {index}") for index in range(1, 40)]
+
+MIB = 1024 * 1024
+GIB = 1024 * MIB
 
 
 class _Fixture(unittest.TestCase):
@@ -292,6 +297,184 @@ class OpenImageTests(_Fixture):
         connection = open_image(build_image(self.database, geometry()), "fixture")
         self.addCleanup(connection.close)
         self.assertEqual(connection.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
+
+
+class BudgetPolicyTests(unittest.TestCase):
+    """What the default budget is, when nobody states one.
+
+    A fixed 256 MiB budget is not a property of the account being read: one
+    entry costs the image plus the base pages it keeps, so a database past
+    128 MiB cannot hold both and sheds its base pages on every read — exactly
+    the databases the log-only path was written for.  The budget therefore
+    follows the largest image the cache holds, and is capped by the machine
+    rather than being allowed to grow without one.
+    """
+
+    def test_the_budget_follows_the_largest_image_the_cache_holds(self) -> None:
+        with patch.object(snapshot, "physical_memory_bytes", return_value=1 << 42):
+            self.assertEqual(snapshot._adaptive_budget(780 * MIB), 3 * 780 * MIB)
+
+    def test_a_small_database_is_left_on_the_fixed_default(self) -> None:
+        with patch.object(snapshot, "physical_memory_bytes", return_value=1 << 42):
+            self.assertEqual(
+                snapshot._adaptive_budget(8 * MIB), snapshot._DEFAULT_BUDGET_BYTES
+            )
+
+    def test_physical_memory_caps_what_the_budget_may_ask_for(self) -> None:
+        with patch.object(snapshot, "physical_memory_bytes", return_value=8 * GIB):
+            self.assertEqual(snapshot._adaptive_budget(780 * MIB), 2 * GIB)
+
+    def test_a_machine_short_of_memory_caps_below_the_fixed_default(self) -> None:
+        with patch.object(snapshot, "physical_memory_bytes", return_value=512 * MIB):
+            self.assertEqual(snapshot._adaptive_budget(780 * MIB), 128 * MIB)
+
+    def test_an_unknown_physical_memory_falls_back_to_the_fixed_default(self) -> None:
+        """Without a number to cap against, the old fixed budget stands."""
+        with patch.object(snapshot, "physical_memory_bytes", return_value=None):
+            self.assertEqual(
+                snapshot._adaptive_budget(780 * MIB), snapshot._DEFAULT_BUDGET_BYTES
+            )
+
+    @unittest.skipUnless(sys.platform == "darwin", "hw.memsize is a macOS sysctl")
+    def test_physical_memory_matches_what_the_kernel_reports(self) -> None:
+        reported = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.memsize"], capture_output=True, check=True
+        )
+        self.assertEqual(
+            snapshot.physical_memory_bytes(), int(reported.stdout.strip())
+        )
+
+
+class AdaptiveBudgetTests(_Fixture):
+    """The adaptive budget, driven through the real cache and a real log.
+
+    The fixtures are two pages rather than the measured 119 MB database, so
+    the size that would make the fixed default too small is supplied by
+    patching the default itself; the shedding, the overlay and the log are
+    the production ones.
+    """
+
+    HUGE_MEMORY = 1 << 42
+
+    def setUp(self) -> None:
+        super().setUp()
+        # A log must already exist when the base pages are kept, or the next
+        # read sees a new generation instead of an appended log.
+        self.log.write_bytes(make_wal([self.settled()]))
+        self.held = len(self.database.read_bytes())
+
+    def settled(self) -> tuple[int, int, bytes]:
+        return (2, 2, self.encrypted(self.pages_a, 2))
+
+    def a_message_arrives(self) -> None:
+        """Append committed frames to the log, leaving the database alone."""
+        before = self.log.stat()
+        self.log.write_bytes(
+            make_wal(
+                [
+                    self.settled(),
+                    (1, 0, self.encrypted(self.pages_b, 1)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ]
+            )
+        )
+        os.utime(self.log, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    def reread(self, cache: SnapshotCache):
+        """Read again, counting the full decryptions it took."""
+        decryptions: list[object] = []
+
+        def counting(*args, **kwargs):
+            decryptions.append(args)
+            return build_image(*args, **kwargs)
+
+        with patch("kamado.snapshot.build_image", side_effect=counting):
+            connection = cache.connect(self.database, geometry())
+        return connection, decryptions
+
+    def assert_reads_bravo(self, connection: sqlite3.Connection) -> None:
+        self.assertEqual(
+            [row[0] for row in connection.execute("SELECT body FROM note ORDER BY id")],
+            [body for _id, body in ROWS_B],
+        )
+
+    def test_a_database_past_the_fixed_default_keeps_its_base_pages(self) -> None:
+        """The case the fixed budget lost: image plus base did not fit.
+
+        With the fixed default pinned below what one entry costs, only a
+        budget that scales with the image can keep the base pages — and
+        keeping them is what makes the next message a log-only update.
+        """
+        with (
+            patch.object(snapshot, "_DEFAULT_BUDGET_BYTES", 1),
+            patch.object(
+                snapshot, "physical_memory_bytes", return_value=self.HUGE_MEMORY
+            ),
+        ):
+            cache = SnapshotCache()
+            self.addCleanup(cache.close)
+            cache.connect(self.database, geometry())
+            self.a_message_arrives()
+            connection, decryptions = self.reread(cache)
+
+        self.assertEqual(decryptions, [], "the log alone should have been read")
+        self.assert_reads_bravo(connection)
+
+    def test_a_machine_short_of_memory_still_sheds_the_base_pages(self) -> None:
+        """The cap is what stops the budget following a database off a cliff."""
+        with (
+            patch.object(snapshot, "_DEFAULT_BUDGET_BYTES", 1),
+            patch.object(
+                snapshot, "physical_memory_bytes", return_value=4 * (self.held + 512)
+            ),
+        ):
+            cache = SnapshotCache()
+            self.addCleanup(cache.close)
+            first = cache.connect(self.database, geometry())
+            self.a_message_arrives()
+            connection, decryptions = self.reread(cache)
+
+        self.assertEqual(len(decryptions), 1, "the base pages must have been shed")
+        self.assertIsNot(first, connection)
+        self.assert_reads_bravo(connection)
+
+    def test_a_stated_budget_ignores_how_much_memory_the_machine_has(self) -> None:
+        with patch.object(snapshot, "physical_memory_bytes", return_value=4096):
+            cache = SnapshotCache(budget_bytes=self.held * 8)
+            self.addCleanup(cache.close)
+            cache.connect(self.database, geometry())
+            self.a_message_arrives()
+            connection, decryptions = self.reread(cache)
+
+        self.assertEqual(decryptions, [], "a stated budget is the budget")
+        self.assert_reads_bravo(connection)
+
+    def test_a_stated_budget_too_small_for_the_base_pages_still_sheds(self) -> None:
+        with patch.object(
+            snapshot, "physical_memory_bytes", return_value=self.HUGE_MEMORY
+        ):
+            cache = SnapshotCache(budget_bytes=self.held)
+            self.addCleanup(cache.close)
+            cache.connect(self.database, geometry())
+            self.a_message_arrives()
+            connection, decryptions = self.reread(cache)
+
+        self.assertEqual(len(decryptions), 1, "a stated budget is not widened")
+        self.assert_reads_bravo(connection)
+
+    def test_building_a_cache_asks_the_machine_nothing(self) -> None:
+        """Nothing expensive happens in a constructor, so status can explain itself."""
+
+        def probed(*_args, **_kwargs):
+            raise AssertionError("the machine was probed while building the cache")
+
+        with (
+            patch.object(snapshot, "physical_memory_bytes", side_effect=probed),
+            patch.object(snapshot.subprocess, "run", side_effect=probed),
+            patch.object(snapshot.os, "sysconf", side_effect=probed),
+        ):
+            self.addCleanup(SnapshotCache().close)
+            self.addCleanup(SnapshotCache(budget_bytes=1).close)
 
 
 class CacheTests(_Fixture):

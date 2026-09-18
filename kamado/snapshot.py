@@ -33,6 +33,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -41,11 +42,33 @@ from typing import Final, Optional
 
 from . import page as pages, wal as wal_format
 from .cipher import Geometry
+from .commoncrypto import PreparedKey
 from .errors import ErrorCode, KamadoError
 
 _READ_ATTEMPTS: Final = 4
 _BACKOFF_SECONDS: Final = (0.05, 0.15, 0.4)
 _DEFAULT_BUDGET_BYTES: Final = 256 * 1024 * 1024
+
+_BUDGET_HEADROOM: Final = 3
+"""How many copies of the largest image a cache with no stated budget may hold.
+
+One entry costs roughly two copies: the snapshot and the base pages kept for
+log-only updates. The third leaves room for growth and smaller cached images.
+The fixed 256 MiB budget sheds base pages past a roughly 128 MiB database.
+This limits retained cache entries, not temporary allocations or process RSS.
+"""
+
+_MEMORY_SHARE: Final = 0.25
+"""The share of physical memory the budget may claim.
+
+Following the database is only safe while the machine can hold it, so the
+scaled budget is capped here rather than being allowed to grow without one.
+On a machine too small for that cap the base pages are shed exactly as they
+were before, which is the behaviour this cap exists to keep.
+"""
+
+_physical_memory: "list[Optional[int]]" = []
+"""Memoised answer from :func:`physical_memory_bytes`; empty until first asked."""
 
 _JOURNAL_MODE_OFFSET: Final = 18
 _ROLLBACK_JOURNAL: Final = b"\x01\x01"
@@ -64,8 +87,13 @@ def _decrypt_pages_worker(
     end_page: int,
     encrypted: bytes,
 ) -> None:
+    """Decrypt one span of pages in a forked child.
+
+    Only ever reached from a process that was single-threaded when it forked;
+    see :func:`_forkable` for why that is the condition rather than a matter
+    of what this function is careful about.
+    """
     from multiprocessing import shared_memory
-    from .commoncrypto import PreparedKey
 
     shm = shared_memory.SharedMemory(name=shm_name)
     try:
@@ -80,6 +108,47 @@ def _decrypt_pages_worker(
         shm.close()
 
 
+def _decrypt_serially(
+    encrypted: bytes,
+    geometry: Geometry,
+    base_pages: int,
+    page_size: int,
+    reserve: int,
+) -> bytes:
+    """Decrypt every base page on this thread, in order."""
+    base_image = bytearray(len(encrypted))
+    with geometry.prepared() as prepared:
+        for number in range(1, base_pages + 1):
+            start = (number - 1) * page_size
+            base_image[start : start + page_size] = pages.reconstruct_page(
+                prepared, number, encrypted[start : start + page_size], page_size, reserve
+            )
+    return bytes(base_image)
+
+
+def _forkable() -> bool:
+    """Whether this process may fork children to decrypt with.
+
+    Only a process that is alone in itself. ``fork`` gives the child one
+    thread — the one that called it — and everything every other thread held
+    at that instant: a mutex inside libc's allocator, a lock some library took
+    on the way into a native call, the interpreter's own bookkeeping. The
+    child inherits the locked state without the threads that would unlock it,
+    and what that produces is not an error but a child that never returns.
+
+    Making the child careful is not a fix, because the child does not choose
+    what it inherits. So the fork is confined to the one case where there is
+    nothing to inherit: a command-line run, on its own thread, with no other
+    thread alive. The terminal interface reads its database on a thread of its
+    own and therefore decrypts serially — slower on the first read of a large
+    account, and correct.
+    """
+    return (
+        threading.current_thread() is threading.main_thread()
+        and threading.active_count() == 1
+    )
+
+
 def _decrypt_base_pages(
     encrypted: bytes,
     geometry: Geometry,
@@ -87,20 +156,13 @@ def _decrypt_base_pages(
     page_size: int,
     reserve: int,
 ) -> bytes:
-    """Decrypt all base pages, parallelizing across CPU cores for large databases."""
+    """Decrypt all base pages, across CPU cores when this process may fork."""
     total_size = len(encrypted)
     num_cpus = os.cpu_count() or 4
     num_workers = min(num_cpus, 8)
 
-    if base_pages < _PARALLEL_PAGE_THRESHOLD or num_workers <= 1:
-        base_image = bytearray(total_size)
-        with geometry.prepared() as prepared:
-            for number in range(1, base_pages + 1):
-                start = (number - 1) * page_size
-                base_image[start : start + page_size] = pages.reconstruct_page(
-                    prepared, number, encrypted[start : start + page_size], page_size, reserve
-                )
-        return bytes(base_image)
+    if base_pages < _PARALLEL_PAGE_THRESHOLD or num_workers <= 1 or not _forkable():
+        return _decrypt_serially(encrypted, geometry, base_pages, page_size, reserve)
 
     from multiprocessing import get_context, shared_memory
 
@@ -140,14 +202,7 @@ def _decrypt_base_pages(
         return bytes(shm.buf[:total_size])
     except Exception:
         # Transparent fallback to single-threaded decryption on any multiprocessing error
-        base_image = bytearray(total_size)
-        with geometry.prepared() as prepared:
-            for number in range(1, base_pages + 1):
-                start = (number - 1) * page_size
-                base_image[start : start + page_size] = pages.reconstruct_page(
-                    prepared, number, encrypted[start : start + page_size], page_size, reserve
-                )
-        return bytes(base_image)
+        return _decrypt_serially(encrypted, geometry, base_pages, page_size, reserve)
     finally:
         if shm is not None:
             try:
@@ -155,6 +210,62 @@ def _decrypt_base_pages(
                 shm.unlink()
             except Exception:
                 pass
+
+
+def _read_physical_memory() -> Optional[int]:
+    """Ask the kernel how much RAM this machine has, or give up quietly.
+
+    ``sysconf`` answers from the already-loaded libc with no process to
+    spawn, and on macOS it reports exactly what ``hw.memsize`` does.  The
+    ``sysctl`` call behind it is the fallback for a platform where the
+    variable is not defined, and a machine that answers neither is treated as
+    unknown rather than guessed at.
+    """
+    try:
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        page_count = page_size = -1
+    if page_count > 0 and page_size > 0:
+        return page_count * page_size
+
+    try:
+        reported = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "hw.memsize"], capture_output=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        total = int(reported.stdout.strip())
+    except ValueError:
+        return None
+    return total if total > 0 else None
+
+
+def physical_memory_bytes() -> Optional[int]:
+    """How much RAM this machine has, asked once and remembered.
+
+    Lazy on purpose: a cache is built before anyone knows whether it will be
+    used, and nothing expensive belongs in a constructor.
+    """
+    if not _physical_memory:
+        _physical_memory.append(_read_physical_memory())
+    return _physical_memory[0]
+
+
+def _adaptive_budget(largest_image: int) -> int:
+    """The budget for a cache that was not given one.
+
+    ``_BUDGET_HEADROOM`` copies of the largest image held, with the fixed
+    default as a floor unless the physical-memory cap is lower. A
+    machine that will not say how much memory it has gets the fixed default,
+    which is what it got before this scaled at all.
+    """
+    memory = physical_memory_bytes()
+    if memory is None:
+        return _DEFAULT_BUDGET_BYTES
+    wanted = max(_DEFAULT_BUDGET_BYTES, largest_image * _BUDGET_HEADROOM)
+    return min(wanted, int(memory * _MEMORY_SHARE))
 
 
 @dataclass(frozen=True)
@@ -471,6 +582,12 @@ class _CachedSnapshot:
     connection: sqlite3.Connection
     size: int
     base: Optional[BasePages]
+    image_bytes: int
+    """The snapshot alone, which is what the adaptive budget scales against.
+
+    ``size`` is what the entry is charged and shrinks when its base pages are
+    shed, so it cannot stand in for the size of the database being read.
+    """
 
 
 class SnapshotCache:
@@ -479,12 +596,31 @@ class SnapshotCache:
     The cache owns every connection it returns; callers read and must not
     close them.  Eviction is least-recently-used against a byte budget, which
     counts the base pages an entry keeps as well as the snapshot itself.
+
+    *budget_bytes* is honoured exactly when it is given.  Left out, the budget
+    follows the largest database the cache is actually holding rather than a
+    constant chosen against a smaller account; see :func:`_adaptive_budget`.
     """
 
-    def __init__(self, budget_bytes: int = _DEFAULT_BUDGET_BYTES) -> None:
-        self._budget = budget_bytes
+    def __init__(self, budget_bytes: Optional[int] = None) -> None:
+        self._stated_budget = budget_bytes
         self._entries: OrderedDict[Path, _CachedSnapshot] = OrderedDict()
         self._bytes = 0
+
+    @property
+    def _budget(self) -> int:
+        """What this cache may hold right now.
+
+        A stated budget is returned untouched.  Otherwise it is derived, on
+        each use rather than at construction, because the size it scales with
+        is not known until a database has been read.
+        """
+        if self._stated_budget is not None:
+            return self._stated_budget
+        largest = max(
+            (entry.image_bytes for entry in self._entries.values()), default=0
+        )
+        return _adaptive_budget(largest)
 
     def fingerprint(self, database: Path) -> Fingerprint:
         """Sample a database without decrypting anything."""
@@ -648,7 +784,9 @@ class SnapshotCache:
         if previous is not None:
             self._bytes -= previous.size
             previous.connection.close()
-        self._entries[database] = _CachedSnapshot(fingerprint, connection, held, base)
+        self._entries[database] = _CachedSnapshot(
+            fingerprint, connection, held, base, size
+        )
         self._bytes += held
         self._make_room()
 
@@ -662,15 +800,16 @@ class SnapshotCache:
         them was still not enough — which keeps the number of live connections
         exactly where it was before any pages were kept at all.
         """
+        budget = self._budget
         for entry in self._entries.values():
-            if self._bytes <= self._budget:
+            if self._bytes <= budget:
                 return
             if entry.base is not None:
                 self._bytes -= len(entry.base)
                 entry.size -= len(entry.base)
                 entry.base = None
 
-        while self._bytes > self._budget and len(self._entries) > 1:
+        while self._bytes > budget and len(self._entries) > 1:
             _evicted, stale = self._entries.popitem(last=False)
             self._bytes -= stale.size
             stale.connection.close()

@@ -332,7 +332,8 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return 0
 
     if arguments.command == "tui":
-        return _tui(reader)
+        # Deliberately not handed this reader: see :func:`_tui`.
+        return _tui()
 
     if arguments.command == "follow":
         return _follow(reader, arguments)
@@ -464,10 +465,24 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _tui(reader: Reader) -> int:
-    """Hand the terminal to the browser, restoring it however it ends."""
+def _tui() -> int:
+    """Hand the terminal to the browser, restoring it however it ends.
+
+    The interface's reader is opened *by the worker, on the worker's thread*,
+    and closed by it there. It is deliberately not the reader this command was
+    given: that one is closed by :func:`main` on this thread when the browser
+    returns, and quitting while a decryption is still running is exactly the
+    case where that close would land on a database another thread is reading.
+    Two readers is the price of one owner, and the one this command was handed
+    has read nothing by the time the browser starts.
+
+    The console is entered first so that it is left last: the database is
+    given up while the screen still holds the last frame, rather than after
+    the terminal has been handed back to a shell that then appears to hang.
+    """
     from .tui.app import App
     from .tui.console import Console, supports_tui
+    from .tui.worker import DatabaseWorker
 
     if not supports_tui():
         raise KamadoError(
@@ -475,8 +490,13 @@ def _tui(reader: Reader) -> int:
             "the terminal interface needs an interactive terminal; "
             "run it directly rather than through a pipe",
         )
-    with Console() as console:
-        App(reader).run(console)
+    # The ledger is switched on here for the same reason main switches it on:
+    # this is certainly reading the live database, and a rename is invisible
+    # unless something writes down what it saw.
+    with Console() as console, DatabaseWorker(
+        open_reader=lambda: Reader(ledger=NameLedger())
+    ) as owner:
+        App(db=owner).run(console)
     return 0
 
 

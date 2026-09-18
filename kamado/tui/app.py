@@ -7,6 +7,12 @@ single footer line that gives up its middle before its edges.
 Everything on screen is rebuilt from state on each keystroke. A conversation
 this large cannot be diffed cheaply and does not need to be — one frame per
 key is imperceptible and removes a whole class of stale-cell bugs.
+
+Nothing here reads the database. Every query is a :class:`~.worker.Job` handed
+to the one thread that owns the reader, and every answer is applied back on
+this thread when the loop drains it — so a decryption in flight costs the
+keyboard nothing, and an answer to a pane that has since been closed is
+dropped rather than drawn into whatever is standing in its place.
 """
 
 from __future__ import annotations
@@ -23,6 +29,21 @@ from ..errors import ErrorCode, KamadoError
 from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
+from .worker import (
+    DatabaseWorker,
+    FEEDS,
+    FRIENDS,
+    NAMES,
+    OLDER,
+    OPEN,
+    POLL,
+    RELEASE,
+    ROOMS,
+    UNWATCH,
+    DatabaseOwner,
+    Done,
+    Job,
+)
 from .console import CLEAR_BOX, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
@@ -103,6 +124,12 @@ class ChatState:
     """
     feeds: dict[int, str] = field(default_factory=dict)
     """What each feed row in this window says about itself, asked once."""
+    token: int = 0
+    """What this pane is called while it is open, so an answer can find it.
+
+    A room closed and reopened is a different pane holding the same room, and
+    a read the first one asked for must not land in the second.
+    """
     rendered: Optional[tuple[tuple[int, int], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
 
@@ -112,11 +139,33 @@ class App:
 
     def __init__(
         self,
-        reader: Reader,
+        reader: Optional[Reader] = None,
         theme: Optional[Theme] = None,
         sender: Optional["MessageSender"] = None,
+        db: Optional[DatabaseOwner] = None,
     ) -> None:
         self.reader = reader
+        """Kept for a caller that owns one; nothing here ever queries it."""
+        self._db = db if db is not None else DatabaseOwner(reader)
+        """The one way to the database, and the one way back from it."""
+        self._db.sink = self._settle
+        self._dirty = False
+        """Whether an answer has landed that the screen has not shown yet."""
+        self._catalogued = False
+        """Whether the catalog has ever been read, so a first failure speaks."""
+        self._friends_asked = False
+        self._cleanup: dict[tuple[str, Optional[int]], Job] = {}
+        """Coalesced teardown for closed panes, retried when the queue has room."""
+        self._token = 0
+        self._opening: dict[int, int] = {}
+        """Rooms being opened, by the token of the pane they will become.
+
+        A room is read before its pane exists, and in that time the reader can
+        change their mind — go back to the conversations they had open, or to
+        the friend list. What they asked for is forgotten here, so the answer
+        arrives to nobody rather than to a screen that has moved on.
+        """
+        self._last_width = 80
         self.theme = theme if theme is not None else Theme(dark=_detect_dark_mode())
         self._sender = sender
         """Built on the first send so browsing never touches the desktop."""
@@ -127,13 +176,6 @@ class App:
         """Conversations held open side by side, in the order they were opened."""
         self.focus = 0
         """Which of them the keyboard and the composer belong to."""
-        self.watcher: Optional[Watcher] = None
-        """One watcher for every open room.
-
-        The fingerprint a poll checks covers the whole account, so following a
-        second conversation costs no second decryption — and a decryption is
-        the most expensive thing this loop can be made to do.
-        """
         self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
         self.running = True
@@ -169,6 +211,20 @@ class App:
         """Where the terminal caret belongs, so an IME composes in the box."""
 
     @property
+    def watcher(self) -> Optional[Watcher]:
+        """The one watcher for every open room, held by the owner thread.
+
+        The fingerprint a poll checks covers the whole account, so following a
+        second conversation costs no second decryption — and a decryption is
+        the most expensive thing this loop can be made to do.
+
+        What comes back belongs to the owner thread. Holding the reference is
+        safe; asking it questions is for a caller that knows the owner is idle,
+        which in practice means a test. Nothing in this class does.
+        """
+        return self._db.watcher
+
+    @property
     def chat(self) -> Optional[ChatState]:
         """The conversation the keyboard is in, of the ones held open."""
         if not self.chats:
@@ -200,14 +256,123 @@ class App:
             return list(self.chats)
         start = min(max(0, self.focus - fits + 1), len(self.chats) - fits)
         return self.chats[start : start + fits]
-        self._last_width = 80
+
+    # -- asking ---------------------------------------------------------------
+
+    def _ask(self, job: Job) -> bool:
+        """Hand one piece of database work to the thread that owns it."""
+        return self._db.submit(job)
+
+    def _queue_cleanup(self, job: Job) -> None:
+        """A full queue may defer teardown, but must not lose it."""
+        if not self._ask(job):
+            self._cleanup[(job.kind, job.room_id)] = job
+
+    def _pump(self, width: int, timeout: Optional[float] = None) -> bool:
+        """Apply every answer that has come back. Returns whether to redraw.
+
+        The width is recorded rather than passed on because an answer is
+        absorbed at the width a pane actually renders at: a reader scrolled up
+        in a narrow pane would otherwise be moved by the arithmetic of a
+        screen nobody is looking at.
+        """
+        self._last_width = width
+        self._db.drain(timeout)
+        wanted = {chat.room.id for chat in self.chats} | set(self._opening.values())
+        for key, job in tuple(self._cleanup.items()):
+            # A later open supersedes deferred teardown. Retrying it after
+            # that open would silently stop arrivals in the new pane.
+            if (job.kind == UNWATCH and job.room_id in wanted) or (
+                job.kind == RELEASE and wanted
+            ):
+                self._cleanup.pop(key)
+                continue
+            if not self._ask(job):
+                break
+            self._cleanup.pop(key)
+        drawn, self._dirty = self._dirty, False
+        return drawn
+
+    def _next_token(self) -> int:
+        self._token += 1
+        return self._token
+
+    def _pane(self, token: int) -> Optional[ChatState]:
+        """The pane that asked, or None once it has been closed."""
+        return next((chat for chat in self.chats if chat.token == token), None)
+
+    def _settle(self, done: Done) -> None:
+        """Apply one finished job, on the thread that draws the screen.
+
+        Written out rather than looked up by name: these are the only answers
+        there are, and an answer this screen has no place for should fail here
+        rather than be dispatched to whatever happens to share its name.
+        """
+        kind = done.job.kind
+        if kind == ROOMS:
+            drawn = self._settle_rooms(done)
+        elif kind == OPEN:
+            drawn = self._settle_open(done)
+        elif kind == POLL:
+            drawn = self._settle_poll(done)
+        elif kind == OLDER:
+            drawn = self._settle_older(done)
+        elif kind == FRIENDS:
+            drawn = self._settle_friends(done)
+        elif kind == FEEDS:
+            drawn = self._settle_feeds(done)
+        elif kind == NAMES:
+            drawn = self._settle_names(done)
+        elif kind in (UNWATCH, RELEASE):
+            # Nothing to draw: what they were about is already off the screen.
+            drawn = False
+        else:
+            raise ValueError(f"nothing on screen is waiting for {kind!r}")
+        self._dirty = drawn or self._dirty
 
     # -- data ---------------------------------------------------------------
 
     def load_rooms(self) -> None:
-        catalogued = self.reader.rooms()
+        """Ask for the catalog; it reaches the screen when it is read."""
+        self._ask(Job(ROOMS))
+
+    def _settle_rooms(self, done: Done) -> bool:
+        """Take the catalog, keeping the room the cursor was on.
+
+        One settler for both the first read and every refresh after it: the
+        two differ only in that the first has a status line to answer for and
+        always has something new to draw.
+        """
+        if done.error is not None:
+            # Worth saying only the first time. After that the list is on
+            # screen already, and a refresh that failed is not news.
+            if self._catalogued:
+                return False
+            self.status = _said(done.error)
+            return True
+        catalogued = done.value
         self.titles = [room.title for room in catalogued]
-        self.rooms = [room for room in catalogued if room.readable]
+        rooms = [room for room in catalogued if room.readable]
+        changed = [(room.id, room.unread, room.last_log_id) for room in rooms] != [
+            (room.id, room.unread, room.last_log_id) for room in self.rooms
+        ]
+        selected_id = self.rooms[self.selected].id if self.rooms else None
+        self.rooms = rooms
+        if selected_id is not None:
+            for index, room in enumerate(rooms):
+                if room.id == selected_id:
+                    self.selected = index
+                    break
+        self.selected = max(0, min(self.selected, len(self.rooms) - 1))
+        first = not self._catalogued
+        self._catalogued = True
+        if first:
+            self.status = (
+                ""
+                if self.rooms
+                else "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
+            )
+        return changed or first
 
     def visible_rooms(self) -> list[Room]:
         """The rooms the filter leaves, or all of them."""
@@ -263,7 +428,14 @@ class App:
         return True
 
     def load_friends(self) -> None:
-        self.friends = self.reader.friends()
+        self._friends_asked = self._ask(Job(FRIENDS))
+
+    def _settle_friends(self, done: Done) -> bool:
+        if done.error is not None:
+            self.status = _said(done.error)
+            return True
+        self.friends = done.value
+        return True
 
     def open_friend(self, friend: Friend) -> None:
         """Open a friend's 1:1 room, if the client has cached its key."""
@@ -290,19 +462,54 @@ class App:
         if already is not None:
             self.focus = already
             return
-        messages = self.reader.messages(room.id, limit=HISTORY_WINDOW)
+        if room.id in self._opening.values():
+            # Already on its way; asking twice would read the room twice.
+            return
+        token = self._next_token()
+        self._opening[token] = room.id
+        if not self._ask(Job(OPEN, room_id=room.id, token=token, payload=(room, HISTORY_WINDOW))):
+            self._opening.pop(token)
+            self.status = "DB 작업이 밀려 있습니다. 잠시 후 다시 열어주세요."
+
+    def _cancel_opens(self) -> None:
+        """Stop waiting for rooms that were asked for and then left behind."""
+        for room_id in self._opening.values():
+            self._queue_cleanup(Job(UNWATCH, room_id=room_id))
+        self._opening.clear()
+
+    def _settle_open(self, done: Done) -> bool:
+        """Put the room on screen, once its window has been read.
+
+        Following it started on the owner thread in the same job, so there is
+        no gap between what this window holds and where the watcher resumes.
+        """
+        room, _limit = done.job.payload
+        wanted = self._opening.pop(done.job.token, None) is not None
+        if not wanted:
+            # Asked for, then left behind. Neither the pane nor the complaint
+            # belongs on a screen that has moved on.
+            return False
+        if done.error is not None:
+            self.status = _said(done.error)
+            return True
+        if any(chat.room.id == room.id for chat in self.chats):
+            # Asked for twice before the first answer came back; the keyboard
+            # has already been moved to it and a second pane would be a second
+            # viewport over one conversation.
+            return False
+        messages, stored = done.value
         if not self.chats:
             # Tints are kept across a pane's lifetime: rebuilding the palette
             # while another conversation is on screen would recolour it.
             self.palette = SpeakerPalette(dark=self.theme.dark)
         for message in messages:
             self.palette.hue(message.sender)
-        stored = self.reader.stored_title(room.id)
         kept = self.drafts.get(room.id, "")
         # A conversation opens at its newest line, not at its oldest.
         self.chats.append(
             ChatState(
                 room=room,
+                token=done.job.token,
                 messages=messages,
                 anchor_top=False,
                 draft=kept,
@@ -311,40 +518,42 @@ class App:
             )
         )
         self.focus = len(self.chats) - 1
-        self._follow(room.id)
-
-    def _follow(self, room_id: int) -> None:
-        """Add a room to the one watcher, building it on the first pane."""
-        if self.watcher is None:
-            self.watcher = Watcher(
-                self.reader,
-                room_ids=[chat.room.id for chat in self.chats],
-                interval=REFRESH_SECONDS,
-            )
-            self.watcher.prime()
-            return
-        self.watcher.watch(room_id)
+        self.picking = False
+        self._forget_filter()
+        self.status = ""
+        return True
 
     def refresh(self, width: int) -> bool:
-        """Pick up anything new. Returns whether the screen needs redrawing.
+        """Ask for anything new, and take whatever has come back.
+
+        The asking costs this thread nothing: the poll is run by the owner
+        thread, and a second one is refused while the first is still in the
+        database rather than queued behind it. What returns is whatever had
+        finished by now, which on a busy account is the poll before this one.
+        """
+        self._last_width = width
+        # What landed before this call was somebody else's doing — opening a
+        # room, loading older history — and they redrew for it themselves.
+        # This answers for the poll it is about to ask for.
+        self._dirty = False
+        self._ask(Job(ROOMS) if not self.chats else Job(POLL))
+        return self._pump(width)
+
+    def _settle_poll(self, done: Done) -> bool:
+        """Hand each arrival to the room it was written in.
 
         One poll answers for every open conversation, so what comes back is
-        mixed and each message is handed to the room it belongs to. Line
-        counts are measured at the width a pane actually renders at, or a
-        reader scrolled up in a narrow pane would be moved by the arithmetic
-        of a screen nobody is looking at.
+        mixed. A message for a room whose pane has since been closed belongs
+        to nobody on screen and is dropped here.
         """
-        if not self.chats:
-            return self._refresh_rooms()
-        if self.watcher is None:
-            return False
-        try:
-            arrived = self.watcher.poll()
-        except KamadoError as error:
-            self.chats[min(self.focus, len(self.chats) - 1)].notice = error.message
+        if done.error is not None:
+            if self.chats:
+                self.chats[min(self.focus, len(self.chats) - 1)].notice = _said(done.error)
             return True
-        if not arrived:
+        arrived = done.value
+        if not arrived or not self.chats:
             return False
+        width = self._last_width
         cell = self._pane_width(width, max(1, len(self._visible_panes(width))))
         drawn = False
         for chat in self.chats:
@@ -388,41 +597,36 @@ class App:
             chat.delivered = True
             chat.delivered_at = self._clock()
 
-    def _refresh_rooms(self) -> bool:
-        """Re-read the catalog so unread counts and ordering stay current."""
-        try:
-            catalogued = self.reader.rooms()
-        except KamadoError:
-            return False
-        self.titles = [room.title for room in catalogued]
-        rooms = [room for room in catalogued if room.readable]
-        changed = [
-            (room.id, room.unread, room.last_log_id) for room in rooms
-        ] != [(room.id, room.unread, room.last_log_id) for room in self.rooms]
-        if not changed:
-            return False
-        selected_id = self.rooms[self.selected].id if self.rooms else None
-        self.rooms = rooms
-        if selected_id is not None:
-            for index, room in enumerate(rooms):
-                if room.id == selected_id:
-                    self.selected = index
-                    break
-        self.selected = max(0, min(self.selected, len(self.rooms) - 1))
-        return True
-
     def load_older(self) -> None:
         chat = self.chat
         if chat is None or not chat.messages:
             return
-        older = self.reader.messages(
-            chat.room.id, limit=LOAD_MORE_STEP, before_id=chat.messages[0].id
+        self._ask(
+            Job(
+                OLDER,
+                room_id=chat.room.id,
+                token=chat.token,
+                payload=(chat.messages[0].id, LOAD_MORE_STEP),
+            )
         )
+
+    def _settle_older(self, done: Done) -> bool:
+        chat = self._pane(done.job.token)
+        if chat is None:
+            # The pane that asked has been closed. Whatever it was reading is
+            # history for a conversation nobody is looking at any more.
+            return False
+        if done.error is not None:
+            chat.notice = f"이전 기록을 읽지 못했습니다: {_said(done.error)}"
+            return True
+        known = {message.id for message in chat.messages}
+        older = [message for message in done.value if message.id not in known]
         if not older:
             chat.notice = "이전 기록이 더 없습니다"
-            return
+            return True
         chat.messages = older + chat.messages
         chat.notice = f"이전 {len(older)}개 불러옴 (총 {len(chat.messages)})"
+        return True
 
     # -- rendering ----------------------------------------------------------
 
@@ -523,7 +727,10 @@ class App:
         return lines[:height]
 
     def _render_friends(self, width: int, height: int) -> list[str]:
-        if not self.friends:
+        if not self.friends and not self._friends_asked:
+            # Asked for, not waited for: drawing is not where a database read
+            # belongs. The list arrives in a later frame, and asking once is
+            # what keeps an account with no friends from asking every frame.
             self.load_friends()
         shown = self.visible_friends()
         total = len(shown)
@@ -679,27 +886,31 @@ class App:
         )
 
     def _feed_detail(self, chat: ChatState, message: Message) -> str:
-        """What a feed row says about itself, beside the kind it already shows.
-
-        Asked for the whole loaded window in one statement the first time one
-        of them is drawn, and topped up as more arrive: a room whose newest
-        four hundred records are mostly feeds would otherwise pay a query a
-        line. A feed with nothing to add is remembered as having nothing, so
-        it is not asked about again.
-        """
+        """Render details already fetched for a feed, without reading the DB."""
         if message.type != FEED_MESSAGE:
             return ""
-        if message.id not in chat.feeds:
-            missing = [
-                one.id
-                for one in chat.messages
-                if one.type == FEED_MESSAGE and one.id not in chat.feeds
-            ]
-            said = self.reader.feed_details(chat.room.id, missing)
-            for one in missing:
-                chat.feeds[one] = said.get(one, "")
         detail = chat.feeds.get(message.id, "")
         return f" {detail}" if detail else ""
+
+    def _settle_feeds(self, done: Done) -> bool:
+        """Record what each feed said, including that it said nothing.
+
+        A feed with nothing to add is remembered as having nothing, so it is
+        not asked about again — and that is as true of a read that failed as
+        of one that came back empty.
+        """
+        chat = self._pane(done.job.token)
+        if chat is None:
+            return False
+        (asked,) = done.job.payload
+        said = {} if done.error is not None else done.value
+        for one in asked:
+            chat.feeds[one] = said.get(one, "")
+        if done.error is not None:
+            chat.notice = f"기록 항목을 읽지 못했습니다: {_said(done.error)}"
+        # The transcript was built without these, so it is no longer current.
+        chat.rendered = None
+        return True
 
     def _transcript_lines(self, width: int) -> list[str]:
         """Return the focused conversation's transcript."""
@@ -717,6 +928,14 @@ class App:
         the width is the pane's, so panes of different sizes each keep their
         own.
         """
+        # Submit one batch per pane, even on a cached frame: a full queue may
+        # have refused the previous request. In-flight duplicates are coalesced.
+        missing = tuple(
+            message.id for message in chat.messages
+            if message.type == FEED_MESSAGE and message.id not in chat.feeds
+        )
+        if missing:
+            self._ask(Job(FEEDS, room_id=chat.room.id, token=chat.token, payload=(missing,)))
         key = (width, len(chat.messages))
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
@@ -1155,6 +1374,7 @@ class App:
             # and the filter has already taken them.
             self.picking = False
             self._forget_filter()
+            self._cancel_opens()
         elif kind == "char" and text in ("q", "Q"):
             self.running = False
         elif kind == Key.INTERRUPT or kind == Key.ESCAPE:
@@ -1168,19 +1388,17 @@ class App:
         elif kind == Key.END:
             self.selected = max(0, len(shown) - 1)
         elif kind == Key.ENTER and shown:
-            try:
-                self.open_room(shown[min(self.selected, len(shown) - 1)])
-                self._forget_filter()
-                self.picking = False
-                self.status = ""
-            except KamadoError as error:
-                self.status = error.message
+            # The list stays up until the room is actually read: whether it
+            # opened, and what to say if it did not, is answered where the
+            # answer lands rather than guessed at here.
+            self.open_room(shown[min(self.selected, len(shown) - 1)])
         elif kind == "char" and text in ("r", "R"):
             self.load_rooms()
             self.status = "목록 새로고침"
         elif kind == "char" and text in ("f", "F"):
             self.show_friends = True
             self._forget_filter()
+            self._cancel_opens()
             self.status = ""
 
     def _handle_friends(self, kind: str, text: str) -> None:
@@ -1194,6 +1412,7 @@ class App:
         elif kind in (Key.ESCAPE,) or (kind == "char" and text in ("f", "F")):
             self.show_friends = False
             self._forget_filter()
+            self._cancel_opens()
         elif kind == Key.UP:
             self.friend_selected = max(0, self.friend_selected - 1)
         elif kind == Key.DOWN:
@@ -1203,11 +1422,8 @@ class App:
         elif kind == Key.END:
             self.friend_selected = max(0, len(shown) - 1)
         elif kind == Key.ENTER and shown:
-            try:
-                self.open_friend(shown[min(self.friend_selected, len(shown) - 1)])
-                self._forget_filter()
-            except KamadoError as error:
-                self.status = error.message
+            self.open_friend(shown[min(self.friend_selected, len(shown) - 1)])
+            self._forget_filter()
 
     def _handle_chat(self, kind: str, text: str) -> None:
         chat = self.chat
@@ -1331,10 +1547,11 @@ class App:
             self.chats.pop(index)
             self.focus = max(0, min(self.focus if index > self.focus else self.focus - 1,
                                     len(self.chats) - 1))
-        if self.watcher is not None:
-            self.watcher.unwatch(chat.room.id)
+        self._queue_cleanup(Job(UNWATCH, room_id=chat.room.id))
         if not self.chats:
-            self.watcher = None
+            # Nothing is left to follow, so the watcher is given up rather
+            # than kept priming a database nobody on screen is reading.
+            self._queue_cleanup(Job(RELEASE))
 
     def _submit(self, chat: ChatState) -> None:
         """Send what is written, or run it when it starts with a slash."""
@@ -1383,9 +1600,14 @@ class App:
         enough, now that a name set in the client is read back as the room's
         title instead of being left to the member list.
         """
-        census = self.titles or [other.title for other in self.reader.rooms()]
+        # The census is the catalog this screen already holds. Re-reading it
+        # here is not merely expensive now, it is impossible: the catalog
+        # belongs to the owner thread, and this runs on the one handling the
+        # keystroke that asked to send. A screen with no catalog at all has
+        # never opened a room, so there is nothing to be torn between.
+        census = self.titles
         same = [title for title in census if title == room.title]
-        if len(same) == 1:
+        if len(same) <= 1:
             return
         described = ", ".join(
             f"{other.kind} {other.member_count}명 {_stamp(other.last_updated_at, self.zone)}"
@@ -1512,10 +1734,7 @@ class App:
             more = " …" if len(matches) > 3 else ""
             chat.notice = f"'{wanted}' 에 맞는 방이 {len(matches)}개입니다: {shown}{more}"
             return
-        try:
-            self.open_room(matches[0])
-        except KamadoError as error:
-            chat.notice = error.message
+        self.open_room(matches[0])
 
     def _real(self, chat: ChatState, who: str) -> None:
         """Show what a name's owner used to be called, and who else wore it.
@@ -1524,27 +1743,30 @@ class App:
         two chains answer "which of these two is the impostor", and that second
         question is the one a reader has when they type this at all.
         """
-        from ..names import steps_with_current
-
         if not who:
             chat.notice = "이름이 필요합니다 (예: /real 진짜유성진)"
             return
-        try:
-            history = self.reader.name_history(chat.room.id)
-            found = self.reader.users_named(chat.room.id, who, history)
-        except KamadoError as error:
-            chat.notice = f"이름 이력을 읽지 못했습니다: {error.message}"
-            return
-        current = self.reader.names()
+        self._ask(Job(NAMES, room_id=chat.room.id, token=chat.token, about=who))
+
+    def _settle_names(self, done: Done) -> bool:
+        chat = self._pane(done.job.token)
+        if chat is None:
+            return False
+        who = done.job.about
+        if done.error is not None:
+            chat.notice = f"이름 이력을 읽지 못했습니다: {_said(done.error)}"
+            return True
+        found, steps = done.value
         if not found:
             chat.notice = f"'{who}' 을(를) 쓴 사람이 기록에 없습니다"
-            return
-        chains = []
-        for user_id in found:
-            steps = steps_with_current(user_id, history.get(user_id, ()), current.get(user_id))
-            chains.append(" → ".join(self._name_step(step) for step in steps))
+            return True
+        chains = [
+            " → ".join(self._name_step(step) for step in steps[user_id])
+            for user_id in found
+        ]
         prefix = "" if len(found) == 1 else f"이 이름을 쓴 계정 {len(found)}개 · "
         chat.notice = prefix + "  |  ".join(chains)
+        return True
 
     def _name_step(self, record: "NameRecord") -> str:
         """Render one step as name and when it was seen, never as a bare name."""
@@ -1576,12 +1798,15 @@ class App:
         self.status = "카카오톡 로컬 데이터베이스를 불러오는 중..."
         console.draw(self.render(width, height), self.cursor)
 
+        # Asked for, not waited for. The catalog reaches the screen through
+        # the same drain as everything else, so the first frame is drawn and
+        # answering the keyboard begins before the database has said anything.
         self.load_rooms()
-        self.status = "" if self.rooms else "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
         due_at = 0.0
         last_key_at = 0.0
         while self.running:
             width, height = force_size() or console.size
+            self._pump(width)
             console.draw(self.render(width, height), self.cursor)
 
             kind, text = console.read_key(KEY_WAIT_SECONDS)
@@ -1604,20 +1829,10 @@ class App:
 def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) -> bool:
     """Whether to look for arrivals now.
 
-    Typing wins. A poll that finds something has to decrypt the room's whole
-    log — measured at 0.62 s and 0.94 s on two live rooms — and this loop is
-    single-threaded, so doing that between keystrokes is what makes input feel
-    stuck rather than slow.
-
-    The keystroke clock cannot see somebody writing Hangul. An IME keeps every
-    jamo until the syllable commits, so nothing reaches the interface while a
-    word is being assembled and this grace expires inside it — measured on a
-    live account, the poll that lands in that gap costs 1.3 s to 1.9 s and
-    returns nothing, because the running client rewrites the shared database
-    every second or so whether or not the watched room moved. Text already in
-    the composer is the evidence the clock is missing, and it buys the longer
-    grace: long enough to cover the pauses inside a sentence, short enough
-    that a message left sitting does not stop the room from moving.
+    Keep the existing typing grace to avoid unnecessary background work while
+    composing. It is no longer the protection against blocked input: database
+    jobs run on their owner thread, and completed jobs are drained every frame
+    regardless of this gate.
     """
     grace = COMPOSING_GRACE_SECONDS if composing else TYPING_GRACE_SECONDS
     if now - last_key_at < grace:
@@ -1626,12 +1841,7 @@ def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) ->
 
 
 def _next_poll_at(now: float, work_seconds: float) -> float:
-    """Back off behind a room that is expensive to read.
-
-    Waiting at least as long as the last poll took keeps a busy conversation
-    from consuming the loop; an idle room is unaffected because its poll costs
-    one stat.
-    """
+    """Space refresh submissions; the worker coalesces unfinished polls."""
     return now + max(REFRESH_SECONDS, work_seconds)
 
 
@@ -1679,8 +1889,20 @@ def _stamp(epoch: Optional[int], zone: timezone) -> str:
     return moment.strftime("%m-%d")
 
 
+def _said(error: BaseException) -> str:
+    """What to put on screen about a failure the owner thread carried back."""
+    return error.message if isinstance(error, KamadoError) else str(error)
+
+
 def launch() -> int:
-    """Run the browser, restoring the terminal whatever happens."""
-    with Reader() as reader, Console() as console:
-        App(reader).run(console)
+    """Run the browser, restoring the terminal whatever happens.
+
+    The reader is opened by the worker on the worker's thread and closed by it
+    there, so no connection this process makes is ever touched by two threads.
+    The console is entered first so it is left last: the database is given up
+    while the screen still holds its last frame, rather than after the
+    terminal has been handed back to a shell that then appears to hang.
+    """
+    with Console() as console, DatabaseWorker(open_reader=Reader) as owner:
+        App(db=owner).run(console)
     return 0
