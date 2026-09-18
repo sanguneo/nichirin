@@ -203,6 +203,21 @@ keep rather than one to rediscover.
   client's composer is a single shared resource and a remote caller may be
   several callers. The local CLI still only asks callers to wait two seconds;
   here it is enforced.
+- **Sharing the snapshot cache across requests is one change with how its
+  connections are opened.** `make_live_send` keeps a cache alive past the
+  request, and every request arrives on its own thread — but a `sqlite3`
+  connection may only be used from the thread that created it. `_connect`
+  therefore opens the images with `check_same_thread=False`, which is safe
+  because they are read-only bytes already in memory and sends are serialized
+  under the handler's lock.
+
+  This is written down because the half of it that is *not* obvious was left
+  out of the work order sent to `kanao-cli`, and that build hit the wall the
+  hard way: the second `POST /send` **died without an answer at all** —
+  `ProgrammingError` out of the handler, `RemoteDisconnected` at the client —
+  and no test caught it, because the suite had no send that crossed threads.
+  Port the two together.
+
 - **The HTTP layer is proven by stubs on any platform; the live wiring is not.**
   `tests/serve/` stands a stub sender, watcher and reader in front of the same
   handler, which is why those tests run on a machine with no KakaoTalk at all.
