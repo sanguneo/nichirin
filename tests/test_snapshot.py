@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -266,6 +267,31 @@ class CacheTests(_Fixture):
         super().setUp()
         self.cache = SnapshotCache()
         self.addCleanup(self.cache.close)
+
+    def test_a_cached_snapshot_is_readable_from_another_thread(self) -> None:
+        """A cache outlives the thread that filled it, so its snapshots must too.
+
+        The server hands one cache to the send path and every request arrives
+        on a thread of its own, so the second send reads a connection the
+        first one opened. sqlite3 refuses that by default — and the refusal
+        is a request that dies with no answer at all, which is how it was
+        found: by sending twice against a live client.
+        """
+        connection = self.cache.connect(self.database, KEY)
+        answer: list = []
+
+        def read() -> None:
+            try:
+                answer.append(connection.execute("SELECT count(*) FROM note").fetchone())
+            except Exception as error:  # noqa: BLE001 - the failure is the point
+                answer.append(error)
+
+        thread = threading.Thread(target=read)
+        thread.start()
+        thread.join(timeout=5)
+        self.assertEqual(len(answer), 1, "the reading thread never finished")
+        self.assertNotIsInstance(answer[0], Exception)
+        self.assertEqual(answer[0], (len(ROWS_A),))
 
     def test_an_unchanged_database_is_not_decrypted_twice(self) -> None:
         first = self.cache.connect(self.database, KEY)
