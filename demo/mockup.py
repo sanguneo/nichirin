@@ -138,8 +138,8 @@ class Cache:
     def __init__(self, databases: dict[str, sqlite3.Connection]) -> None:
         self.databases = databases
 
-    def connect(self, path: Path, key: bytes, page_size: int = 4096, reserve: int = 80):
-        name = Path(path).as_posix()
+    def connect(self, database: Path, key: bytes, page_size: int = 4096, reserve: int = 80):
+        name = Path(database).as_posix()
         for candidate, connection in self.databases.items():
             if name.endswith(candidate):
                 return connection
