@@ -29,7 +29,18 @@ import struct
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Final, Optional
+from typing import Any, Final, Optional, Protocol
+
+
+class PhotoSource(Protocol):
+    """Where a picture's bytes come from.
+
+    Named so the interface can be handed something that never touches the
+    network: the real store fetches, a test's stand-in answers from memory.
+    """
+
+    def fetch(self, url: str) -> Optional[bytes]:
+        ...
 
 from .. import wic
 

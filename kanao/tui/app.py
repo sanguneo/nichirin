@@ -26,8 +26,8 @@ from .. import __version__
 from ..errors import ErrorCode, KanaoError
 from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
-from . import digest
-from .console import CLEAR_BOX, Console, Key, force_size
+from . import digest, images
+from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
     Segment,
@@ -76,6 +76,15 @@ third of this before any words arrive.
 """
 
 
+INLINE_CACHE_ENTRIES = 64
+"""How many built picture escapes to keep.
+
+Scrolling asks for a new crop every line, so the keys are unbounded and
+something has to be dropped; 64 covers a picture moving through a pane several
+times over without letting one room's photos grow without limit.
+"""
+
+
 @dataclass
 class ChatState:
     """What is loaded and where the viewport sits inside it."""
@@ -111,8 +120,17 @@ class ChatState:
     """
     feeds: dict[int, str] = field(default_factory=dict)
     """What each feed row in this window says about itself, asked once."""
-    rendered: Optional[tuple[tuple[int, int], list[str]]] = None
+    rendered: Optional[tuple[tuple[int, int, frozenset[int]], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
+    opened_photos: set[int] = field(default_factory=set)
+    """Which messages are showing their picture rather than a label."""
+    photo_rows: dict[int, int] = field(default_factory=dict)
+    """Which transcript row each opened picture starts on, rebuilt every frame.
+
+    A picture is not text and cannot live in a line, so the transcript reserves
+    blank rows for it and the escape that draws it is laid over them after the
+    frame is painted. This is how the two halves find each other.
+    """
 
 
 class App:
@@ -164,6 +182,30 @@ class App:
         """
         self.cursor: Optional[tuple[int, int]] = None
         """Where the terminal caret belongs, so an IME composes in the box."""
+        self._photos: images.PhotoSource = images.PhotoStore()
+        """Where a picture's bytes come from; replaced outright in tests."""
+        self._protocol = images.detect()
+        """Which inline-image protocol this terminal draws, or ``none``."""
+        self._cell: Optional[tuple[int, int]] = None
+        """The console's cell size in pixels, asked once after the first frame."""
+        self._photo_bytes: dict[int, bytes] = {}
+        """Fetched pictures, so opening one twice costs one fetch."""
+        self._photo_shapes: dict[int, tuple[int, int]] = {}
+        """Each picture's measured size, which the stored one can disagree with."""
+        self.placements: list[
+            tuple[int, int, int, bytes, int, int, Optional[tuple[int, int]]]
+        ] = []
+        """What to draw over the painted frame: id, row, column, bytes, cells, crop."""
+        self._drawn: dict[int, tuple[int, int, int, int, Optional[tuple[int, int]]]] = {}
+        """Where each picture currently sits, so a still screen redraws nothing."""
+        self._images_moved = False
+        """Whether a picture moved, so the frame has to be given up whole."""
+        self._pane_rows = 0
+        """How tall a conversation pane last was, so a picture scales with it."""
+        self._inline_cache: dict[
+            tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
+        ] = {}
+        """Escapes already built, keyed by the box they were built for."""
 
     @property
     def chat(self) -> Optional[ChatState]:
@@ -673,9 +715,12 @@ class App:
         headed = len(panes) > 1 or len(self.chats) > len(panes)
         rows = max(1, body_height - (1 if headed else 0))
 
+        self._pane_rows = rows
+        body_top = len(lines) + (1 if headed else 0)
+        self.placements = []
         columns: list[list[str]] = []
         focused_body = 0
-        for pane in panes:
+        for index, pane in enumerate(panes):
             body = (
                 self._digest_of(pane, cell)
                 if pane.slices
@@ -693,6 +738,7 @@ class App:
                 for line in _window(body, pane.offset, rows)
             ]
             column.extend([" " * cell] * (rows - len(column)))
+            self._place_photos(pane, body, index, cell, rows, body_top)
             if headed:
                 column.insert(0, self._pane_header(pane, cell, pane is chat))
             columns.append(column)
@@ -736,7 +782,9 @@ class App:
 
     def _transcript_of(self, chat: ChatState, width: int) -> list[str]:
         """The same, for one named conversation rather than the focused one."""
-        key = (width, len(chat.messages))
+        # Opening a picture reserves rows, so it changes the transcript as
+        # surely as a new message does and has to change the key with it.
+        key = (width, len(chat.messages), frozenset(chat.opened_photos))
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
         lines = self._build_transcript(chat, width)
@@ -774,6 +822,9 @@ class App:
 
         lines: list[str] = []
         previous_day = ""
+        # Rebuilt with the transcript, because a row number only means anything
+        # against the lines it was counted in.
+        chat.photo_rows = {}
         for message in chat.messages:
             instant = (
                 datetime.fromtimestamp(message.sent_at, timezone.utc).astimezone(self.zone)
@@ -790,8 +841,21 @@ class App:
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
             label = message_kind(message.type) + self._feed_detail(chat, message)
-            text = message.text or self.theme.fg("dim", f"[{label}]")
-            if not message.text:
+            # A picture is offered only where it could actually be drawn, so a
+            # terminal that cannot show one never suggests it can.
+            has_picture = message.photo is not None
+            openable = has_picture and self._photos_drawable()
+            if openable:
+                label += " ▾" if message.id in chat.opened_photos else " ▸"
+            # The client writes its own word — "사진" — into the text column of
+            # a photo row. Passed through it reads as if somebody typed it, and
+            # says nothing about there being a picture to open.
+            text = (
+                self.theme.fg("dim", f"[{label}]")
+                if has_picture or not message.text
+                else message.text
+            )
+            if has_picture or not message.text:
                 wrapped = [text]
             elif self.theme.enabled:
                 wrapped = wrap_with_links(message.text, body_width)
@@ -817,7 +881,214 @@ class App:
                 lines.append(
                     truncate_to_width(" " * indent + self.theme.fg(body_colour, continuation), width)
                 )
+            if openable and message.id in chat.opened_photos:
+                # The picture is not text and cannot live in a line, so the rows
+                # it needs are reserved blank here and drawn over after the
+                # frame is painted. Reserving them is what keeps the rest of
+                # the conversation from being drawn underneath it.
+                _columns, photo_rows = self._photo_cells(message, width, indent)
+                chat.photo_rows[len(lines)] = message.id
+                lines.extend([""] * photo_rows)
         return lines
+
+    def _paint(self, console: Console, width: int, height: int) -> None:
+        """Compose one frame, lay the pictures over it, park the caret.
+
+        The frame is built first because rendering is what works out where the
+        pictures go — their positions are a result of the layout, not an input
+        to it. A picture that moved then needs the whole frame repainted to
+        clear the old pixels, which is the one thing the row-diff painter
+        cannot work out for itself: the rows it left behind are blank, and a
+        blank row that is still blank is exactly the row it skips.
+
+        The cell size is asked for once, after the first frame is on screen —
+        it only matters when a picture is opened, and nothing should hold up
+        the conversation appearing.
+        """
+        frame = self.render(width, height)
+        if self._cell is None and self._photos_drawable():
+            self._cell = console.cell_pixels()
+        overlay = self.photo_escapes()
+        if self._images_moved:
+            console.forget()
+            self._images_moved = False
+        console.draw(frame, self.cursor, overlay)
+
+    def _place_photos(
+        self,
+        pane: ChatState,
+        body: list[str],
+        index: int,
+        cell: int,
+        rows: int,
+        body_top: int,
+    ) -> None:
+        """Work out where this pane's opened pictures land on the screen.
+
+        The transcript knows which of *its* rows a picture starts on; only here
+        is it known which of those rows are on screen, how far down the frame
+        the pane's body begins, and which column the pane occupies. A picture
+        scrolled out of the window is simply not placed.
+        """
+        if not pane.photo_rows or not self._photos_drawable():
+            return
+        scrollable = len(body) - rows
+        offset = min(pane.offset, scrollable) if scrollable > 0 else pane.offset
+        end = max(1, len(body) - max(0, offset))
+        start = max(0, end - rows)
+        stamp_width = 5
+        name_width = min(14, max(8, cell // 6))
+        indent = stamp_width + 2 + name_width + 1
+        for row, message_id in pane.photo_rows.items():
+            message = next((one for one in pane.messages if one.id == message_id), None)
+            if message is None or message.photo is None:
+                continue
+            blob = self._photo_bytes.get(message_id)
+            if blob is None:
+                continue
+            columns, height = self._photo_cells(message, cell, indent)
+            # Only the part of the picture inside the window is asked for; a
+            # placement is not clipped by anything the frame does, so one that
+            # ran past the bottom would be drawn over the composer.
+            hidden = max(0, start - row)
+            shown = min(height - hidden, end - max(row, start))
+            if shown <= 0:
+                continue
+            shape = self._photo_shapes.get(
+                message_id, (message.photo.width, message.photo.height)
+            )
+            crop = images.crop_for(shape[1], height, hidden, shown)
+            self.placements.append(
+                (
+                    message_id,
+                    body_top + max(row, start) - start,
+                    index * (cell + 1) + indent,
+                    blob,
+                    columns,
+                    shown,
+                    crop,
+                )
+            )
+
+    def photo_escapes(self) -> str:
+        """Return the escapes that bring the terminal's pictures up to date.
+
+        Sixel and iTerm2 keep no image of their own, so a picture that moved is
+        written again wherever it went and the frame's own repaint is what takes
+        the old one away — which is why a change gives the frame up whole. A
+        still screen changes nothing and writes nothing, which is what keeps
+        this off the keystroke path.
+        """
+        if not self._photos_drawable():
+            return ""
+        current = {
+            message_id: (row, column, columns, rows, crop)
+            for message_id, row, column, _blob, columns, rows, crop in self.placements
+        }
+        if current == self._drawn:
+            return ""
+        self._images_moved = True
+        pieces: list[str] = []
+        for message_id, row, column, blob, columns, rows, crop in self.placements:
+            # Encoding is the expensive half, and a redraw usually asks for a
+            # box that was already encoded.
+            key = (self._protocol, message_id, columns, rows, crop)
+            if key in self._inline_cache:
+                escape = self._inline_cache[key]
+            else:
+                escape = images.inline_escape(
+                    self._protocol, blob, columns, rows, crop, self._cell
+                )
+                if len(self._inline_cache) >= INLINE_CACHE_ENTRIES:
+                    # Scrolling walks the crop a line at a time, so the keys are
+                    # unbounded; the oldest goes rather than all of them.
+                    self._inline_cache.pop(next(iter(self._inline_cache)))
+                self._inline_cache[key] = escape
+            if escape is None:
+                continue
+            pieces.append(f"\x1b[{row + 1};{column + 1}H" + escape)
+        self._drawn = current
+        return "".join(pieces)
+
+    def _photos_drawable(self) -> bool:
+        """Whether a picture could be shown here at all.
+
+        Both halves matter: a terminal that draws no graphics, and a theme
+        turned off — the escapes are colour's neighbours, and a reader who
+        asked for plain output did not ask for pictures either.
+        """
+        return self._protocol != images.NONE and self.theme.enabled
+
+    def _photo_cells(self, message: Message, width: int, indent: int) -> tuple[int, int]:
+        """The cell box one picture occupies, sized from its true shape."""
+        assert message.photo is not None
+        shape = self._photo_shapes.get(
+            message.id, (message.photo.width, message.photo.height)
+        )
+        columns, rows, _box = images.fit(
+            shape[0], shape[1], max(4, width - indent), self._photo_ceiling(), self._cell
+        )
+        return columns, rows
+
+    def _photo_ceiling(self) -> Optional[int]:
+        """How tall the conversation is, so a picture scales with the window."""
+        return self._pane_rows if self._pane_rows else None
+
+    def _photo_blob(self, message: Message) -> Optional[bytes]:
+        """Fetch a picture once and keep it, measuring what really came back.
+
+        The stored size cannot be trusted for shape — a rotated photo records
+        the one it was taken at — and the rows reserved here and the cells the
+        placement asks for have to come from the same number.
+        """
+        assert message.photo is not None
+        if message.id in self._photo_bytes:
+            return self._photo_bytes[message.id]
+        blob = self._photos.fetch(message.photo.url)
+        usable = None if blob is None else images.drawable(blob, self._protocol)
+        if usable is None:
+            return None
+        self._photo_bytes[message.id] = usable
+        measured = images.pixel_size(usable)
+        if measured is not None and self._photo_shapes.get(message.id) != measured:
+            self._photo_shapes[message.id] = measured
+            for chat in self.chats:
+                chat.rendered = None
+        return usable
+
+    def toggle_photo(self, message_id: int) -> bool:
+        """Open or close one picture, fetching it the first time it is opened.
+
+        Returns whether anything is now open for that message: a picture that
+        cannot be fetched stays closed and says so, rather than reserving rows
+        for something that will never arrive.
+        """
+        chat = self.chat
+        if chat is None or not self._photos_drawable():
+            return False
+        if message_id in chat.opened_photos:
+            chat.opened_photos.discard(message_id)
+            chat.rendered = None
+            return False
+        message = next((one for one in chat.messages if one.id == message_id), None)
+        if message is None or message.photo is None:
+            return False
+        if self._photo_blob(message) is None:
+            chat.notice = "사진을 가져오지 못했습니다"
+            return False
+        chat.opened_photos.add(message_id)
+        chat.rendered = None
+        return True
+
+    def newest_photo(self) -> Optional[int]:
+        """The id of the newest message in the focused pane carrying a picture."""
+        chat = self.chat
+        if chat is None:
+            return None
+        for message in reversed(chat.messages):
+            if message.photo is not None:
+                return message.id
+        return None
 
     def _quoted(self, message: Message, body_width: int) -> str:
         """Render what a reply is answering, to sit beside the replier's name.
@@ -1102,6 +1373,8 @@ class App:
             if text == CLEAR_BOX:
                 chat.draft = ""
                 chat.caret = 0
+            elif text == SHOW_PHOTO:
+                self._toggle_newest_photo(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -1300,6 +1573,8 @@ class App:
             # Joined rather than indexed: a nickname routinely holds spaces,
             # and "Some Name (handle)" is one name, not two arguments.
             self._real(chat, " ".join(arguments))
+        elif name in ("photo", "pic"):
+            self._toggle_newest_photo(chat)
         elif name == "open":
             self._open_beside(chat, " ".join(arguments))
         elif name == "close":
@@ -1311,8 +1586,32 @@ class App:
         else:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
-                "(사용 가능: /sum 30m · /older · /real 닉 · /export · /back · /quit)"
+                "(사용 가능: /sum 30m · /older · /real 닉 · /photo · /export · /back · /quit)"
             )
+
+    def _toggle_newest_photo(self, chat: ChatState) -> None:
+        """Open the newest picture in this conversation, or close it again.
+
+        The composer holds the keyboard the whole time a room is open, so there
+        is no row to point at — the newest picture is the one somebody means
+        when they ask for a picture at all, and the same key closes it.
+        """
+        if not self._photos_drawable():
+            chat.notice = (
+                "이 터미널은 사진을 그리지 못합니다 "
+                "(KANAO_IMAGE=sixel 로 지정할 수 있습니다)"
+            )
+            return
+        if chat.opened_photos:
+            for message_id in list(chat.opened_photos):
+                chat.opened_photos.discard(message_id)
+            chat.rendered = None
+            return
+        newest = self.newest_photo()
+        if newest is None:
+            chat.notice = "이 대화에는 사진이 없습니다"
+            return
+        self.toggle_photo(newest)
 
     def _real(self, chat: ChatState, who: str) -> None:
         """Show what a name's owner used to be called, and who else wore it.
@@ -1385,14 +1684,14 @@ class App:
         last_key_at = 0.0
         while self.running:
             width, height = force_size() or console.size
-            console.draw(self.render(width, height), self.cursor)
+            self._paint(console, width, height)
 
             kind, text = console.read_key(KEY_WAIT_SECONDS)
             if kind or text:
                 last_key_at = time.monotonic()
                 self.handle(kind, text)
                 if self.pending_send is not None:
-                    console.draw(self.render(width, height), self.cursor)
+                    self._paint(console, width, height)
                     self.flush_pending()
                 continue
 

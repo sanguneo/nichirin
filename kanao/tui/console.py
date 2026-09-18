@@ -69,6 +69,15 @@ _SHIFT_PRESSED: Final = 0x0010
 CLEAR_BOX: Final = "\x15"
 """Ctrl+U, which empties the composer; it is passed through as itself."""
 
+SHOW_PHOTO: Final = "\x10"
+"""Ctrl+P, which opens or closes the newest picture.
+
+A key rather than a click: receiving a click means asking the terminal for
+mouse reporting, and a terminal doing that stops doing its own text selection
+and link handling. The composer holds the keyboard the whole time a room is
+open, so a plain letter is not free — a control character is.
+"""
+
 _HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
 _LOW_SURROGATE: Final = range(0xDC00, 0xE000)
 

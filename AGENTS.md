@@ -33,6 +33,7 @@ unittest discover tests` breaks the fixture imports.
 | `watch.py` | Stat-gated follow loop |
 | `cli.py` | Argument parsing and the JSON envelope |
 | `winauto.py` | Exact window targeting, draft replacement, background text sending |
+| `wic.py` | Any image's bytes → pixels, through the codecs Windows already has |
 | `digest.py` | The digest the command and the server both ask for |
 | `serve/config.py` | Constants, token and interval validation, error-to-status map |
 | `serve/handler.py` | Auth, routing, and every route that answers and closes |
@@ -43,6 +44,8 @@ unittest discover tests` breaks the fixture imports.
 | `tui/layout.py` | Column-accurate width, truncation, wrapping, footer plan |
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |
 | `tui/digest.py` | Time slicing and extractive slice description |
+| `tui/images.py` | Which protocol draws, how a picture is sized, and the CDN fetch |
+| `tui/sixel.py` | PNG → pixels and pixels → sixel, pure standard library |
 | `tui/app.py` | Screen state, rendering, key handling |
 | `kakaoread/` | The old name, aliased onto `kanao`; no behaviour of its own |
 
@@ -802,19 +805,48 @@ Taken:
   same on both sides — and it is live here: three titles collide across the
   272 rooms of the account it was checked against.
 
-Not taken, and why:
+Taken later, after being refused twice — **showing photos in the conversation**
+(`kamado-cli#32`). Both of the reasons it was refused turned out to be
+answerable, and the third was a decision the owner made rather than a fact:
 
-- **Showing photos in the conversation** (`kamado-cli#32`, still open there).
-  Neither half of it exists on this side. The transport is the **kitty
-  graphics protocol**, which Windows Terminal does not implement — what it
-  gained in 1.22 is sixel, a different protocol — so the escape layer would be
-  written from scratch rather than ported. The conversion is `sips`, which is
-  a macOS binary, so WebP and JPEG would need another answer too. And the
-  feature is the first thing in either repo that makes the *tool* talk to the
-  network: a photo is a CDN address in the database, not pixels, so showing
-  one means fetching it. This repo's description is "네트워크 0회" and its
-  README says the client does the network talking, so that is a promise to
-  change deliberately rather than a detail to inherit.
+- **The display layer is sixel, written here.** Windows Terminal implements
+  sixel from 1.22, not kitty, so the escapes were not ported; the encoder is
+  `tui/sixel.py`, pure standard library. It knows `WT_SESSION`, so on this
+  platform the protocol is read out of the environment and nothing has to be
+  asked. kitty and iTerm2 are still recognised for the terminals that have them.
+- **The conversion is `wic.py`, not `sips`.** macOS converts every photo to PNG
+  with a shell command that does not exist here. It is not needed either:
+  sixel is pixels, so the CDN's JPEG goes to the Windows Imaging Component
+  through `ctypes` — the same shape as the CNG binding — and comes back as
+  pixels. Verified against the live install: PNG exact to the pixel, WebP
+  360x360, GIF 248x176, JPEG 3840x2400.
+- **"네트워크 0회" was changed deliberately, in the same commit as the code.**
+  A photo is a CDN address, not pixels, so showing one means fetching it, and
+  the local `.cng` cache is encrypted with a key that was hunted twice and not
+  found (see the note below). The README, the badge and the one-line
+  description now say *reads are local* and name the photo fetch as the single
+  exception: one address, on a two-host whitelist, only when `Ctrl+P` is
+  pressed. The commands' JSON is unchanged byte for byte — `Photo` is
+  deliberately absent from `Message.as_json`, because a picture is drawn in the
+  interface and nowhere else.
+- **The interaction is a key, not a click.** macOS opens a photo by clicking
+  its row, which means asking the terminal for mouse reporting — and a terminal
+  doing that stops doing its own text selection and link handling. The composer
+  holds the keyboard the whole time a room is open, so a plain letter is not
+  free either: `Ctrl+P` (and `/photo`) opens the newest picture and closes it
+  again.
+- **What the sixel path costs, and why.** Encoding one 240x240 picture measured
+  **19.7 s** before it was fixed, of which quantisation was 19.0 s: median-cut
+  searched the whole palette for every colour when it already knew which box
+  each fell into, and it ran over all 57,505 distinct colours. Membership
+  replaces the search, and above 4,096 colours the channels are rounded to four
+  bits first. **19.7 s → 1.12 s**, and each built escape is cached per box.
+  Inline protocols keep no image server-side, so a moved picture is drawn again
+  and the frame is given up whole (`Console.forget`) — the rows it vacated are
+  blank, and a blank row that is still blank is exactly the row the row-diff
+  painter skips.
+
+Not taken, and why:
 
   **Two of those three reasons have since been measured rather than assumed.**
 

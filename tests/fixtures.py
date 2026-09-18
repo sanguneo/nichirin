@@ -68,6 +68,18 @@ REPLY_TYPE = 26
 MENTION_OF_OWNER = json.dumps({"mentions": [{"at": [0], "len": 12, "user_id": OWN_ID}]})
 """A mention as the client writes it: an id and where the name sits."""
 
+PHOTO_TYPE = 2
+VIDEO_TYPE = 3
+PHOTO_ATTACHMENT = json.dumps(
+    {
+        "url": "https://talk.kakaocdn.net/synthetic/full.jpg",
+        "thumbnailUrl": "https://talk.kakaocdn.net/synthetic/thumb.jpg",
+        "w": 400,
+        "h": 300,
+    }
+)
+"""A made-up address on the real CDN host, so the whitelist is exercised."""
+
 MENTION_OF_EVERYONE = json.dumps({"all_mention": {"at": 0}})
 """An @전체, which records no ids at all — only that the token was used."""
 
@@ -184,6 +196,8 @@ def build_profile(
                 (6003, PEER_ID, 1, "@My Own Name 이것 좀 봐줘", MENTION_OF_OWNER, 1_700_000_420, 0),
                 (6004, FRIEND_ID, REPLY_TYPE, "그거 맞아요", REPLY_TO_OWNER, 1_700_000_430, 0),
                 (6005, PEER_ID, 1, "@전체 공지입니다", MENTION_OF_EVERYONE, 1_700_000_440, 0),
+                (6006, FRIEND_ID, PHOTO_TYPE, "사진", PHOTO_ATTACHMENT, 1_700_000_450, 0),
+                (6007, FRIEND_ID, VIDEO_TYPE, "동영상", PHOTO_ATTACHMENT, 1_700_000_460, 0),
             ]
         },
     )

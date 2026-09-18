@@ -155,7 +155,11 @@ class GroupTests(unittest.TestCase):
             answer = read_context(reader, GROUP_ROOM)
         self.assertTrue(answer["ok"])
         self.assertEqual(answer["room"]["kind"], "group")
-        self.assertEqual(len(answer["messages"]), 5)
+        # Five texts, plus the photo and the video the fixture carries.
+        self.assertEqual(len(answer["messages"]), 7)
+        # A picture is drawn in the interface and nowhere else: the JSON a
+        # command answers with is exactly what it was before photos existed.
+        self.assertNotIn("photo", set().union(*(m.keys() for m in answer["messages"])))
 
 
 class AttentionTests(unittest.TestCase):
