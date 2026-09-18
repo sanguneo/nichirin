@@ -217,7 +217,7 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 | --- | --- |
 | **언제** | 사진 라벨을 클릭한 그때만. 방을 열거나 스크롤할 때는 아무것도 받지 않습니다 |
 | **어디로** | `talk.kakaocdn.net`, `dn-talk.kakaocdn.net` (https만, 화이트리스트 외 주소는 요청조차 안 함) |
-| **무엇을** | 썸네일 한 장 (측정값 1.7–9.4 KB, 상한 4 MB, 타임아웃 8초) |
+| **무엇을** | 원본 한 장 (상한 8 MiB, 타임아웃 8초) |
 | **어디에** | `~/Library/Application Support/kamado-cli/photos/<sha256 앞 40자>.img` — 주소를 해시로 바꿔 저장하므로 파일명에 계정 토큰이 남지 않습니다 |
 
 캐시는 지워도 됩니다. 지우면 다음에 열 때 다시 받습니다. 사진은 `tui` 에서만

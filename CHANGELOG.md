@@ -16,8 +16,8 @@
 
   사진은 클라이언트가 픽셀로 갖고 있지 않아 CDN 주소로만 있고, 그래서 사진을 여는
   순간이 이 도구가 **네트워크를 여는 유일한 지점입니다.** 사진을 클릭한 그때만,
-  `talk.kakaocdn.net`·`dn-talk.kakaocdn.net` 로 https 로, 썸네일 한 장만
-  (상한 4 MB, 8초) 가지고 오고, `Application Support` 의 `photos/` 에 주소를 해싱한
+  `talk.kakaocdn.net`·`dn-talk.kakaocdn.net` 로 https 로, 원본 한 장만
+  (상한 8 MiB, 8초) 가지고 오고, `Application Support` 의 `photos/` 에 주소를 해싱한
   이름으로 둡니다. 방을 열거나 스크롤할 때는 아무것도 받지 않고, 화이트리스트 밖의
   주소는 요청조차 하지 않습니다. CLI가 내는 JSON은 바이트 단위로 동일하며, 사진은
   `tui` 에서만 보입니다.

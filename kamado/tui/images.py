@@ -54,7 +54,7 @@ happens to point.
 """
 
 _FETCH_TIMEOUT_SECONDS: Final = 8.0
-_MAX_BYTES: Final = 4 * 1024 * 1024
+_MAX_BYTES: Final = 8 * 1024 * 1024
 """Refuse anything larger than a photo plausibly is, rather than filling memory."""
 
 _CHUNK: Final = 4096

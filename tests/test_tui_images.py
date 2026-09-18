@@ -157,6 +157,18 @@ class FetchTests(unittest.TestCase):
         path = self.store.cached_path("https://talk.kakaocdn.net/secret-token-123.jpg")
         self.assertNotIn("secret-token-123", path)
 
+    def test_a_camera_jpeg_larger_than_four_mib_is_fetched(self) -> None:
+        url = "https://talk.kakaocdn.net/photo.jpeg"
+        blob = b"\xff\xd8\xff\xe0" + b"x" * (5_087_281 - 4)
+        with patch.object(images.urllib.request, "urlopen", return_value=_Response(blob)):
+            self.assertEqual(self.store.fetch(url), blob)
+
+    def test_a_photo_over_the_safety_limit_is_refused(self) -> None:
+        url = "https://talk.kakaocdn.net/photo.jpeg"
+        blob = b"\xff\xd8\xff\xe0" + b"x" * (8 * 1024 * 1024 - 3)
+        with patch.object(images.urllib.request, "urlopen", return_value=_Response(blob)):
+            self.assertIsNone(self.store.fetch(url))
+
     def test_a_response_that_is_not_an_image_is_refused(self) -> None:
         response = _Response(b"<html>", content_type="text/html")
         with patch.object(images.urllib.request, "urlopen", return_value=response):
