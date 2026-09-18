@@ -64,11 +64,6 @@ class AddressTests(unittest.TestCase):
             with self.subTest(attachment=attachment):
                 self.assertIsNone(images.photo_url(attachment))
 
-    def test_an_attachment_with_no_address_names_nothing(self) -> None:
-        for attachment in ({}, {"thumbnailUrl": 5}, {"thumbnailUrls": []}, {"url": "nope"}):
-            with self.subTest(attachment=attachment):
-                self.assertIsNone(images.photo_url(attachment))
-
 
 class SizingTests(unittest.TestCase):
     def test_a_wide_photo_is_wider_than_it_is_tall_in_cells(self) -> None:
@@ -239,12 +234,18 @@ class WebpTests(unittest.TestCase):
         # is drawn by ghostty's own decoder but may be ignored within spec.
         jpeg = b"\xff\xd8\xff\xe0" + b"rest"
         with patch.object(images, "_to_png", return_value=b"\x89PNG\r\n\x1a\nconverted") as convert:
-            self.assertEqual(images.drawable(jpeg)[:8], b"\x89PNG\r\n\x1a\n")
+            converted = images.drawable(jpeg)
+            self.assertIsNotNone(converted)
+            assert converted is not None
+            self.assertEqual(converted[:8], b"\x89PNG\r\n\x1a\n")
             convert.assert_called_once()
 
     def test_a_format_the_terminal_refuses_is_converted(self) -> None:
         with patch.object(images, "_to_png", return_value=b"\x89PNG\r\n\x1a\nconverted") as convert:
-            self.assertEqual(images.drawable(self.lossy(10, 10))[:8], b"\x89PNG\r\n\x1a\n")
+            converted = images.drawable(self.lossy(10, 10))
+            self.assertIsNotNone(converted)
+            assert converted is not None
+            self.assertEqual(converted[:8], b"\x89PNG\r\n\x1a\n")
             convert.assert_called_once()
 
     def test_a_picture_that_cannot_be_converted_is_not_drawn(self) -> None:

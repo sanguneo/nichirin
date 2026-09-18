@@ -39,7 +39,7 @@ from .errors import ErrorCode, KamadoError
 from .keyring import Account, Keyring
 from .model import Friend, Message, Room
 from .names import NameLedger, NameRecord
-from .snapshot import SnapshotCache
+from .snapshot import SnapshotCache, SnapshotSource
 
 _SELF_CHAT_TITLE = "나와의 채팅"
 _GROUP_TITLE_MEMBERS = 3
@@ -98,7 +98,7 @@ class Reader:
 
     def __init__(
         self,
-        cache: Optional[SnapshotCache] = None,
+        cache: Optional[SnapshotSource] = None,
         keyring: Optional[Keyring] = None,
         ledger: Optional[NameLedger] = None,
         connection: Optional[sqlite3.Connection] = None,

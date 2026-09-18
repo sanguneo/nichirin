@@ -38,7 +38,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final, Optional, Protocol
 
 from . import page as pages, wal as wal_format
 from .cipher import Geometry
@@ -96,6 +96,9 @@ def _decrypt_pages_worker(
     from multiprocessing import shared_memory
 
     shm = shared_memory.SharedMemory(name=shm_name)
+    buffer = shm.buf
+    if buffer is None:  # the segment was closed under this worker
+        raise RuntimeError(f"shared memory {shm_name} is already closed")
     try:
         with PreparedKey(key_bytes) as prepared:
             for number in range(start_page, end_page + 1):
@@ -103,7 +106,7 @@ def _decrypt_pages_worker(
                 page_data = pages.reconstruct_page(
                     prepared, number, encrypted[start : start + page_size], page_size, reserve
                 )
-                shm.buf[start : start + page_size] = page_data
+                buffer[start : start + page_size] = page_data
     finally:
         shm.close()
 
@@ -199,7 +202,10 @@ def _decrypt_base_pages(
         if any(proc.exitcode != 0 for proc in processes):
             raise RuntimeError("parallel page decryption worker failed")
 
-        return bytes(shm.buf[:total_size])
+        view = shm.buf
+        if view is None:  # as above: only reachable if it was closed
+            raise RuntimeError("shared memory closed during decryption")
+        return bytes(view[:total_size])
     except Exception:
         # Transparent fallback to single-threaded decryption on any multiprocessing error
         return _decrypt_serially(encrypted, geometry, base_pages, page_size, reserve)
@@ -400,7 +406,7 @@ def _undefined_pages(committed: wal_format.WalSnapshot, base_pages: int) -> list
 def _overlay_log(
     base_image: bytes,
     committed: wal_format.WalSnapshot,
-    prepared: object,
+    prepared: PreparedKey,
     page_size: int,
     reserve: int,
 ) -> bytearray:
@@ -588,6 +594,27 @@ class _CachedSnapshot:
     ``size`` is what the entry is charged and shrinks when its base pages are
     shed, so it cannot stand in for the size of the database being read.
     """
+
+
+class SnapshotSource(Protocol):
+    """What a reader needs from a cache: a connection, and a way to let go.
+
+    :class:`Reader` takes one of these rather than a :class:`SnapshotCache`
+    because both real substitutions are worth being able to state. The server
+    hands the send path a cache that outlives the request, and the suite hands
+    a stub that serves prepared plaintext; naming the two methods a reader
+    actually calls says so, where the concrete class would have made the stub
+    a lie about the type.
+    """
+
+    def connect(self, database: Path, geometry: Geometry) -> sqlite3.Connection:
+        ...
+
+    def invalidate(self, database: Path) -> None:
+        ...
+
+    def close(self) -> None:
+        ...
 
 
 class SnapshotCache:

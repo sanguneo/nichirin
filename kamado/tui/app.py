@@ -23,7 +23,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Sequence, TYPE_CHECKING
+from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KamadoError
@@ -100,6 +100,12 @@ TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
 COMPOSING_GRACE_SECONDS = 3.0
 """How long a half-written message holds a poll off, IME pauses included."""
+
+
+class PhotoSource(Protocol):
+    """The photo capability the interface consumes."""
+
+    def fetch(self, url: str) -> Optional[bytes]: ...
 
 
 @dataclass
@@ -245,7 +251,7 @@ class App:
         """
         self.cursor: Optional[tuple[int, int]] = None
         """Where the terminal caret belongs, so an IME composes in the box."""
-        self._photos = images.PhotoStore()
+        self._photos: PhotoSource = images.PhotoStore()
         self._photos_supported = images.supported()
         self._image_ids = images.ImageIds()
         self.placements: list[

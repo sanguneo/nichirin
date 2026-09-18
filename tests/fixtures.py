@@ -158,14 +158,17 @@ class StubCache:
         self.path = path
         self.opened: list[str] = []
 
-    def connect(self, path: Path, geometry: Geometry) -> sqlite3.Connection:
-        if Path(path).name != self.path.name:
+    def connect(self, database: Path, geometry: Geometry) -> sqlite3.Connection:
+        if Path(database).name != self.path.name:
             # Match what the real cache raises when a database cannot be
             # opened, so tests cannot pass against an error type production
             # never produces.
-            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {path}")
-        self.opened.append(Path(path).name)
+            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {database}")
+        self.opened.append(Path(database).name)
         return self.database
+
+    def invalidate(self, database: Path) -> None:
+        """Production drops a torn snapshot here; there is none to drop."""
 
     def close(self) -> None:
         self.database.close()

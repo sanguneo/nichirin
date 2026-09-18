@@ -95,11 +95,24 @@ class ChatWindow:
     title: str
 
 
-class SendResult(TypedDict):
+class _Submission(TypedDict):
     submitted: bool
     dryRun: bool
     room: str
     length: int
+
+
+class SendResult(_Submission, total=False):
+    """What a send reports, plus the two keys that only sometimes apply.
+
+    `clearedDraft` and `wouldClearDraft` are written by this module and were
+    not declared here, so the very returns below did not match the type they
+    claimed. They are optional rather than required because a caller reads one
+    or the other, never both: the dry run says what *would* be lost.
+    """
+
+    clearedDraft: bool
+    wouldClearDraft: bool
 
 
 class MessageSender(Protocol):

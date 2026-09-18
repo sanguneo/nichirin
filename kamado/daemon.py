@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import paths
-from .context import DEFAULT_LIMIT, read_context
+from .context import DEFAULT_LIMIT, _resolve, read_context
 from .errors import ErrorCode, KamadoError, as_envelope, success
 from .names import NameLedger
 from .reader import Reader
@@ -249,16 +249,26 @@ class DaemonServer:
 
         if command == "context":
             target = args.get("room_id") if args.get("room_id") is not None else args.get("room")
+            if target is None:
+                raise KamadoError(
+                    ErrorCode.INVALID_REQUEST, "context needs a room or a room_id"
+                )
             limit = args.get("limit", DEFAULT_LIMIT)
             return read_context(reader, target, limit)
 
         if command == "messages":
             room_id = args.get("room_id")
-            if room_id is None and args.get("room") is not None:
-                rooms = reader.rooms(name=args.get("room"))
-                if not rooms:
-                    raise KamadoError(ErrorCode.WINDOW_NOT_FOUND, f"No room matches {args.get('room')!r}")
-                room_id = rooms[0].id
+            if room_id is None:
+                target = args.get("room")
+                if target is None:
+                    raise KamadoError(
+                        ErrorCode.INVALID_REQUEST, "messages needs a room or a room_id"
+                    )
+                # `_resolve` is what every other caller uses: it refuses an
+                # ambiguous title with the candidates attached rather than
+                # taking the first match, and it raises CHAT_NOT_FOUND with a
+                # message a person can act on.
+                room_id = _resolve(reader, target).id
             found = reader.messages(room_id, limit=args.get("limit", DEFAULT_LIMIT), before_id=args.get("before_id"))
             return success({"messages": [msg.as_json() for msg in found], "count": len(found)})
 

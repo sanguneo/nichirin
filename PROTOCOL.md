@@ -8,6 +8,16 @@ the commands; this is what their output is guaranteed to look like.
 `kanao-cli`, the Windows sibling, emits the same shapes. A consumer written
 against this document runs against either by changing which binary it starts.
 
+**The HTTP half has a machine-readable copy: [`openapi.json`](openapi.json).**
+It is an OpenAPI 3.1 document covering every `serve` route, parameter,
+payload and status, and Swagger UI or Postman opens it as it is. The same
+file ships in the sibling **byte for byte** — one contract, two builds — and
+the handful of members that genuinely differ carry `x-platform` saying which
+build they belong to: today `typeCode` on a room and `PERMISSION_REQUIRED`,
+both of which are this build's. `tests/serve/test_openapi.py` asks the
+running handler and the constants whether the document is still telling the
+truth, so it fails here rather than in somebody's client.
+
 ## The envelope
 
 Success:
