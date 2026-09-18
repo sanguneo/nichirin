@@ -24,6 +24,7 @@ from .config import (
     MAX_BODY_BYTES,
     MAX_HIGHLIGHTS,
     MAX_LIMIT,
+    MAX_QUEUED_SENDS,
     MAX_STREAMS,
     _status_for,
     validate_count,
@@ -42,30 +43,106 @@ class _BodyTimeout(Exception):
     """The caller promised a body in ``Content-Length`` and then stopped."""
 
 
-class _RateLimiter:
-    """Refuse sends that arrive sooner than *min_interval* after the last one.
+class _ShuttingDown(Exception):
+    """The server stopped while this send was still waiting its turn."""
 
-    A zero interval disables the limiter entirely: no clock call, no state.
+
+class _SendQueue:
+    """Space sends apart by making them wait, not by throwing them away.
+
+    What ``min_interval`` protects is one input box in one client, and a
+    caller told "too soon" can do nothing but sleep and try again — which is
+    every client writing the queue that belongs here. So a second send waits
+    for its turn and then goes. ``429 RATE_LIMITED`` is kept for the case it
+    is actually needed: a queue that never refuses anything would only make
+    pouring a thousand messages into someone's conversation take longer.
+
+    The pacing is measured from when a send *started*. From when it finished,
+    the next caller is charged again for time the last send already spent, so
+    the period becomes ``send + min_interval``; from the start it is
+    ``max(send, min_interval)``, which is the spacing that was asked for and
+    nothing else. This is what the interval being shorter than a send used to
+    hide: the old limiter recorded the start too, but it recorded it *before*
+    the send, so with a three-second send and a two-second interval it never
+    once fired.
+
+    A zero interval disables all of it — no reservation, no clock, no wait —
+    which is what ``--min-interval 0`` asks for.
     """
 
-    def __init__(self, min_interval: float, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        min_interval: float,
+        capacity: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._min_interval = min_interval
+        self._capacity = capacity
         self._clock = clock
-        self._last: Optional[float] = None
-        self._lock = threading.Lock()
+        self._state = threading.Condition()
+        self._queued = 0
+        self._next_start: Optional[float] = None
+        self._closed = False
 
-    def check(self) -> Optional[float]:
-        """Return seconds to wait when too soon, else record now and return None."""
+    def reserve(self) -> Optional[int]:
+        """Take a place in line, or say how many are already in it.
+
+        The count is the answer rather than a number of seconds because
+        nobody knows how far into its three seconds the send at the front is.
+        A number that cannot be kept is worse than no number.
+        """
         if self._min_interval == 0.0:
             return None
-        with self._lock:
-            now = self._clock()
-            if self._last is not None:
-                wait = self._min_interval - (now - self._last)
-                if wait > 0:
-                    return wait
-            self._last = now
+        with self._state:
+            if self._queued >= self._capacity:
+                return self._queued
+            self._queued += 1
             return None
+
+    def release(self) -> None:
+        """Give the place back, however the send ended."""
+        if self._min_interval == 0.0:
+            return
+        with self._state:
+            if self._queued > 0:
+                self._queued -= 1
+
+    def wait_for_turn(self) -> None:
+        """Block until the interval since the last send has passed."""
+        if self._min_interval == 0.0:
+            return
+        with self._state:
+            while True:
+                if self._closed:
+                    raise _ShuttingDown()
+                if self._next_start is None:
+                    return
+                remaining = self._next_start - self._clock()
+                if remaining <= 0:
+                    return
+                self._wait(remaining)
+
+    def begin(self) -> float:
+        """Read the time this send is starting at, without recording it yet."""
+        return self._clock()
+
+    def commit(self, started: float) -> None:
+        """Having handed the text over, book the next turn from *started*."""
+        if self._min_interval == 0.0:
+            return
+        with self._state:
+            self._next_start = started + self._min_interval
+            self._state.notify_all()
+
+    def close(self) -> None:
+        """Wake everyone still in line so nothing dies mid-wait in silence."""
+        with self._state:
+            self._closed = True
+            self._state.notify_all()
+
+    def _wait(self, remaining: float) -> None:
+        """The only place this ever really waits, so a test can replace it."""
+        self._state.wait(remaining)
 
 
 def build_handler(
@@ -81,6 +158,7 @@ def build_handler(
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     max_streams: int = MAX_STREAMS,
+    max_queued_sends: int = MAX_QUEUED_SENDS,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -100,7 +178,7 @@ def build_handler(
     period = validate_poll_interval(poll_interval)
     patience = validate_request_timeout(request_timeout)
     streams_allowed = validate_max_streams(max_streams)
-    limiter = _RateLimiter(spacing, clock=clock)
+    queue = _SendQueue(spacing, max_queued_sends, clock=clock)
     send_lock = threading.Lock()
     # Not a lock: a permit per stream, so the ninth caller is refused rather
     # than queued behind eight connections that intend to stay all day.
@@ -420,35 +498,69 @@ def build_handler(
                         ),
                     )
                     return
-            # Quota and execution share one lock so the spacing a caller is
-            # charged matches the order the input box actually serves.
-            with send_lock:
-                if not dry_run:
-                    wait = limiter.check()
-                    if wait is not None:
-                        self._reply(
-                            429,
-                            as_envelope(
-                                KanaoError(
-                                    ErrorCode.RATE_LIMITED,
-                                    f"another send ran recently; retry in {wait:.1f}s",
-                                )
-                            ),
-                        )
-                        return
-                try:
-                    result = send(room, text, dry_run=dry_run, open_if_needed=open_room)
-                except KanaoError as error:
-                    self._reply(_status_for(error), as_envelope(error))
-                    return
-                except OSError as error:
+            # The place in line is taken *before* the lock, so the line has a
+            # length to report; waiting for the turn happens under it, where
+            # the order a caller is given is the order the input box serves.
+            if not dry_run:
+                in_line = queue.reserve()
+                if in_line is not None:
                     self._reply(
-                        500, as_envelope(KanaoError(ErrorCode.SEND_FAILED, str(error)))
+                        429,
+                        as_envelope(
+                            KanaoError(
+                                ErrorCode.RATE_LIMITED,
+                                f"the send queue is full ({in_line} already in "
+                                "line); retry once they have gone through",
+                            )
+                        ),
                     )
                     return
+            try:
+                with send_lock:
+                    if not dry_run:
+                        try:
+                            queue.wait_for_turn()
+                        except _ShuttingDown:
+                            self._reply(
+                                503,
+                                as_envelope(
+                                    KanaoError(
+                                        ErrorCode.BUSY,
+                                        "the server is shutting down; this "
+                                        "message was not sent",
+                                    )
+                                ),
+                            )
+                            return
+                    started = queue.begin()
+                    try:
+                        result = send(
+                            room, text, dry_run=dry_run, open_if_needed=open_room
+                        )
+                    except KanaoError as error:
+                        self._reply(_status_for(error), as_envelope(error))
+                        return
+                    except OSError as error:
+                        self._reply(
+                            500,
+                            as_envelope(KanaoError(ErrorCode.SEND_FAILED, str(error))),
+                        )
+                        return
+                    if not dry_run:
+                        # Only a send that was handed over spends the pacing.
+                        # The failures above put text nowhere, and there is no
+                        # reason to hold back somebody retrying a room they
+                        # have just gone and opened.
+                        queue.commit(started)
+            finally:
+                if not dry_run:
+                    queue.release()
             self._reply(200, {"ok": True, **result})
 
     # Bind the validated secret and validated tunables onto the class so a
-    # reviewer can see what each connection closes over.
+    # reviewer can see what each connection closes over. The queue is bound
+    # because shutdown has to reach it: the threads holding a place in line
+    # are daemons, and Ctrl-C would otherwise kill them without an answer.
     Handler._serve_secret = secret  # type: ignore[attr-defined]
+    Handler._send_queue = queue  # type: ignore[attr-defined]
     return Handler

@@ -4,7 +4,8 @@ Windows hosts this process next to the KakaoTalk client. A Linux or remote
 machine connects with a bearer token and can then:
 
 - ``POST /send`` — hand a message to the same ``winauto.Sender`` the ``send``
-  command drives, with the two-seconds-between-sends rule enforced server-side.
+  command drives, with the two-seconds-between-sends rule enforced server-side
+  by making the second send wait rather than by refusing it.
 - ``GET /rooms`` — list readable rooms in the same shape as the CLI command.
 - ``GET /context?roomId=…`` — read one room's recent messages.
 - ``GET /stream`` — Server-Sent Events carrying new messages as ``watch.Watcher``
@@ -25,7 +26,9 @@ forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a
 wildcard address on an open network with a weak token.
 
 Sends are serialized under one lock and spaced ``min_interval`` seconds apart,
-because the client's input box is a single shared resource.
+because the client's input box is a single shared resource. A send that
+arrives early waits its turn; ``429 RATE_LIMITED`` is what a caller gets when
+``MAX_QUEUED_SENDS`` are already in line, so the queue has an end.
 
 Where things live: :mod:`kanao.serve.config` holds the constants and the
 validation every route agrees on, :mod:`kanao.serve.handler` the routes that
@@ -53,6 +56,7 @@ from .config import (
     MAX_BODY_BYTES,
     MAX_HIGHLIGHTS,
     MAX_LIMIT,
+    MAX_QUEUED_SENDS,
     MAX_STREAMS,
     MIN_TOKEN_LENGTH,
     validate_min_interval,
@@ -71,6 +75,7 @@ __all__ = [
     "MAX_BODY_BYTES",
     "MAX_HIGHLIGHTS",
     "MAX_LIMIT",
+    "MAX_QUEUED_SENDS",
     "MAX_STREAMS",
     "MIN_TOKEN_LENGTH",
     "QuietDisconnects",

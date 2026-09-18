@@ -37,6 +37,17 @@ expensive thing a caller can ask this server to hold. Refusing the ninth is
 how the eighth keeps working.
 """
 
+MAX_QUEUED_SENDS = 4
+"""How many sends may be in line at once, counting the one being sent.
+
+What ``min_interval`` protects is a single input box, not a server resource,
+and a caller refused for being early can only sleep and try again — which is
+every client reimplementing a queue. So they wait their turn instead. A queue
+with no end, though, would merely slow down pouring a thousand messages into
+somebody's conversation, so ``429 RATE_LIMITED`` still exists and now means
+*the line is full*.
+"""
+
 MAX_LIMIT = 1000
 """Most messages one request may ask a room for.
 
