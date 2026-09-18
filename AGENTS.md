@@ -830,9 +830,30 @@ Not taken, and why:
   `chat_data\*.cng` is 12,068 files and `chat_data\cli\cli_<40 hex>` a further
   4,893. Entropy is 7.1–7.3 bits per byte at head, middle and tail, with no
   image magic in the first 4 KB — but the **first 16 bytes repeat**: 454 of
-  800 sampled share one first block and the sample holds six distinct ones,
-  which is a fixed IV over a constant first plaintext block and **a handful of
-  keys for the whole cache**, not one per file. Four key sources have been
+  800 sampled share one first block and the sample holds six distinct ones.
+  Every file's length is a multiple of 16, in `OCH` and `chat_data\url_image_v2`
+  as well, so it is a 16-byte block cipher.
+
+  **The chaining is CBC, and that is measured rather than inferred.** Across
+  111 files and 661,698 blocks: 20,906 same-position collision pairs, **all of
+  them inside a shared prefix**; after the first block where two files differ
+  they **never** collide again; **zero** repeated blocks within any file and
+  **zero** collisions between different positions. ECB would do the opposite
+  on all three counts. Chance would produce 6.4 × 10⁻²⁸ pairs. The shared
+  prefixes are long — 399 file pairs agree for **37 blocks** and the longest
+  runs **344 blocks (5,504 bytes)** — so these files begin with a great deal
+  of identical plaintext.
+
+  **Two things that are still open, and that the statistics cannot close.**
+  How many keys there are: "one key with several distinct first plaintext
+  blocks" and "one key or IV per header group" predict the same collision
+  topology. And what the plaintext prefix *is*: the 137-file group maps to
+  original URLs that are a mix of JPEG, PNG and WEBP, so the first block is
+  **not** an image header — something of Kakao's own comes first. That matters
+  for any key hunt: a candidate key cannot be judged by looking for image
+  magic at offset 0, which is exactly how the search below scored itself.
+
+  Four key sources have been
   tried and all failed: `jiru/kakaodecrypt`'s Android schedule across all 32
   `encType` values with this account's id; the 30 distinct SQLCipher keys this
   tool already extracts; the fixed-key 128-byte XOR below; and — the serious
