@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import struct
 import zlib
+from typing import Final
 
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -173,12 +174,38 @@ def _decode_png(
     return width, height, bytes(rgb)
 
 
+_EXACT_COLOURS: Final = 4096
+"""Above this many distinct colours, the space is collapsed before cutting.
+
+Median-cut is superlinear in the number of distinct colours and a photograph
+carries tens of thousands of them -- 57,505 in a measured 240x240 -- which cost
+seconds of pure Python and froze the interface on the first picture. Rounding
+each channel to four bits bounds the input at 4,096 buckets, and since the
+result is cut down to 256 colours anyway the loss is not visible at the size a
+terminal draws. Below the threshold the colours are kept exactly, so a picture
+with a handful of them encodes to precisely those.
+"""
+
+_CHANNEL_MASK: Final = 0xF0
+
+
 def _quantize(rgb: bytes, max_colors: int) -> tuple[list[tuple[int, ...]], list[int]]:
     """Median-cut quantisation, weighted by how often each colour appears."""
     counts: dict[tuple[int, int, int], int] = {}
     for i in range(0, len(rgb), 3):
         color = (rgb[i], rgb[i + 1], rgb[i + 2])
         counts[color] = counts.get(color, 0) + 1
+    coarse = len(counts) > _EXACT_COLOURS
+    if coarse:
+        merged: dict[tuple[int, int, int], int] = {}
+        for color, weight in counts.items():
+            bucket = (
+                color[0] & _CHANNEL_MASK,
+                color[1] & _CHANNEL_MASK,
+                color[2] & _CHANNEL_MASK,
+            )
+            merged[bucket] = merged.get(bucket, 0) + weight
+        counts = merged
     colors = sorted(counts)
     palette: list[tuple[int, ...]] = []
     if len(colors) <= max_colors:
@@ -219,17 +246,31 @@ def _quantize(rgb: bytes, max_colors: int) -> tuple[list[tuple[int, ...]], list[
                     for k in range(3)
                 )
             )
-        # Cache nearest-colour lookup per distinct input colour, not per pixel.
-        mapping = {
-            c: min(
-                range(len(palette)),
-                key=lambda i: sum((c[k] - palette[i][k]) ** 2 for k in range(3)),
-            )
-            for c in colors
-        }
-    indices = [
-        mapping[(rgb[i], rgb[i + 1], rgb[i + 2])] for i in range(0, len(rgb), 3)
-    ]
+        # Median-cut has already decided which box every colour fell into, and
+        # the palette is those boxes in order -- so the mapping *is* that
+        # membership. Searching the palette for a nearest match instead measured
+        # 19.0 s on one 240x240 photo (57,505 distinct colours against 256
+        # entries is 44 million distance computations), which froze the whole
+        # interface on the first picture drawn.
+        mapping = {}
+        for i, box in enumerate(boxes):
+            for c in box:
+                mapping[c] = i
+    if coarse:
+        indices = [
+            mapping[
+                (
+                    rgb[i] & _CHANNEL_MASK,
+                    rgb[i + 1] & _CHANNEL_MASK,
+                    rgb[i + 2] & _CHANNEL_MASK,
+                )
+            ]
+            for i in range(0, len(rgb), 3)
+        ]
+    else:
+        indices = [
+            mapping[(rgb[i], rgb[i + 1], rgb[i + 2])] for i in range(0, len(rgb), 3)
+        ]
     return palette, indices
 
 

@@ -92,6 +92,15 @@ _MEDIA_WITHOUT_PREVIEW = {3: "[영상]"}
 The client stores its own word for these in the message text -- a video arrives
 as the plain text "동상열" -- which reads as if somebody typed it.
 """
+INLINE_CACHE_ENTRIES = 64
+"""How many built inline-image escapes to keep.
+
+Only sixel and iTerm2 need these, because neither leaves the picture with the
+terminal. Scrolling asks for a new crop every line, so the keys are unbounded
+and something has to be dropped; 64 covers a picture moving through a pane
+several times over without letting one room's photos grow without limit.
+"""
+
 WHEEL_LINES = 3
 """How far one wheel notch moves the view, matching a terminal's own step."""
 REFRESH_SECONDS = 0.15
@@ -261,6 +270,10 @@ class App:
         self._image_ids = images.ImageIds()
         self._images_moved = False
         """Whether an inline picture moved, so the frame has to be given up."""
+        self._inline_cache: dict[
+            tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
+        ] = {}
+        """Inline escapes already built, keyed by the box they were built for."""
         self.placements: list[
             tuple[int, int, int, bytes, int, int, Optional[tuple[int, int]]]
         ] = []
@@ -1389,9 +1402,20 @@ class App:
         self._images_moved = True
         pieces: list[str] = []
         for message_id, row, column, blob, cols, rows, crop in self.placements:
-            escape = images.inline_escape(
-                self._protocol, blob, cols, rows, crop, self._cell
-            )
+            # Encoding is the expensive half -- a sixel picture measured 1.1 s
+            # for one 240x240 frame -- and a redraw usually asks for a box that
+            # was already encoded, so the escape is kept rather than rebuilt.
+            key = (self._protocol, message_id, cols, rows, crop)
+            escape = self._inline_cache.get(key)
+            if escape is None and key not in self._inline_cache:
+                escape = images.inline_escape(
+                    self._protocol, blob, cols, rows, crop, self._cell
+                )
+                if len(self._inline_cache) >= INLINE_CACHE_ENTRIES:
+                    # Scrolling walks the crop one line at a time, so the keys
+                    # are unbounded; the oldest goes rather than all of them.
+                    self._inline_cache.pop(next(iter(self._inline_cache)))
+                self._inline_cache[key] = escape
             if escape is None:
                 # iTerm2 cannot crop a source, so a half-scrolled picture waits
                 # rather than being drawn over the composer.

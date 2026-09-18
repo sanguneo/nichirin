@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 from kamado.tui import images
@@ -29,6 +30,139 @@ class SupportTests(unittest.TestCase):
 
     def test_an_ordinary_terminal_does_not(self) -> None:
         self.assertFalse(images.supported(term_program="Apple_Terminal", term="xterm-256color"))
+
+
+def _tiny_png(width: int = 2, height: int = 2) -> bytes:
+    """A real PNG, so the sixel path is exercised through a real decode."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    rows = b"".join(b"\x00" + bytes((200, 40, 40) * width) for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+class ProtocolDetectionTests(unittest.TestCase):
+    def test_the_kitty_family_is_preferred_where_it_is_drawn(self) -> None:
+        for program in ("kitty", "ghostty", "WezTerm"):
+            with self.subTest(program=program):
+                self.assertEqual(
+                    images.detect(term_program=program, term="xterm-256color", override=""),
+                    images.KITTY,
+                )
+        self.assertEqual(
+            images.detect(term_program="", term="xterm-kitty", override=""), images.KITTY
+        )
+
+    def test_iterm2_is_recognised_by_either_name_it_goes_by(self) -> None:
+        self.assertEqual(
+            images.detect(term_program="iTerm.app", term="xterm-256color", override=""),
+            images.ITERM2,
+        )
+        self.assertEqual(
+            images.detect(term_program="", term="", lc_terminal="iTerm2", override=""),
+            images.ITERM2,
+        )
+
+    def test_a_terminal_that_announces_nothing_draws_nothing(self) -> None:
+        self.assertEqual(
+            images.detect(term_program="Apple_Terminal", term="xterm-256color", override=""),
+            images.NONE,
+        )
+
+    def test_only_asking_finds_sixel(self) -> None:
+        # No environment variable announces sixel, which is the whole reason the
+        # terminal has to be asked; a "no" leaves it drawing nothing.
+        common = dict(term_program="Apple_Terminal", term="xterm-256color", override="")
+        self.assertEqual(
+            images.detect(**common, query_sixel=lambda: True), images.SIXEL
+        )
+        self.assertEqual(
+            images.detect(**common, query_sixel=lambda: False), images.NONE
+        )
+
+    def test_the_override_wins_and_can_turn_drawing_off(self) -> None:
+        for value, expected in (
+            ("kitty", images.KITTY),
+            ("iterm2", images.ITERM2),
+            ("sixel", images.SIXEL),
+            ("none", images.NONE),
+            ("off", images.NONE),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    images.detect(term_program="iTerm.app", override=value), expected
+                )
+
+    def test_an_explicit_off_is_not_talked_out_of_by_a_query(self) -> None:
+        self.assertEqual(
+            images.detect(term_program="", override="none", query_sixel=lambda: True),
+            images.NONE,
+        )
+
+    def test_supported_still_answers_only_for_kitty(self) -> None:
+        self.assertTrue(images.supported(term_program="kitty", term=""))
+        self.assertFalse(images.supported(term_program="iTerm.app", term=""))
+
+
+class InlineEscapeTests(unittest.TestCase):
+    def test_iterm2_carries_the_file_itself_sized_in_cells(self) -> None:
+        blob = _tiny_png()
+        escape = images.inline_escape(images.ITERM2, blob, 4, 2)
+        assert escape is not None
+        self.assertTrue(escape.startswith("\x1b]1337;File=inline=1;"))
+        self.assertIn(f"size={len(blob)}", escape)
+        self.assertIn("width=4;height=2", escape)
+        self.assertIn("preserveAspectRatio=0", escape)
+        self.assertIn(base64.standard_b64encode(blob).decode("ascii"), escape)
+        self.assertTrue(escape.endswith("\x07"))
+
+    def test_iterm2_declines_a_picture_it_cannot_crop(self) -> None:
+        # The protocol has no source window, so a half-scrolled picture would
+        # be drawn whole over the composer rather than cut.
+        self.assertIsNone(
+            images.inline_escape(images.ITERM2, _tiny_png(), 4, 2, (1, 1))
+        )
+
+    def test_sixel_draws_even_when_the_terminal_never_said_its_cell_size(self) -> None:
+        escape = images.inline_escape(images.SIXEL, _tiny_png(), 2, 1, None, None)
+        assert escape is not None
+        self.assertTrue(escape.startswith("\x1bP"))
+        self.assertTrue(escape.endswith("\x1b\\"))
+        # Sized against the assumed cell rather than declined.
+        columns, rows = 2, 1
+        width = columns * images.DEFAULT_CELL[0]
+        height = rows * images.DEFAULT_CELL[1]
+        self.assertIn(f'"1;1;{width};{height}', escape)
+
+    def test_sixel_uses_the_measured_cell_when_there_is_one(self) -> None:
+        escape = images.inline_escape(images.SIXEL, _tiny_png(), 3, 2, None, (10, 20))
+        assert escape is not None
+        self.assertIn('"1;1;30;40', escape)
+
+    def test_sixel_refuses_what_it_cannot_decode(self) -> None:
+        self.assertIsNone(images.inline_escape(images.SIXEL, b"not an image", 2, 1))
+        broken = bytearray(_tiny_png())
+        broken[30:40] = b"\x00" * 10
+        self.assertIsNone(images.inline_escape(images.SIXEL, bytes(broken), 2, 1))
+
+    def test_the_overlay_protocols_have_no_inline_escape(self) -> None:
+        for protocol in (images.KITTY, images.NONE):
+            with self.subTest(protocol=protocol):
+                self.assertIsNone(
+                    images.inline_escape(protocol, _tiny_png(), 2, 1)
+                )
 
 
 class AddressTests(unittest.TestCase):
