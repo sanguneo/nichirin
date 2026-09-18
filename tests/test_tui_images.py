@@ -77,14 +77,49 @@ class ProtocolDetectionTests(unittest.TestCase):
 
     def test_a_terminal_that_announces_nothing_draws_nothing(self) -> None:
         self.assertEqual(
-            images.detect(term_program="Apple_Terminal", term="xterm-256color", override=""),
+            images.detect(
+                term_program="Apple_Terminal",
+                term="xterm-256color",
+                lc_terminal="",
+                override="",
+            ),
             images.NONE,
         )
+
+    def test_what_the_caller_names_wins_over_the_surrounding_environment(self) -> None:
+        """Every field a detection test asserts on has to be one it named.
+
+        `detect` fills an unnamed field from the environment, which is right in
+        production and a trap in a test: run inside iTerm2, "a terminal that
+        announces nothing" borrowed the real `LC_TERMINAL` and answered
+        `iterm2`. The suite failed on exactly the machine this tool is for.
+        """
+        ambient = {
+            "TERM_PROGRAM": "iTerm.app",
+            "LC_TERMINAL": "iTerm2",
+            "TERM": "xterm-kitty",
+            images.PROTOCOL_ENV: "kitty",
+        }
+        with patch.dict(os.environ, ambient):
+            self.assertEqual(
+                images.detect(
+                    term_program="Apple_Terminal",
+                    term="xterm-256color",
+                    lc_terminal="",
+                    override="",
+                ),
+                images.NONE,
+            )
 
     def test_only_asking_finds_sixel(self) -> None:
         # No environment variable announces sixel, which is the whole reason the
         # terminal has to be asked; a "no" leaves it drawing nothing.
-        common = dict(term_program="Apple_Terminal", term="xterm-256color", override="")
+        common = dict(
+            term_program="Apple_Terminal",
+            term="xterm-256color",
+            lc_terminal="",
+            override="",
+        )
         self.assertEqual(
             images.detect(**common, query_sixel=lambda: True), images.SIXEL
         )
