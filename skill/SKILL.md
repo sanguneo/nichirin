@@ -162,6 +162,10 @@ and no cursor movement. With `--open` the tool opens the room itself when its
 window is closed, even with KakaoTalk sitting in the tray. The CLI resolves the
 room in the local catalog, then requires an exact window-title match.
 
+Sending reaches other people and cannot be undone, and an agent sending is the
+user sending. Confirm the room and the words first, and read the `DISCLAIMER.md`
+installed beside this file for what this tool does and does not warrant.
+
 ```powershell
 python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --dry-run "Approved text"
 python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" "Approved text"

@@ -82,6 +82,7 @@ class PayloadTests(InstallerTests):
         expected = {
             "SKILL.md",
             "LICENSE",
+            "DISCLAIMER.md",
             LAUNCHER.as_posix(),
             LEGACY_LAUNCHER.as_posix(),
         } | {

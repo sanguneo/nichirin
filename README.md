@@ -420,6 +420,11 @@ MIT. [LICENSE](LICENSE) 참조.
 읽고, 전송 시에는 사용자 본인이 로그인해 둔 클라이언트를 조작합니다. 카카오 API를 호출하거나
 프로토콜을 구현하거나 애플리케이션을 변조하지 않습니다.
 
+**그 사실이 카카오 약관 준수나 이용 제한 면제를 뜻하지는 않습니다.** 보증 부인, 책임
+제한, 그리고 맞게 동작해도 손해가 날 수 있는 지점들은 [DISCLAIMER.md](DISCLAIMER.md)에
+따로 적어 두었습니다 — 보내기나 `serve`를 쓰기 전에 한 번 읽으십시오.
+
 *Not affiliated with or endorsed by Kakao Corp. Reads data already on your own
 machine and drives your own signed-in client; no Kakao API calls, no protocol
-reimplementation, no patching of the application.*
+reimplementation, no patching of the application. That is not a claim of
+compliance — see [DISCLAIMER.md](DISCLAIMER.md).*

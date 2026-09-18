@@ -34,6 +34,7 @@ def shipped_files(root: Path) -> dict[Path, Path]:
     payload: dict[Path, Path] = {
         Path("SKILL.md"): root / "skill" / "SKILL.md",
         Path("LICENSE"): root / "LICENSE",
+        Path("DISCLAIMER.md"): root / "DISCLAIMER.md",
         LAUNCHER: root / "skill" / LAUNCHER,
         LEGACY_LAUNCHER: root / "skill" / LEGACY_LAUNCHER,
     }
