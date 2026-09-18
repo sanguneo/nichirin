@@ -1,6 +1,6 @@
 """Local KakaoTalk reading and friends, plus client-driven sending on Windows."""
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 PAGE_SIZE = 4096
 """SQLCipher page size used by the KakaoTalk Windows client."""
