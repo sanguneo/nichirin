@@ -57,10 +57,10 @@ class SendTests(unittest.TestCase):
 
     def test_clearing_a_draft_is_reported_rather_than_done_quietly(self) -> None:
         self.backend.draft = "an unfinished synthetic draft"
-        self.assertIs(self.sender.send("Synthetic room", "replacement")["clearedDraft"], True)
+        self.assertIs(self.sender.send("Synthetic room", "replacement").get("clearedDraft"), True)
 
     def test_an_empty_box_reports_that_nothing_was_cleared(self) -> None:
-        self.assertIs(self.sender.send("Synthetic room", "synthetic text")["clearedDraft"], False)
+        self.assertIs(self.sender.send("Synthetic room", "synthetic text").get("clearedDraft"), False)
 
     def test_dry_run_never_types_or_submits(self) -> None:
         result = self.sender.send("Synthetic room", "synthetic text", dry_run=True)
@@ -71,7 +71,7 @@ class SendTests(unittest.TestCase):
         """The one call that changes nothing is where the warning is worth having."""
         self.backend.draft = "an unfinished synthetic draft"
         result = self.sender.send("Synthetic room", "replacement", dry_run=True)
-        self.assertIs(result["wouldClearDraft"], True)
+        self.assertIs(result.get("wouldClearDraft"), True)
         self.assertEqual(self.backend.draft, "an unfinished synthetic draft")
 
     def test_queue_acceptance_is_not_reported_as_delivery(self) -> None:

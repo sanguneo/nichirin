@@ -20,6 +20,7 @@ import io
 import json
 import sys
 import unittest
+from typing import Any
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def _follow_lines() -> tuple[dict, dict]:
         return watching, {"ok": True, "event": "message", **newest.as_json()}
 
 
-def build_envelopes() -> dict[str, object]:
+def build_envelopes() -> dict[str, Any]:
     """One sample of every shape a consumer has to parse."""
     room = str(DIRECT_ROOM)
     watching, message = _follow_lines()

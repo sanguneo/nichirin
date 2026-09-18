@@ -164,7 +164,9 @@ class PendingSendTests(unittest.TestCase):
         self.type("안녕")
         self.app.handle(Key.ENTER, "")
         self.app.flush_pending()
-        self.assertEqual(self.sender.sent, [(self.app.chat.room.title, "안녕")])
+        chat = self.app.chat
+        assert chat is not None, "the room under test is not open"
+        self.assertEqual(self.sender.sent, [(chat.room.title, "안녕")])
         self.assertIsNone(self.app.pending_send)
         self.assertNotIn("보내는 중", self.frame())
 

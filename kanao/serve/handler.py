@@ -188,7 +188,7 @@ def build_handler(
         server_version = "kanao-serve"
         timeout = patience
 
-        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: N802 - stdlib name
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib name
             pass
 
         # -- small helpers ------------------------------------------------

@@ -8,8 +8,10 @@ obvious is which one that is, and what a key does to the others.
 from __future__ import annotations
 
 import unittest
+from typing import cast
 
 from kanao.model import Message
+from kanao.watch import Watcher
 from tests.platform import require_windows_console
 
 require_windows_console()
@@ -248,7 +250,10 @@ class ArrivalTests(PaneCase):
                 from_me=False,
             )
         ]
-        chat.watcher = _Arriving(fresh)
+        # A pane only ever asks its watcher to poll, which is all this stub
+        # does; the annotation names the real class because production has no
+        # other kind.
+        chat.watcher = cast(Watcher, _Arriving(fresh))
         self.app.refresh(WIDTH)
 
     def test_an_arrival_lands_in_its_own_pane(self) -> None:

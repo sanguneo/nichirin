@@ -201,8 +201,9 @@ class FooterTests(unittest.TestCase):
 
     def test_a_very_narrow_footer_shortens_the_anchor_head_last(self) -> None:
         plan = self.plan(26)
-        self.assertIsNotNone(plan.anchor_plain)
-        self.assertTrue(plan.anchor_plain.startswith(ELLIPSIS))
+        anchor = plan.anchor_plain
+        assert anchor is not None, "the anchor was dropped entirely"
+        self.assertTrue(anchor.startswith(ELLIPSIS))
 
     def test_the_right_label_is_never_dropped_while_anything_fits(self) -> None:
         for width in (120, 60, 40, 30):

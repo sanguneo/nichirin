@@ -41,7 +41,15 @@ class OverlappingSender(StubSender):
         self.overlapped = threading.Event()
         self.may_finish = threading.Event()
 
-    def send(self, room: str, text: str, **kwargs):
+    def send(
+        self,
+        room: str,
+        text: str,
+        dry_run: bool = False,
+        open_if_needed: bool = False,
+        aliases=(),
+        hint=None,
+    ):
         with self._lock:
             self.inside += 1
             self.most = max(self.most, self.inside)
@@ -50,7 +58,14 @@ class OverlappingSender(StubSender):
         self.first_inside.set()
         try:
             self.may_finish.wait(timeout=5)
-            return super().send(room, text, **kwargs)
+            return super().send(
+                room,
+                text,
+                dry_run=dry_run,
+                open_if_needed=open_if_needed,
+                aliases=aliases,
+                hint=hint,
+            )
         finally:
             with self._lock:
                 self.inside -= 1

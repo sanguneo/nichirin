@@ -28,7 +28,7 @@ from .errors import ErrorCode, KanaoError
 from .keyring import Keyring
 from .model import Friend, Message, Room
 from .names import NameLedger, NameRecord
-from .snapshot import SnapshotCache
+from .snapshot import SnapshotCache, SnapshotSource
 
 _SELF_CHAT_TITLE = "나와의 채팅"
 _GROUP_TITLE_MEMBERS = 3
@@ -40,7 +40,7 @@ class Reader:
     def __init__(
         self,
         user_directory: Optional[Path] = None,
-        cache: Optional[SnapshotCache] = None,
+        cache: Optional[SnapshotSource] = None,
         keyring: Optional[Keyring] = None,
         ledger: Optional[NameLedger] = None,
     ) -> None:
