@@ -12,6 +12,7 @@ from tests.platform import require_unix_sockets
 require_unix_sockets()
 
 from kamado import daemon
+from kamado.errors import ErrorCode, KamadoError
 from kamado.reader import Reader
 from tests.fixtures import StubCache, build_database, build_keyring
 
@@ -46,6 +47,7 @@ class DaemonTests(unittest.TestCase):
                 self.assertEqual(ping_res, {"ok": True, "status": "pong"})
 
                 rooms_res = daemon.send_to_daemon("rooms", {"limit": 2})
+                assert rooms_res is not None, "the daemon did not answer"
                 self.assertTrue(rooms_res["ok"])
                 self.assertEqual(len(rooms_res["rooms"]), 2)
 
@@ -55,3 +57,37 @@ class DaemonTests(unittest.TestCase):
             server.running = False
             thread.join(timeout=1.0)
             server._cleanup()
+
+
+class NamedRoomTests(unittest.TestCase):
+    """`messages` given a title rather than an id.
+
+    This path called `reader.rooms(name=…)`, which has no such parameter, so
+    it raised `TypeError` — not a `KamadoError` the socket layer could turn
+    into an envelope, and not anything a caller could act on. Nothing
+    exercised it, so `_dispatch` is driven directly here rather than through
+    the socket the other test uses; the envelope is `_serve`'s job.
+    """
+
+    def dispatch(self, command: str, args: dict):
+        server = daemon.DaemonServer(environment=None)
+        server._reader = Reader(cache=StubCache(build_database()), keyring=build_keyring())
+        self.addCleanup(server._reader.close)
+        return server._dispatch(command, args)
+
+    def test_messages_accepts_a_room_title(self) -> None:
+        answer = self.dispatch("messages", {"room": "Peer Renamed", "limit": 5})
+        self.assertTrue(answer["ok"], answer)
+        self.assertIn("messages", answer)
+
+    def test_a_title_that_matches_nothing_says_which_title(self) -> None:
+        with self.assertRaises(KamadoError) as raised:
+            self.dispatch("messages", {"room": "no such room at all"})
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_NOT_FOUND)
+
+    def test_neither_a_room_nor_an_id_is_refused(self) -> None:
+        for command in ("messages", "context"):
+            with self.subTest(command=command):
+                with self.assertRaises(KamadoError) as raised:
+                    self.dispatch(command, {})
+                self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
