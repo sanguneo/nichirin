@@ -174,10 +174,11 @@ class Console:
     def __enter__(self) -> "Console":
         try:
             if sys.stdin.isatty():
-                self._input_fd = sys.stdin.fileno()
-                self._mode = termios.tcgetattr(self._input_fd)
+                descriptor = sys.stdin.fileno()
+                self._input_fd = descriptor
+                self._mode = termios.tcgetattr(descriptor)
                 # TCSANOW preserves input already queued, including a paste.
-                tty.setraw(self._input_fd, termios.TCSANOW)
+                tty.setraw(descriptor, termios.TCSANOW)
             self._entered = True
             # The alternate screen starts blank, so the first frame is whole.
             self._painted = None

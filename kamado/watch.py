@@ -21,7 +21,15 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Iterator, Mapping, Optional, Sequence
+from typing import Iterator, Mapping, Optional, Sequence, Union
+
+Identifier = Union[str, int]
+"""How an id arrives here: as text over the wire, or as an int in process.
+
+Ids exceed 2^53 so they cross the boundary as strings, and a caller inside
+this process has no reason to stringify one first. Both are accepted and both
+are converted once, at the door.
+"""
 
 from .errors import KamadoError
 from .model import Message
@@ -90,7 +98,7 @@ class Watcher:
     def _database(self):
         return self._reader.database
 
-    def resume(self, cursor: Mapping[object, object]) -> None:
+    def resume(self, cursor: Mapping[Identifier, Identifier]) -> None:
         """Start from what a caller has already seen rather than from now.
 
         *cursor* maps room id to the last log id that reader received. Priming

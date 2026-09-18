@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import patch
 
@@ -280,7 +281,11 @@ class OverlayTests(_Fixture):
         self.assertEqual(len(image), PAGE_SIZE)
 
     def test_parallel_decrypt_base_pages_matches_serial(self) -> None:
-        from kakaoread.snapshot import _decrypt_base_pages, _PARALLEL_PAGE_THRESHOLD
+        # Through `import_module`: the alias is a meta path finder, which a
+        # type checker cannot follow, and the point here is the runtime.
+        legacy = import_module("kakaoread.snapshot")
+        _decrypt_base_pages = legacy._decrypt_base_pages
+        _PARALLEL_PAGE_THRESHOLD = legacy._PARALLEL_PAGE_THRESHOLD
         geom = geometry()
         encrypted = self.database.read_bytes()
         base_pages = len(encrypted) // PAGE_SIZE

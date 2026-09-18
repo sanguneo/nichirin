@@ -157,12 +157,15 @@ class Cache:
     def __init__(self, database: sqlite3.Connection) -> None:
         self.database = database
 
-    def connect(self, path: Path, geometry: cipher.Geometry) -> sqlite3.Connection:
-        if Path(path).name != DATABASE.name:
+    def connect(self, database: Path, geometry: cipher.Geometry) -> sqlite3.Connection:
+        if Path(database).name != DATABASE.name:
             # Refuse the way the real cache refuses, so a demo cannot pass
             # against an error the runtime never raises.
-            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {path}")
+            raise KamadoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {database}")
         return self.database
+
+    def invalidate(self, database: Path) -> None:
+        """Production drops a torn snapshot here; there is none to drop."""
 
     def close(self) -> None:
         self.database.close()

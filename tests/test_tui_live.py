@@ -39,6 +39,19 @@ class LiveTests(unittest.TestCase):
         room = next(room for room in self.app.rooms if room.id == DIRECT_ROOM)
         self.app.open_room(room)
 
+    def chat(self):
+        """The open conversation, failing the test rather than the attribute.
+
+        `App.chat` is a property over the pane list and is None when nothing
+        is open, which is a state these tests never mean to be in — saying so
+        here turns "no conversation is open" into the failure it is, instead
+        of an AttributeError several lines later.
+        """
+        chat = self.app.chat
+        if chat is None:
+            self.fail("no conversation is open")
+        return chat
+
     def arrive(self, log_id: int, text: str, room_id: int = DIRECT_ROOM, author: int = PEER_ID) -> None:
         connection = self.cache.database
         connection.execute(
@@ -80,12 +93,12 @@ class ArrivalTests(LiveTests):
     def test_the_same_message_is_never_appended_twice(self) -> None:
         self.arrive(5201, "ONCE_ONLY")
         self.app.refresh(WIDTH)
-        before = len(self.app.chat.messages)
+        before = len(self.chat().messages)
 
         touch_log(self.root, DIRECT_ROOM, b"touched-again")
         self.app.refresh(WIDTH)
 
-        self.assertEqual(len(self.app.chat.messages), before)
+        self.assertEqual(len(self.chat().messages), before)
         self.assertEqual(self.body().count("ONCE_ONLY"), 1)
 
     def test_several_arrivals_all_show_up(self) -> None:
@@ -99,26 +112,26 @@ class ArrivalTests(LiveTests):
     def test_a_new_speaker_is_given_a_tint_on_arrival(self) -> None:
         self.arrive(5400, "새 사람", author=999_111)
         self.app.refresh(WIDTH)
-        newcomer = self.app.chat.messages[-1].sender
+        newcomer = self.chat().messages[-1].sender
         self.assertIsNotNone(self.app.palette.name_colour(newcomer))
 
 
 class ViewportTests(LiveTests):
     def test_a_reader_at_the_bottom_follows_the_conversation(self) -> None:
-        self.assertEqual(self.app.chat.offset, 0)
+        self.assertEqual(self.chat().offset, 0)
         self.arrive(5500, "AT_BOTTOM")
         self.app.refresh(WIDTH)
 
-        self.assertEqual(self.app.chat.offset, 0)
+        self.assertEqual(self.chat().offset, 0)
         self.assertIn("AT_BOTTOM", self.body())
-        self.assertEqual(self.app.chat.unseen, 0)
+        self.assertEqual(self.chat().unseen, 0)
 
     def test_a_reader_scrolled_up_keeps_seeing_the_same_lines(self) -> None:
         for index in range(30):
             self.arrive(5600 + index, f"HISTORY{index}")
         self.app.refresh(WIDTH)
 
-        self.app.chat.offset = 8
+        self.chat().offset = 8
         before = self.viewport()
 
         self.arrive(5700, "SHOULD_NOT_JUMP")
@@ -128,25 +141,25 @@ class ViewportTests(LiveTests):
         self.assertNotIn("SHOULD_NOT_JUMP", self.viewport())
 
     def test_a_reader_scrolled_up_is_told_how_much_is_waiting(self) -> None:
-        self.app.chat.offset = 5
+        self.chat().offset = 5
         self.arrive(5800, "WAITING_ONE")
         self.arrive(5801, "WAITING_TWO")
         self.app.refresh(WIDTH)
 
-        self.assertEqual(self.app.chat.unseen, 2)
+        self.assertEqual(self.chat().unseen, 2)
         self.assertIn("새 메시지 2개", self.body())
         self.assertNotIn("WAITING_TWO", self.viewport(), "arrivals must stay below the fold")
 
     def test_returning_to_the_bottom_clears_the_backlog_marker(self) -> None:
-        self.app.chat.offset = 5
+        self.chat().offset = 5
         self.arrive(5900, "PENDING")
         self.app.refresh(WIDTH)
-        self.assertEqual(self.app.chat.unseen, 1)
+        self.assertEqual(self.chat().unseen, 1)
 
         self.app.handle(Key.END, "")
 
-        self.assertEqual(self.app.chat.offset, 0)
-        self.assertEqual(self.app.chat.unseen, 0)
+        self.assertEqual(self.chat().offset, 0)
+        self.assertEqual(self.chat().unseen, 0)
         self.assertIn("PENDING", self.body())
 
 
@@ -190,7 +203,7 @@ class DigestTests(LiveTests):
         self.app.refresh(WIDTH)
 
         self.assertEqual(self.viewport(), before, "the digest was rebuilt underneath the reader")
-        self.assertIn("AFTER_DIGEST", [m.text for m in self.app.chat.messages])
+        self.assertIn("AFTER_DIGEST", [m.text for m in self.chat().messages])
 
 
 class PaneArrivalTests(LiveTests):

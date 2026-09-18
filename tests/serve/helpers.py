@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from http.client import HTTPConnection
 from http.server import HTTPServer
+from typing import Any, Optional
 
 from kamado import serve
 from kamado.errors import ErrorCode, KamadoError
@@ -197,7 +198,21 @@ def _start_server(sender, *, rooms=None, watcher=None, token=TOKEN, min_interval
     return serve.build_handler(sender.send, **kwargs)
 
 
-def _request(base, method, path, body=None, token=TOKEN, raw_headers=None):
+def _request(
+    base: str,
+    method: str,
+    path: str,
+    body=None,
+    token: Optional[str] = TOKEN,
+    raw_headers=None,
+) -> "tuple[int, Any, dict]":
+    """Return ``(status, parsed body, headers)``.
+
+    The body is annotated ``Any`` because that is what it is: whatever JSON
+    the route answered with, indexed by tests that know the route's shape.
+    Typing it as a dict would be a claim this helper cannot keep -- an empty
+    body parses to ``None`` -- and every caller would then need a cast.
+    """
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"} if body is not None else {}
     if raw_headers:
@@ -216,7 +231,9 @@ def _request(base, method, path, body=None, token=TOKEN, raw_headers=None):
         return error.code, payload, dict(error.headers)
 
 
-def _raw_request(base, method, path, raw_body: bytes, headers: dict):
+def _raw_request(
+    base: str, method: str, path: str, raw_body: bytes, headers: dict
+) -> "tuple[int, Any]":
     """Bypass urllib to control framing (missing length, chunked, truncation)."""
     host, _, port = base.partition("://")[2].partition(":")
     connection = HTTPConnection(host, int(port), timeout=5)

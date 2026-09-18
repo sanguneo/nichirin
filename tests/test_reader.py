@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import unittest.mock
 
 from kamado.errors import ErrorCode, KamadoError
 from kamado.keyring import Keyring
@@ -26,6 +27,18 @@ from tests.fixtures import (
     build_profile,
     build_reader,
 )
+
+
+def room_of(reader, room_id):
+    """The fixture's room, said as a failure when the fixture has lost it.
+
+    `Reader.room` may answer None — a room really can be missing — and these
+    tests are about what a room is *called*, not about whether the fixture
+    still holds one.
+    """
+    found = reader.room(room_id)
+    assert found is not None, f"the fixture has no room {room_id}"
+    return found
 
 
 class IdentityTests(unittest.TestCase):
@@ -91,18 +104,18 @@ class RoomTests(unittest.TestCase):
 
     def test_a_direct_room_is_titled_with_the_other_person(self) -> None:
         with build_reader() as reader:
-            self.assertEqual(reader.room(DIRECT_ROOM).title, "Peer Renamed")
+            self.assertEqual(room_of(reader, DIRECT_ROOM).title, "Peer Renamed")
 
     def test_a_group_room_without_a_title_lists_its_other_members(self) -> None:
         with build_reader() as reader:
-            title = reader.room(GROUP_ROOM).title
+            title = room_of(reader, GROUP_ROOM).title
         self.assertIn("Peer Renamed", title)
         self.assertIn("Friend Nick", title)
         self.assertNotIn("My Own Name", title)
 
     def test_a_custom_group_title_is_used_as_stored(self) -> None:
         with build_reader() as reader:
-            self.assertEqual(reader.room(NAMED_ROOM).title, "Named Group")
+            self.assertEqual(room_of(reader, NAMED_ROOM).title, "Named Group")
 
     def test_a_room_renamed_in_the_client_takes_that_name(self) -> None:
         """A rename never touches the room row; the name goes to the meta table.
@@ -180,7 +193,7 @@ class RoomTests(unittest.TestCase):
 
     def test_the_self_chat_is_named_as_such(self) -> None:
         with build_reader() as reader:
-            self.assertEqual(reader.room(SELF_ROOM).title, "나와의 채팅")
+            self.assertEqual(room_of(reader, SELF_ROOM).title, "나와의 채팅")
 
     def test_room_kinds_are_stable_names_an_agent_can_branch_on(self) -> None:
         with build_reader() as reader:
@@ -193,7 +206,7 @@ class RoomTests(unittest.TestCase):
     def test_room_type_code_is_reported_without_deciding_the_kind(self) -> None:
         with build_reader() as reader:
             reader.connection().execute("UPDATE NTChatRoom SET type = 999 WHERE chatId = ?", (DIRECT_ROOM,))
-            room = reader.room(DIRECT_ROOM)
+            room = room_of(reader, DIRECT_ROOM)
         self.assertEqual(room.kind, "direct")
         self.assertEqual(room.as_json()["typeCode"], 999)
 

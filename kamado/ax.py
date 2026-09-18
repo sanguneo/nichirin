@@ -378,7 +378,7 @@ class Element:
     def descendants(self, depth: int = 12) -> "list[Element]":
         """Walk the subtree breadth-first, bounded so a cycle cannot trap us."""
         found: list[Element] = []
-        frontier = [(self, 0)]
+        frontier: list[tuple["Element", int]] = [(self, 0)]
         while frontier:
             element, level = frontier.pop(0)
             if level >= depth:

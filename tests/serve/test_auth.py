@@ -99,7 +99,10 @@ class AuthTests(ServedCase):
     def test_bad_tokens_are_rejected_at_build_time(self) -> None:
         from kamado import serve
 
-        for bad in ("short", "has space in it 123456", "한글토큰열여섯글자이상입니다", "", None):
+        # Typed loosely on purpose: `None` is one of the things a caller can
+        # actually pass, and the point of the test is that it is refused.
+        rejected: tuple = ("short", "has space in it 123456", "한글토큰열여섯글자이상입니다", "", None)
+        for bad in rejected:
             with self.assertRaises(KamadoError, msg=repr(bad)):
                 serve.build_handler(StubSender().send, token=bad)
 

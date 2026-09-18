@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 import warnings
 from importlib import import_module
-from importlib.abc import Loader, MetaPathFinder
+from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 from typing import Optional, Sequence
@@ -27,7 +27,12 @@ DEPRECATED_NAME = __name__
 _OWN_MODULES = frozenset({f"{DEPRECATED_NAME}.__main__"})
 
 
-class _AliasLoader(Loader):
+class _AliasLoader:
+    # Not deriving from `importlib.abc.Loader`: the import system asks a
+    # loader for `create_module` and `exec_module` and nothing else, and
+    # typeshed only exports that base from 3.10 while this package still
+    # supports 3.9. Inheriting it bought a check nobody ran and cost a
+    # version-dependent import.
     """Hand back the :mod:`kamado` module that a ``kakaoread`` name stands for."""
 
     def __init__(self, target: str) -> None:
