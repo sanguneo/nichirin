@@ -207,6 +207,60 @@ class PlacementTests(PhotoCase):
         self.app.photo_escapes()
         self.assertFalse(self.app._images_moved)
 
+    def body_bounds(self) -> tuple[int, int]:
+        """The first and last frame row the conversation itself may use."""
+        frame = self.app.render(WIDTH, HEIGHT)
+        composer = next(
+            index for index, line in enumerate(frame) if "❯" in strip_ansi(line)
+        )
+        return 0, composer
+
+    def test_a_picture_never_reaches_the_composer(self) -> None:
+        # A placement is not clipped by anything the frame does, so one that ran
+        # past the bottom would be drawn straight over the message box.
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        _top, composer_row = self.body_bounds()
+        for offset in range(0, 12):
+            chat = self.app.chat
+            assert chat is not None
+            chat.offset = offset
+            self.app.render(WIDTH, HEIGHT)
+            for _id, row, _column, _blob, _cols, rows, _crop in self.app.placements:
+                self.assertGreaterEqual(row, 0, f"offset {offset} placed above the frame")
+                self.assertLessEqual(
+                    row + rows,
+                    composer_row,
+                    f"offset {offset} drew a picture over the composer",
+                )
+
+    def test_a_picture_stays_inside_its_own_column(self) -> None:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.app.render(WIDTH, HEIGHT)
+        for _id, _row, column, _blob, columns, _rows, _crop in self.app.placements:
+            self.assertGreaterEqual(column, 0)
+            self.assertLessEqual(column + columns, WIDTH)
+
+    def test_a_picture_that_only_half_fits_is_cropped_to_what_shows(self) -> None:
+        # The reserved rows are taller than the pane here, so the placement has
+        # to ask for a band of the source rather than the whole picture.
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.app.render(WIDTH, HEIGHT)
+        placement = next(iter(self.app.placements), None)
+        assert placement is not None
+        _id, _row, _column, _blob, _columns, shown, crop = placement
+        chat = self.app.chat
+        assert chat is not None
+        _columns_full, full = self.app._photo_cells(
+            next(m for m in chat.messages if m.id == PHOTO_MESSAGE), WIDTH, 21
+        )
+        if shown < full:
+            assert crop is not None, "a partly shown picture must be cropped"
+            top, band = crop
+            self.assertGreaterEqual(top, 0)
+            self.assertGreater(band, 0)
+        else:
+            self.assertIsNone(crop, "a whole picture needs no crop")
+
     def test_the_escape_is_built_once_and_then_reused(self) -> None:
         require_windows_imaging()
         self.app.toggle_photo(PHOTO_MESSAGE)
