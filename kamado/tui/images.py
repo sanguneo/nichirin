@@ -93,6 +93,17 @@ flattens a panorama into a square, so the other axis is reduced to match and
 the shape is reported as the caller asked -- rounded, not squashed.
 """
 
+DEFAULT_CELL: Final = (8, 16)
+"""The cell size in pixels to assume when the terminal will not say.
+
+Kitty and iTerm2 are told a box in *cells* and scale into it themselves, so
+they never need this. Sixel is pixels, and Windows Terminal draws sixel while
+answering no cell-size query at all -- so without an assumed size a picture
+there is simply never drawn. 8x16 is the ordinary default and agrees with
+:data:`CELL_ASPECT`; being slightly out of proportion is a far better answer
+than an empty box.
+"""
+
 CELL_ASPECT: Final = 2.0
 """How many times taller than wide a terminal cell is, when it cannot be asked.
 
@@ -128,18 +139,69 @@ class ImageIds:
         return assigned
 
 
+PROTOCOL_ENV: Final = "KAMADO_IMAGE"
+"""Environment override for the image protocol: kitty, iterm2, sixel, or none/off.
+
+A terminal reached over SSH does not forward ``TERM_PROGRAM`` — only ``TERM`` —
+so a user on Windows Terminal (which draws sixel) is invisible to the sniff
+below.  This override, and the sixel device-attributes query, are the two ways
+that terminal is still recognised.
+"""
+
+KITTY: Final = "kitty"
+ITERM2: Final = "iterm2"
+SIXEL: Final = "sixel"
+NONE: Final = "none"
+
+
+def detect(
+    term_program: Optional[str] = None,
+    term: Optional[str] = None,
+    *,
+    override: Optional[str] = None,
+    lc_terminal: Optional[str] = None,
+    query_sixel: Optional[Any] = None,
+) -> str:
+    """Return the best inline-image protocol for this terminal.
+
+    One of ``kitty``, ``iterm2``, ``sixel`` or ``none``.  Kitty graphics come
+    first where a terminal draws them, because they keep the image server-side
+    and a move costs no re-upload; iTerm2's own protocol and sixel are the
+    fallbacks for terminals that lack kitty.
+
+    Read from the environment rather than by querying the terminal, for the same
+    reason as before: a query needs a reply before the first frame can be drawn.
+    The one exception is sixel, which no environment variable announces —
+    *query_sixel*, when given, is a callable that asks the terminal (a
+    device-attributes request, done once after the first frame like the cell
+    measurement) and its answer only ever *upgrades* a ``none`` to ``sixel``.
+    """
+    chosen = (override if override is not None else os.environ.get(PROTOCOL_ENV, "")).strip().lower()
+    if chosen in (KITTY, ITERM2, SIXEL):
+        return chosen
+    if chosen in (NONE, "off", "0", "false", "no"):
+        return NONE
+
+    program = (term_program if term_program is not None else os.environ.get("TERM_PROGRAM", "")).lower()
+    name = (term if term is not None else os.environ.get("TERM", "")).lower()
+    lc = (lc_terminal if lc_terminal is not None else os.environ.get("LC_TERMINAL", "")).lower()
+
+    if program in ("ghostty", "kitty", "wezterm") or "kitty" in name or "ghostty" in name:
+        return KITTY
+    if program == "iterm.app" or lc == "iterm2":
+        return ITERM2
+    if query_sixel is not None and query_sixel():
+        return SIXEL
+    return NONE
+
+
 def supported(term_program: Optional[str] = None, term: Optional[str] = None) -> bool:
     """Whether this terminal draws Kitty graphics.
 
-    Read from the environment rather than by querying the terminal: a query
-    needs a reply before the first frame can be drawn, and a terminal that
-    ignores it would leave the interface waiting on input that never comes.
+    Retained for callers that only care about the kitty path; new code asks
+    :func:`detect` for which of the three protocols to use.
     """
-    program = (term_program if term_program is not None else os.environ.get("TERM_PROGRAM", "")).lower()
-    name = (term if term is not None else os.environ.get("TERM", "")).lower()
-    if program in ("ghostty", "wezterm", "kitty"):
-        return True
-    return "kitty" in name or "ghostty" in name
+    return detect(term_program, term) == KITTY
 
 
 def photo_url(attachment: dict[str, Any]) -> Optional[str]:
@@ -288,11 +350,6 @@ def drawable(blob: bytes) -> Optional[bytes]:
     bytes the terminal is free to drop in silence.
     """
     if blob[:8] == b"\x89PNG\r\n\x1a\n":
-        return blob
-    return _to_png(blob)
-    if blob[:8] == b"\x89PNG\r\n\x1a\n":
-        return blob
-    if blob[:2] == b"\xff\xd8":
         return blob
     return _to_png(blob)
 
@@ -617,3 +674,116 @@ def erase(image_id: int, free: bool = True) -> str:
     be shown again without being sent a second time.
     """
     return f"\x1b_Ga=d,d={'I' if free else 'i'},i={image_id},q=2\x1b\\"
+
+
+def inline_escape(
+    protocol: str,
+    blob: bytes,
+    columns: int,
+    rows: int,
+    crop: Optional[tuple[int, int]] = None,
+    cell: Optional[tuple[int, int]] = None,
+) -> Optional[str]:
+    """Return the escape that draws *blob* at the cursor for an inline protocol.
+
+    Unlike Kitty, iTerm2 and sixel keep no image server-side: there is no
+    placement to move or erase by id, so the picture is emitted in full wherever
+    it sits and the frame's own repaint of the reserved rows is what clears it.
+    That is why this returns the whole picture every call rather than a cheap
+    re-placement -- the caller still avoids the cost by only calling when the
+    box or crop actually changed.
+
+    ``None`` means this protocol cannot draw this picture right now (an iTerm2
+    image that is partly scrolled off, which the protocol cannot crop), and the
+    caller leaves the reserved rows blank until it is whole again.
+    """
+    if protocol == ITERM2:
+        if crop is not None:
+            return None
+        return _iterm2_escape(blob, columns, rows)
+    if protocol == SIXEL:
+        return _sixel_escape(blob, columns, rows, crop, cell)
+    return None
+
+
+def _iterm2_escape(blob: bytes, columns: int, rows: int) -> str:
+    """Return iTerm2's inline-image escape, sized to a cell box.
+
+    ``inline=1`` draws it in place rather than saving a file; ``width``/``height``
+    in bare cells scale it into the same box the transcript reserved, and
+    ``preserveAspectRatio=0`` lets that box be exact because the source was
+    already fitted to it.  iTerm2 accepts the image file as-is, so no pixel
+    conversion is needed -- the reason it costs so much less than sixel.
+    """
+    payload = base64.standard_b64encode(blob).decode("ascii")
+    return (
+        f"\x1b]1337;File=inline=1;size={len(blob)};"
+        f"width={columns};height={rows};preserveAspectRatio=0:{payload}\x07"
+    )
+
+
+def _sixel_escape(
+    blob: bytes,
+    columns: int,
+    rows: int,
+    crop: Optional[tuple[int, int]],
+    cell: Optional[tuple[int, int]],
+) -> Optional[str]:
+    """Return a sixel escape drawing *blob* into a ``columns`` x ``rows`` cell box.
+
+    Sixel is raw pixels, not a file, so the picture is decoded, cropped to the
+    visible band when only part of it fits, scaled to the cell box in device
+    pixels, and encoded.
+
+    A terminal that draws sixel does not necessarily answer ``CSI 16 t``:
+    Windows Terminal is exactly that case, and declining to draw without a
+    measured cell meant the picture never appeared there at all. A missing size
+    is therefore assumed rather than treated as a refusal.
+    """
+    from . import sixel as _sixel
+
+    if blob[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    try:
+        width, height, rgb = _sixel.png_to_rgb(blob)
+    except ValueError:
+        # An unreadable picture leaves the rows blank rather than the frame
+        # broken; the decoder refuses exactly what it cannot read.
+        return None
+    cell = cell or DEFAULT_CELL
+    if crop is not None:
+        top, band = crop
+        top = max(0, min(top, height))
+        band = max(0, min(band, height - top))
+        if band <= 0:
+            return None
+        rgb = rgb[top * width * 3 : (top + band) * width * 3]
+        height = band
+    target_w = max(1, columns * cell[0])
+    target_h = max(1, rows * cell[1])
+    rgb, width, height = _resize_rgb(rgb, width, height, target_w, target_h)
+    return _sixel.encode_sixel(rgb, width, height)
+
+
+def _resize_rgb(
+    rgb: bytes, width: int, height: int, target_w: int, target_h: int
+) -> tuple[bytes, int, int]:
+    """Nearest-neighbour resample to a target pixel box.
+
+    Sixel draws at native pixel size, so a picture has to be scaled here to land
+    in the cells the transcript reserved.  Nearest-neighbour keeps this pure
+    standard library and fast; the source is a small thumbnail already.
+    """
+    if width == target_w and height == target_h:
+        return rgb, width, height
+    out = bytearray(target_w * target_h * 3)
+    for ty in range(target_h):
+        sy = ty * height // target_h
+        srow = sy * width * 3
+        orow = ty * target_w * 3
+        for tx in range(target_w):
+            sx = tx * width // target_w
+            si = srow + sx * 3
+            oi = orow + tx * 3
+            out[oi : oi + 3] = rgb[si : si + 3]
+    return bytes(out), target_w, target_h

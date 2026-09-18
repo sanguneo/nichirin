@@ -12,6 +12,7 @@ import re
 import unittest
 
 from kamado.tui.app import App
+from kamado.tui import images
 from kamado.tui.console import Key
 from kamado.tui.layout import display_width, strip_ansi
 from kamado.tui.theme import Theme
@@ -45,7 +46,7 @@ class PhotoCase(unittest.TestCase):
         self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
         self.store = FakeStore()
         self.app._photos = self.store
-        self.app._photos_supported = True
+        self.app._protocol = images.KITTY
         self.app.load_rooms()
         self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM))
         self.app.render(WIDTH, HEIGHT)
@@ -84,7 +85,7 @@ class ClosedStateTests(PhotoCase):
         self.assertEqual(self.store.asked, [])
 
     def test_a_terminal_without_image_support_offers_no_marker(self) -> None:
-        self.app._photos_supported = False
+        self.app._protocol = images.NONE
         chat = self.app.chat
         assert chat is not None
         chat.rendered = None
@@ -125,7 +126,7 @@ class ToggleTests(PhotoCase):
         self.assertFalse(self.app.toggle_photo(6001))
 
     def test_a_terminal_without_image_support_refuses_to_open(self) -> None:
-        self.app._photos_supported = False
+        self.app._protocol = images.NONE
         self.assertFalse(self.app.toggle_photo(PHOTO_MESSAGE))
         self.assertEqual(self.store.asked, [])
 

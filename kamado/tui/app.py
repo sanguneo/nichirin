@@ -252,8 +252,15 @@ class App:
         self.cursor: Optional[tuple[int, int]] = None
         """Where the terminal caret belongs, so an IME composes in the box."""
         self._photos: PhotoSource = images.PhotoStore()
-        self._photos_supported = images.supported()
+        self._protocol = images.detect()
+        """Which inline-image protocol this terminal draws, or ``none``.
+
+        Sixel cannot be recognised from the environment, so a ``none`` here is
+        provisional until :meth:`_measure_cell` has asked the terminal itself.
+        """
         self._image_ids = images.ImageIds()
+        self._images_moved = False
+        """Whether an inline picture moved, so the frame has to be given up."""
         self.placements: list[
             tuple[int, int, int, bytes, int, int, Optional[tuple[int, int]]]
         ] = []
@@ -1133,6 +1140,15 @@ class App:
             return f"{label} ▾"
         return f"{label} ▸"
 
+    @property
+    def _photos_supported(self) -> bool:
+        """Whether some protocol can draw a picture here.
+
+        Derived rather than stored: the protocol is the fact, and a second copy
+        of it is a second thing to keep in step.
+        """
+        return self._protocol != images.NONE
+
     def _photos_drawable(self) -> bool:
         """Whether this terminal can show a picture at all."""
         return self._photos_supported and self.theme.enabled
@@ -1341,6 +1357,52 @@ class App:
     def photo_escapes(self) -> str:
         """Return the escapes that bring the terminal's images up to date.
 
+        Which escapes those are depends on the protocol, and the two kinds are
+        not variations on one theme. Kitty holds the picture itself and hands
+        out placements against an id, so a move is a cheap re-placement and a
+        removal has to be spelled out. Sixel and iTerm2 hold nothing: the
+        picture is the escape, drawn into the cell grid, so it is written again
+        wherever it goes and the frame's own repaint is what takes it away.
+        """
+        if self._protocol == images.KITTY:
+            return self._kitty_escapes()
+        if self._protocol in (images.ITERM2, images.SIXEL):
+            return self._inline_escapes()
+        return ""
+
+    def _inline_escapes(self) -> str:
+        """Draw every inline picture again when any of them moved.
+
+        There is no id to move or erase, so a changed frame redraws all of
+        them -- and because the old pixels sit in cells the transcript left
+        blank, which :meth:`Console.draw` would skip as unchanged, the frame is
+        given up whole through :meth:`Console.forget`. A still screen changes
+        nothing and writes nothing, which is what keeps this off the keystroke
+        path.
+        """
+        current = {
+            message_id: (row, column, cols, rows, crop)
+            for message_id, row, column, _blob, cols, rows, crop in self.placements
+        }
+        if current == self._drawn:
+            return ""
+        self._images_moved = True
+        pieces: list[str] = []
+        for message_id, row, column, blob, cols, rows, crop in self.placements:
+            escape = images.inline_escape(
+                self._protocol, blob, cols, rows, crop, self._cell
+            )
+            if escape is None:
+                # iTerm2 cannot crop a source, so a half-scrolled picture waits
+                # rather than being drawn over the composer.
+                continue
+            pieces.append(f"\x1b[{row + 1};{column + 1}H" + escape)
+        self._drawn = current
+        return "".join(pieces)
+
+    def _kitty_escapes(self) -> str:
+        """Return the Kitty escapes that bring its images up to date.
+
         Only differences are written. The interface redraws on every keystroke
         and again each time the key wait expires, so re-transmitting a picture
         each time made it visibly flicker several times a second -- the
@@ -1440,13 +1502,37 @@ class App:
         )
         return [""] * rows
 
+    def _paint(self, console: Console, width: int, height: int) -> None:
+        """Compose one frame, then lay the pictures over it.
+
+        The frame is built first because rendering is what rebuilds
+        :attr:`placements` -- the picture positions are a result of the layout,
+        not an input to it. An inline protocol that moved a picture then needs
+        the whole frame repainted to clear the old pixels, which is the one
+        thing the row-diff painter cannot work out for itself.
+        """
+        frame = self.render(width, height)
+        overlay = self.photo_escapes()
+        if self._images_moved:
+            console.forget()
+            self._images_moved = False
+        console.draw(frame, self.cursor, overlay)
+
     def _measure_cell(self, console: Console) -> None:
         """Learn the terminal's cell shape so pictures keep their proportions.
 
         Asked once, after the first frame is on screen: the answer only matters
         when a photo is opened, and a terminal that stays silent must not hold
         up the conversation appearing.
+
+        The sixel question is asked here too, and for the same reason it is
+        asked at all: no environment variable announces sixel, so a terminal
+        reached over SSH -- which forwards ``TERM`` and nothing else -- can only
+        be recognised by asking it. A terminal the environment already named
+        is never re-asked.
         """
+        if self._protocol == images.NONE:
+            self._protocol = images.detect(query_sixel=console.supports_sixel)
         if not self._photos_supported:
             return
         measured = console.cell_pixels()
@@ -2409,14 +2495,14 @@ class App:
         while self.running:
             width, height = force_size() or console.size
             self._pump(width)
-            console.draw(self.render(width, height), self.cursor, self.photo_escapes())
+            self._paint(console, width, height)
 
             kind, text = console.read_key(KEY_WAIT_SECONDS)
             if kind or text:
                 last_key_at = time.monotonic()
                 self.handle(kind, text)
                 if self.pending_send is not None:
-                    console.draw(self.render(width, height), self.cursor, self.photo_escapes())
+                    self._paint(console, width, height)
                     self.flush_pending()
                 continue
 

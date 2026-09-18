@@ -237,6 +237,17 @@ class Console:
                 self._mode = None
             self._input_fd = None
 
+    def forget(self) -> None:
+        """Discard the remembered frame so the next draw repaints every row.
+
+        Kitty keeps a picture outside the cell grid and takes it back by id, but
+        sixel and iTerm2 put pixels *into* the cells the transcript left blank --
+        and a blank row that is still blank is exactly the row :meth:`draw`
+        skips, which would leave the picture behind after it moved. Giving up
+        the remembered frame is what clears it.
+        """
+        self._painted = None
+
     def draw(
         self,
         lines: list[str],
@@ -484,6 +495,47 @@ class Console:
             collected += chunk
         self._input[:0] = collected
         return None
+
+    def supports_sixel(self) -> bool:
+        """Ask the terminal whether it draws sixel, and believe only a yes.
+
+        Nothing in the environment announces sixel: a terminal reached over SSH
+        forwards ``TERM`` and nothing else, so Windows Terminal -- which does
+        draw sixel -- looks exactly like a terminal that draws nothing. The
+        primary device-attributes request (``CSI c``) is answered with
+        ``CSI ? 62 ; ... c``, and attribute ``4`` in that list means sixel.
+
+        Read on the same short deadline as :meth:`cell_pixels`, and for the same
+        reason: a terminal that stays silent must not hold up the conversation,
+        and a keystroke that arrives first is still the reader's.
+        """
+        if self._input_fd is None:
+            return False
+        _write("\x1b[c")
+        deadline = time.monotonic() + _CELL_QUERY_SECONDS
+        collected = bytearray()
+        pattern = re.compile(rb"\x1b\[\?([0-9;]*)c")
+        while True:
+            found = pattern.search(bytes(collected))
+            if found is not None:
+                del collected[found.start() : found.end()]
+                self._input[:0] = collected
+                return b"4" in found.group(1).split(b";")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([self._input_fd], [], [], remaining)
+            if not ready:
+                break
+            try:
+                chunk = os.read(self._input_fd, 64)
+            except OSError:
+                break
+            if not chunk:
+                break
+            collected += chunk
+        self._input[:0] = collected
+        return False
 
     def _pending(self) -> bool:
         """Check both read-ahead and the descriptor, without waiting for input."""
