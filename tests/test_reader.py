@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import unittest
 
+from kanao import reader as reader_module
 from kanao.errors import ErrorCode, KanaoError
 from kanao.keyring import Keyring
+from kanao.reader import Reader
 
 from tests.fixtures import (
     DIRECT_ROOM,
@@ -20,6 +22,7 @@ from tests.fixtures import (
     SELF_ROOM,
     STRANGER_ID,
     UNREADABLE_ROOM,
+    build_profile,
     build_reader,
 )
 
@@ -178,6 +181,7 @@ class MessageTests(unittest.TestCase):
         from tests.fixtures import build_profile
 
         cache, ring = build_profile()
+        self.addCleanup(cache.close)
         reader = Reader(keyring=ring, cache=cache)
         self.addCleanup(reader.close)
         connection = cache.databases[paths.chat_log_name(DIRECT_ROOM)]
@@ -234,6 +238,7 @@ class StatusTests(unittest.TestCase):
         from tests.fixtures import build_profile
 
         cache, _keyring = build_profile()
+        self.addCleanup(cache.close)
         from kanao.reader import Reader
 
         closed = Keyring(user_directory=PROFILE, pid=None, keys={})
@@ -248,6 +253,7 @@ class StatusTests(unittest.TestCase):
         from tests.fixtures import build_profile
 
         cache, _keyring = build_profile()
+        self.addCleanup(cache.close)
         closed = Keyring(user_directory=PROFILE, pid=None, keys={})
         with Reader(user_directory=PROFILE, cache=cache, keyring=closed) as reader:
             with self.assertRaises(KanaoError) as raised:
@@ -352,6 +358,47 @@ class FeedDetailTests(unittest.TestCase):
     def test_an_ordinary_message_is_not_described_as_a_feed(self) -> None:
         with build_reader() as reader:
             self.assertEqual(reader.feed_details(DIRECT_ROOM, [5000]), {})
+
+
+class CacheOwnershipTests(unittest.TestCase):
+    """Who closes the snapshot cache — and who must not."""
+
+    def test_a_cache_the_reader_was_handed_outlives_it(self) -> None:
+        """A shared cache is the whole saving on the server's send path.
+
+        Closing a borrowed one breaks nothing visible: the next reader simply
+        decrypts the database again and answers correctly. It is only ever
+        slower, which is exactly why it needs a test rather than a reviewer.
+        """
+        cache, keyring = build_profile()
+        self.addCleanup(cache.close)
+        with Reader(user_directory=PROFILE, cache=cache, keyring=keyring) as reader:
+            self.assertTrue(reader.rooms())
+        with Reader(user_directory=PROFILE, cache=cache, keyring=keyring) as second:
+            self.assertTrue(second.rooms())
+
+    def test_a_cache_the_reader_built_itself_is_still_closed_by_it(self) -> None:
+        class _Recording:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        built: list = []
+        original = reader_module.SnapshotCache
+
+        def _record():
+            built.append(_Recording())
+            return built[-1]
+
+        reader_module.SnapshotCache = _record
+        try:
+            reader = Reader(user_directory=PROFILE)
+        finally:
+            reader_module.SnapshotCache = original
+        reader.close()
+        self.assertTrue(built[0].closed)
 
 
 if __name__ == "__main__":

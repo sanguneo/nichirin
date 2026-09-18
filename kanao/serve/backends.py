@@ -38,12 +38,39 @@ def make_live_context_provider(reader_factory) -> Callable[[int, int], dict[str,
 def make_live_send() -> Callable[..., dict[str, Any]]:
     """Build the send callable the server uses on a Windows host.
 
-    Each call opens a fresh reader (so the catalog is never stale across
-    requests), resolves the room exactly like the ``send`` command, refuses
-    duplicate catalog titles, and hands the text to the real sender.
+    Each call opens a fresh reader, resolves the room exactly like the ``send``
+    command, refuses duplicate catalog titles, and hands the text to the real
+    sender — but the snapshot cache and the key ring outlive the request.
+
+    Without that, every ``POST /send`` decrypted the whole catalog and scanned
+    the client's heap again before a single character reached the input box,
+    which is the rule ``AGENTS.md`` states as *a send must not re-read the
+    catalog*: ``reader.rooms()`` measured 3.0 s against a stale snapshot, and
+    sending is exactly what makes it stale. Sharing the cache alone is not
+    enough — finding the account again is most of a second by itself.
+
+    Freshness is not what is given up.  ``SnapshotCache.connect`` re-reads the
+    fingerprint on every call and lays the log over cached pages when only the
+    log moved, so a shared cache is the mechanism working rather than being
+    bypassed; and the reader itself is still new each time, so nothing it
+    memoises about names or columns carries into the next request.
+
+    Only the send path shares these.  ``SnapshotCache`` takes no locks, and
+    sends run one at a time under the handler's send lock; the read routes run
+    concurrently, so they keep a cache per request.
     """
     from ..names import NameLedger
     from ..reader import Reader
+    from ..snapshot import SnapshotCache
+
+    snapshots = SnapshotCache()
+    account: dict[str, Any] = {}
+    """The key ring the last send found, kept for the next one.
+
+    It is the reader that finds it, on the first send rather than at startup:
+    scanning when the socket is bound would turn a closed client into a server
+    that does not come up, instead of one that comes up and says so.
+    """
 
     def send(
         room: str,
@@ -56,7 +83,12 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
         from ..context import _resolve
         from ..winauto import make_sender
 
-        with Reader(ledger=NameLedger()) as reader:
+        with Reader(
+            cache=snapshots, keyring=account.get("keyring"), ledger=NameLedger()
+        ) as reader:
+            # Reading the property is what scans, and the next line would have
+            # scanned anyway; taking it here is where the answer gets kept.
+            account["keyring"] = reader.keyring
             # cli._selected_room is this line plus an argparse namespace built
             # to carry two values; importing cli from here is a cycle, and the
             # cycle is the only thing that namespace was for.

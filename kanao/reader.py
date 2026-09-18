@@ -56,6 +56,7 @@ class Reader:
         """
         self._user_directory = user_directory
         self._cache = cache if cache is not None else SnapshotCache()
+        self._owns_cache = cache is None
         self._keyring: Optional[Keyring] = keyring
         self._ledger = ledger
         self._names: Optional[dict[int, str]] = None
@@ -76,7 +77,16 @@ class Reader:
         return self._keyring
 
     def close(self) -> None:
-        self._cache.close()
+        """Close what this reader built, and leave a borrowed cache alone.
+
+        A cache passed in belongs to the caller — the server's send path keeps
+        one alive across requests so a message costs a fingerprint check
+        rather than a whole decryption.  Closing it here would look like it
+        worked, because the next reader simply decrypts again and answers
+        correctly; it would only ever be slow.
+        """
+        if self._owns_cache:
+            self._cache.close()
 
     def __enter__(self) -> "Reader":
         return self

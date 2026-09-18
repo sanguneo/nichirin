@@ -220,7 +220,13 @@ def build_reader(ledger=None, **kwargs) -> Reader:
     synthetic name to the real history under ``%LOCALAPPDATA%``.
     """
     cache, keyring = build_profile(**kwargs)
-    return Reader(user_directory=PROFILE, cache=cache, keyring=keyring, ledger=ledger)
+    reader = Reader(user_directory=PROFILE, cache=cache, keyring=keyring, ledger=ledger)
+    # A reader does not close a cache it was handed — the server's send path
+    # shares one across requests. Nobody shares this one, so the reader is
+    # given it outright; otherwise every test here leaves its synthetic
+    # databases open (232 of them, counted).
+    reader._owns_cache = True
+    return reader
 
 
 def build_reader_on_disk(root: Path, **kwargs) -> tuple[Reader, StubCache]:
@@ -240,7 +246,9 @@ def build_reader_on_disk(root: Path, **kwargs) -> tuple[Reader, StubCache]:
         wal = path.with_name(path.name + "-wal")
         wal.write_bytes(b"log")
     on_disk = dataclasses.replace(keyring, user_directory=root)
-    return Reader(user_directory=root, cache=cache, keyring=on_disk), cache
+    reader = Reader(user_directory=root, cache=cache, keyring=on_disk)
+    reader._owns_cache = True  # as in build_reader: nobody else holds this one
+    return reader, cache
 
 
 def touch_log(root: Path, room_id: int, payload: bytes) -> None:
