@@ -232,6 +232,48 @@ def _webp_size(blob: bytes) -> Optional[tuple[int, int]]:
     return None
 
 
+def _jpeg_orientation(blob: bytes) -> Optional[int]:
+    """Return the EXIF display orientation stored in a JPEG, when present."""
+    if blob[:2] != b"\xff\xd8":
+        return None
+    index = 2
+    while index + 4 <= len(blob):
+        if blob[index] != 0xFF:
+            return None
+        marker = blob[index + 1]
+        index += 2
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            continue
+        if marker == 0xDA:
+            return None
+        length = int.from_bytes(blob[index : index + 2], "big")
+        if length < 2 or index + length > len(blob):
+            return None
+        segment = blob[index + 2 : index + length]
+        index += length
+        if marker != 0xE1 or not segment.startswith(b"Exif\x00\x00"):
+            continue
+
+        tiff = segment[6:]
+        if len(tiff) < 8 or tiff[:2] not in (b"II", b"MM"):
+            return None
+        byteorder = "little" if tiff[:2] == b"II" else "big"
+        if int.from_bytes(tiff[2:4], byteorder) != 42:
+            return None
+        directory = int.from_bytes(tiff[4:8], byteorder)
+        if directory + 2 > len(tiff):
+            return None
+        entries = int.from_bytes(tiff[directory : directory + 2], byteorder)
+        for offset in range(directory + 2, directory + 2 + entries * 12, 12):
+            if offset + 12 > len(tiff):
+                return None
+            if int.from_bytes(tiff[offset : offset + 2], byteorder) != 0x0112:
+                continue
+            orientation = int.from_bytes(tiff[offset + 8 : offset + 10], byteorder)
+            return orientation if 1 <= orientation <= 8 else None
+    return None
+
+
 def drawable(blob: bytes) -> Optional[bytes]:
     """Return bytes the terminal will accept, converting when it will not.
 
@@ -256,15 +298,26 @@ def drawable(blob: bytes) -> Optional[bytes]:
 
 
 def _to_png(blob: bytes) -> Optional[bytes]:
-    """Convert a picture to PNG with the tool macOS already provides."""
+    """Convert a picture to PNG with EXIF orientation applied."""
+    transforms = {
+        2: ("-f", "horizontal"),
+        3: ("-r", "180"),
+        4: ("-f", "vertical"),
+        5: ("-f", "horizontal", "-r", "270"),
+        6: ("-r", "90"),
+        7: ("-f", "horizontal", "-r", "90"),
+        8: ("-r", "270"),
+    }
     try:
         with tempfile.TemporaryDirectory() as directory:
             source = os.path.join(directory, "source")
             target = os.path.join(directory, "target.png")
             with open(source, "wb") as handle:
                 handle.write(blob)
+            orientation = _jpeg_orientation(blob)
+            transform = () if orientation is None else transforms.get(orientation, ())
             finished = subprocess.run(
-                ["sips", "-s", "format", "png", source, "--out", target],
+                ["sips", *transform, "-s", "format", "png", source, "--out", target],
                 capture_output=True,
                 timeout=_CONVERT_TIMEOUT_SECONDS,
             )

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import os
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -352,12 +353,44 @@ class PixelSizeTests(unittest.TestCase):
             + chunk(b"IEND", b"")
         )
 
+    def jpeg(self, width: int, height: int, orientation: int) -> bytes:
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "source.png")
+            target = os.path.join(directory, "target.jpeg")
+            with open(source, "wb") as handle:
+                handle.write(self.png(width, height))
+            subprocess.run(
+                ["sips", "-s", "format", "jpeg", source, "--out", target],
+                capture_output=True,
+                check=True,
+            )
+            with open(target, "rb") as handle:
+                jpeg = handle.read()
+
+        tiff = (
+            b"MM\x00*\x00\x00\x00\x08"
+            b"\x00\x01"
+            b"\x01\x12\x00\x03\x00\x00\x00\x01"
+            + orientation.to_bytes(2, "big")
+            + b"\x00\x00\x00\x00\x00\x00"
+        )
+        exif = b"Exif\x00\x00" + tiff
+        return jpeg[:2] + b"\xff\xe1" + (len(exif) + 2).to_bytes(2, "big") + exif + jpeg[2:]
+
     def test_a_png_reports_its_own_size(self) -> None:
         self.assertEqual(images.pixel_size(self.png(37, 11)), (37, 11))
 
     def test_a_landscape_png_is_not_read_as_portrait(self) -> None:
         # One live row recorded 1848x4000 for an image that is really 4000x1848.
         self.assertEqual(images.pixel_size(self.png(40, 18)), (40, 18))
+
+    def test_a_jpeg_is_rotated_to_its_exif_orientation(self) -> None:
+        converted = images.drawable(self.jpeg(6, 4, orientation=6))
+        assert converted is not None
+        self.assertEqual(images.pixel_size(converted), (4, 6))
+
+    def test_malformed_exif_is_ignored(self) -> None:
+        self.assertIsNone(images._jpeg_orientation(b"\xff\xd8\xff\xe1\x00\x08Exif"))
 
     def test_a_format_that_is_not_decoded_reports_nothing(self) -> None:
         self.assertIsNone(images.pixel_size(b"RIFF____WEBPVP8 "))
