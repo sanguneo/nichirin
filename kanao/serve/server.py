@@ -87,6 +87,11 @@ def run(
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        # Request threads are daemons, so Ctrl-C would otherwise kill a send
+        # that was accepted and still waiting its turn without ever answering
+        # it. Queueing sends instead of refusing them is what creates that
+        # state; closing the queue is what keeps it from being a silent drop.
+        handler._send_queue.close()  # type: ignore[attr-defined]
         return 130
     finally:
         server.server_close()

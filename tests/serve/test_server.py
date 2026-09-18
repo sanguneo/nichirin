@@ -8,6 +8,8 @@ there is more than one thread, and two sends only race where they can actually
 run at once.
 """
 
+import contextlib
+import io
 import json
 import socket
 import threading
@@ -15,6 +17,7 @@ import unittest
 import urllib.request
 
 from kanao import serve
+from kanao.serve.handler import _ShuttingDown
 
 from tests.serve.helpers import (
     TOKEN,
@@ -214,6 +217,82 @@ class SlowClientTests(ThreadedServerCase):
             self.base, "POST", "/send", {"room": "Synthetic", "text": "hello"}
         )
         self.assertEqual(status, 200, body)
+
+
+class ShutdownTests(ThreadedServerCase):
+    """Queueing a send creates a state that shutting down could swallow."""
+
+    def test_a_send_still_in_line_is_answered_when_the_queue_closes(self) -> None:
+        """The waiting request gets 503, rather than a thread killed mid-wait.
+
+        Request threads are daemons, so nothing else would ever answer them.
+        Every wait here is on an event: the first send parks inside the stub
+        sender, which is what puts the second one in line.
+        """
+        sender = StubSender()
+        handler = _start_server(sender, min_interval=60.0)
+        self.serve(handler)
+        answers: dict = {}
+
+        def request(name, body):
+            answers[name] = _request(self.base, "POST", "/send", body)
+
+        first = threading.Thread(
+            target=request, args=("first", {"room": "Block me", "text": "one"}),
+            daemon=True,
+        )
+        first.start()
+        self.assertTrue(sender.entered.wait(5), "the first send never arrived")
+        second = threading.Thread(
+            target=request, args=("second", {"room": "Synthetic", "text": "two"}),
+            daemon=True,
+        )
+        second.start()
+        handler._send_queue.close()  # type: ignore[attr-defined]
+        sender.release.set()
+        first.join(timeout=10)
+        second.join(timeout=10)
+
+        self.assertEqual(answers["first"][0], 200)
+        self.assertEqual(answers["second"][0], 503)
+        self.assertEqual(answers["second"][1]["error"]["code"], "BUSY")
+        self.assertEqual([call["text"] for call in sender.calls], ["one"])
+
+
+class InterruptTests(unittest.TestCase):
+    """What ``Ctrl-C`` reaches: the socket, and now the line behind it."""
+
+    class _Interrupted:
+        """A server that is interrupted the moment it starts serving."""
+
+        built: list = []
+
+        def __init__(self, address, handler) -> None:
+            type(self).built.append(handler)
+            self.server_port = address[1]
+
+        def serve_forever(self) -> None:
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            pass
+
+    def test_ctrl_c_closes_the_send_queue(self) -> None:
+        self._Interrupted.built = []
+        original = serve.server.ServeHTTPServer
+        serve.server.ServeHTTPServer = self._Interrupted  # type: ignore[misc]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = serve.run(
+                    "127.0.0.1", 0, StubSender().send, token=TOKEN, min_interval=2.0
+                )
+        finally:
+            serve.server.ServeHTTPServer = original  # type: ignore[misc]
+
+        self.assertEqual(code, 130)
+        handler = self._Interrupted.built[0]
+        with self.assertRaises(_ShuttingDown):
+            handler._send_queue.wait_for_turn()
 
 
 class DisconnectNoiseTests(unittest.TestCase):
