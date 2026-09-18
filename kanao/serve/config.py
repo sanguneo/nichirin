@@ -69,8 +69,15 @@ _STATUS_BY_CODE = {
     ErrorCode.AMBIGUOUS_CHAT: 409,
     ErrorCode.CHAT_NOT_FOUND: 404,
     ErrorCode.WINDOW_NOT_FOUND: 404,
+    # The window was found and its input box was not: the caller asked for
+    # something that is not there, which is the same answer as a missing
+    # window rather than a fault in this server.
+    ErrorCode.INPUT_NOT_FOUND: 404,
     ErrorCode.KEY_UNAVAILABLE: 503,
     ErrorCode.KAKAO_NOT_RUNNING: 503,
+    # No signed-in profile is a machine that is not ready, exactly like a
+    # client that is not running; 500 would say this server broke.
+    ErrorCode.NO_USER_DATA: 503,
     ErrorCode.BUSY: 503,
 }
 

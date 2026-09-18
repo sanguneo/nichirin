@@ -271,6 +271,10 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
 리버스 프록시 뒤에 두세요 — 평문 HTTP이므로 토큰이 그대로 노출됩니다.
 
+API 명세는 [`openapi.json`](openapi.json)에 OpenAPI 3.1로 있습니다 — Swagger UI나
+Postman에서 그대로 열리고, **맥 갈래(`kamado-cli`)와 바이트 단위로 같은 파일**입니다.
+플랫폼마다 다른 몇 개는 문서 안에 `x-platform`으로 표시돼 있습니다.
+
 **끊긴 사이는 커서로 메웁니다.** 스트림은 메시지를 보낸 뒤 `event: cursor`로
 `{방id: logId}` 지도를 함께 보냅니다. 클라이언트는 이걸 들고 있다가 재접속할 때
 `?since=방id:logId`로 되돌려 주면 되고(방마다 하나씩, 여러 번 반복 가능), 서버가 그
@@ -295,6 +299,7 @@ curl -N -H "$H" "$T/stream?since=1001:5300&since=1002:412"
 | --- | --- | --- |
 | `401 UNAUTHORIZED` | 토큰이 없거나 틀림 | `Authorization: Bearer …` 확인 |
 | `429 RATE_LIMITED` | 전송 대기열(4건)이 참 | 앞선 전송이 나간 뒤 재시도 |
+| `404 INPUT_NOT_FOUND` | 창은 찾았는데 입력창이 없음 | 그 방 창을 다시 열기 |
 | `503 KEY_UNAVAILABLE` | 카카오톡이 그 DB를 안 열어둠 | **채팅 탭·방 창을 한 번 띄우기** |
 | `status`에서 `decryptableDatabases: 0` | 힙 스캔이 빈손 | 아래 64비트 주의 |
 

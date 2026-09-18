@@ -8,6 +8,15 @@ the commands; this is what their output is guaranteed to look like.
 `kamado-cli`, the macOS sibling, emits the same shapes. A consumer written
 against this document runs against either by changing which binary it starts.
 
+**The HTTP half has a machine-readable copy: [`openapi.json`](openapi.json).**
+It is an OpenAPI 3.1 document covering every `serve` route, parameter,
+payload and status, and Swagger UI or Postman opens it as it is. The same
+file ships in the sibling **byte for byte** — one contract, two builds — and
+the handful of members that genuinely differ carry `x-platform` saying which
+build they belong to. `tests/serve/test_openapi.py` asks the running handler
+and the constants whether the document is still telling the truth, so it
+fails here rather than in somebody's client.
+
 ## The envelope
 
 Success:
@@ -125,6 +134,7 @@ streams as it will.
 | `SEND_FAILED` | The client refused or the write could not be verified |
 | `UNAUTHORIZED` | `serve` only: the bearer token was missing or wrong |
 | `RATE_LIMITED` | `serve` only: the send queue was full. A send that merely arrives early waits its turn instead |
+| `PERMISSION_REQUIRED` | **macOS (`kamado-cli`) only**: the permissions the client needs were not granted. This build never raises it |
 
 `kamado-cli` adds `PERMISSION_REQUIRED` for the macOS permissions it needs.
 

@@ -266,6 +266,16 @@ on a live client, newest 4,000 rows of each readable room.
   messages. `limit` is 1–1000 and `highlights` 1–20, checked in
   `serve/config.py` **before the reader is opened**, and a `roomId` outside
   the 64-bit range is a 400 rather than an `OverflowError` out of the driver.
+- **`openapi.json` is the same file in both repositories, byte for byte.**
+  That is the claim it makes: one contract, two builds. Members that really
+  differ carry `x-platform` — today the macOS-only `typeCode` on a room and
+  the macOS-only `PERMISSION_REQUIRED` — and `tests/serve/test_openapi.py`
+  pins *which* members may carry it, so a third divergence has to be declared
+  rather than discovered. The same tests ask the running handler whether each
+  documented route is routed and read the limits back out of `serve/config`,
+  because a specification nobody checks is a rumour. Writing it is what turned
+  up `INPUT_NOT_FOUND` and `NO_USER_DATA` answering 500 here and 404/503
+  there.
 - **The send path keeps its snapshot cache and key ring; the read paths do
   not.** `make_live_send` used to build a bare `Reader` per request, so every
   `POST /send` found the account again and decrypted the catalog again before
