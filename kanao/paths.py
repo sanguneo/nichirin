@@ -65,13 +65,18 @@ def database_paths(user_directory: Path) -> Iterator[Path]:
     that also holds media and caches, which measured 1.36 s against 298
     databases. ``os.walk`` already knows which entries are files, so the same
     answer costs a directory read instead.
+
+    The order folds case here rather than leaving it to ``Path`` comparison,
+    which folds on Windows and does not anywhere else. It is the same order on
+    Windows either way — this only stops the answer from depending on the host
+    a developer happens to be running the suite on.
     """
     found: list[Path] = []
     for directory, _subdirectories, names in os.walk(user_directory):
         for name in names:
             if os.path.splitext(name)[1].casefold() == DATABASE_SUFFIX:
                 found.append(Path(directory) / name)
-    yield from sorted(found)
+    yield from sorted(found, key=lambda path: str(path).casefold())
 
 
 def chat_log_name(chat_id: int) -> str:

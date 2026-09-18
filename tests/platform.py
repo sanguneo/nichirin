@@ -49,6 +49,20 @@ def require_windows_crypto() -> None:
         )
 
 
+def require_windows_libraries() -> None:
+    """Skip unless ``ctypes.WinDLL`` is there to be replaced.
+
+    Some tests drive the Win32 adapter against a mock by patching `WinDLL`
+    itself, so nothing native is ever called — but `patch` refuses to replace
+    an attribute that does not exist, and off Windows that is an error rather
+    than the fake it was reaching for.
+    """
+    if not _has_windows_libraries():
+        raise unittest.SkipTest(
+            "these patch ctypes.WinDLL to stand in for the OS (no WinDLL here)"
+        )
+
+
 def import_app():
     """Return ``tui.app.App``, or skip if the console API is unreachable.
 

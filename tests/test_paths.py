@@ -127,8 +127,9 @@ class DatabaseDiscoveryTests(unittest.TestCase):
         self.assertEqual(
             found,
             [
-                # Windows path comparison folds case, so the profile-root
-                # database sorts after the chat_data directory.
+                # The walk folds case itself, so the profile-root database
+                # sorts after the chat_data directory — and does so on a host
+                # whose own path comparison would not fold it.
                 "chat_data/chatListInfo.edb",
                 "chat_data/chatLogs_1001.edb",
                 "chat_data/deep/nested.EDB",

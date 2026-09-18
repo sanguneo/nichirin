@@ -172,8 +172,14 @@ class PortabilityTests(InstallerTests):
             if line.startswith("ORIGIN\t")
         ]
         self.assertTrue(any(name == "kanao.cli" for _tag, name, _file in origins))
+        # Both sides are resolved first: the temporary root is reached through
+        # a symlink on macOS, where /var is /private/var and the import
+        # machinery records the resolved name. What is asserted is which
+        # directory the runtime came out of, not which of two names for that
+        # same directory the test happened to hold.
+        runtime = (moved / "scripts/kanao").resolve()
         for _tag, _name, filename in origins:
-            self.assertTrue(Path(filename).is_relative_to(moved / "scripts/kanao"))
+            self.assertTrue(Path(filename).resolve().is_relative_to(runtime))
 
     def test_output_is_utf8_even_when_the_environment_asks_for_ascii(self) -> None:
         """The launcher must not mangle Korean text on a legacy console."""

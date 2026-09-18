@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch
 from kanao.errors import ErrorCode, KanaoError
 from kanao.winauto import ChatWindow, Sender, Win32Backend
 
+from tests.platform import require_windows_libraries
+
 
 class FakeWindows:
     def __init__(self) -> None:
@@ -129,6 +131,7 @@ class SendTests(unittest.TestCase):
 class Win32MessageTests(unittest.TestCase):
     def setUp(self) -> None:
         # Patch the OS boundary. The real adapter still builds its native calls.
+        require_windows_libraries()
         self.user32 = Mock()
         dll = patch("ctypes.WinDLL", return_value=self.user32)
         dll.start()
