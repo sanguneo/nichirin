@@ -4,21 +4,13 @@ The store is a stand-in so no test reaches the network, and the terminal is
 told it supports images so the toggle is exercised rather than skipped. What is
 asserted is the transcript and the escapes the interface would write, because
 that is the whole of what the terminal ever sees.
-
-Fetching is behind an opt-in, so these cases set it: they are about what the
-interface does once the reader has allowed it. `test_tui_images.py` covers the
-switch itself, and `GateTests` below covers what the interface looks like with
-it off.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import unittest
-from unittest import mock
 
-from kamado.tui import images
 from kamado.tui.app import App
 from kamado.tui.console import Key
 from kamado.tui.layout import display_width, strip_ansi
@@ -48,11 +40,6 @@ class FakeStore:
 
 class PhotoCase(unittest.TestCase):
     def setUp(self) -> None:
-        allowed = mock.patch.dict(
-            os.environ, {images.FETCH_VARIABLE: "1"}, clear=False
-        )
-        allowed.start()
-        self.addCleanup(allowed.stop)
         self.reader = build_reader()
         self.addCleanup(self.reader.close)
         self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
@@ -375,68 +362,6 @@ class VideoTests(PhotoCase):
     def test_a_video_is_never_fetched(self) -> None:
         self.app.toggle_photo(VIDEO_MESSAGE)
         self.assertEqual(self.store.asked, [])
-
-
-class GateTests(unittest.TestCase):
-    """What the interface does when the reader has not opted into fetching.
-
-    Every other read this tool makes answers itself from the disk. A photo
-    cannot, so the promise changes the first time one is fetched -- and until
-    that is allowed, a photo has to look like what it is: something the tool is
-    not going to go and get.
-    """
-
-    def setUp(self) -> None:
-        off = mock.patch.dict(os.environ, {}, clear=False)
-        off.start()
-        self.addCleanup(off.stop)
-        os.environ.pop(images.FETCH_VARIABLE, None)
-        self.reader = build_reader()
-        self.addCleanup(self.reader.close)
-        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
-        self.store = FakeStore()
-        self.app._photos = self.store
-        self.app._photos_supported = True
-        self.app.load_rooms()
-        self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM))
-        self.app.render(WIDTH, HEIGHT)
-
-    def transcript(self) -> list[str]:
-        chat = self.app.chat
-        assert chat is not None
-        return [strip_ansi(line) for line in self.app._transcript_of(chat, WIDTH)]
-
-    def test_the_label_does_not_offer_to_open(self) -> None:
-        line = next(line for line in self.transcript() if "[사진]" in line)
-        self.assertNotIn("▸", line)
-        self.assertNotIn("▾", line)
-
-    def test_the_photo_is_still_named(self) -> None:
-        self.assertTrue(any("[사진]" in line for line in self.transcript()))
-
-    def test_a_click_on_the_label_does_nothing(self) -> None:
-        self.assertFalse(self.app.toggle_photo(PHOTO_MESSAGE))
-        chat = self.app.chat
-        assert chat is not None
-        self.assertEqual(chat.opened_photos, set())
-
-    def test_nothing_is_ever_asked_of_the_store(self) -> None:
-        self.app.toggle_photo(PHOTO_MESSAGE)
-        self.app.render(WIDTH, HEIGHT)
-        self.assertEqual(self.store.asked, [])
-
-    def test_no_placement_is_made(self) -> None:
-        self.app.toggle_photo(PHOTO_MESSAGE)
-        self.app.render(WIDTH, HEIGHT)
-        self.assertEqual(self.app.placements, [])
-        self.assertEqual(self.app.photo_escapes(), "")
-
-    def test_no_failure_notice_is_shown(self) -> None:
-        # A label that never offered to open has nothing to apologise for.
-        self.app.toggle_photo(PHOTO_MESSAGE)
-        chat = self.app.chat
-        assert chat is not None
-        self.assertEqual(chat.notice, "")
 
 
 class PaneTests(PhotoCase):

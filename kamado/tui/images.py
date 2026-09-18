@@ -34,31 +34,6 @@ from typing import Any, Final, Optional
 
 from .. import paths
 
-FETCH_VARIABLE: Final = "KAMADO_PHOTOS"
-"""The environment variable that lets this tool reach the network at all.
-
-Every other read in this program answers itself from data already on the disk,
-and the README promises exactly that. A photo cannot be answered that way --
-the client stores an address, not the pixels -- so showing one is the first
-time the tool would open a socket. That is a different promise than the one
-the reader agreed to, so it is not made on their behalf: unset, a photo stays
-as ``[사진]`` and no address is ever contacted.
-"""
-
-_FETCH_ENABLED_VALUES: Final = frozenset({"1", "true", "yes", "on"})
-"""What counts as switching it on, so ``KAMADO_PHOTOS=0`` reads as off."""
-
-
-def fetching_allowed(value: Optional[str] = None) -> bool:
-    """Whether the reader has opted into fetching pictures over the network.
-
-    Read at the moment of use rather than at import, so a test and a shell can
-    both change it without reloading the module.
-    """
-    raw = os.environ.get(FETCH_VARIABLE, "") if value is None else value
-    return raw.strip().lower() in _FETCH_ENABLED_VALUES
-
-
 THUMBNAIL_KEYS: Final = ("url", "thumbnailUrl")
 """Where a single photo's address lives, best first.
 
@@ -470,11 +445,12 @@ class PhotoStore:
         Returns None rather than raising: a photo that cannot be shown is a
         message that stays as ``[사진]``, not a conversation that fails.
 
-        The opt-in is checked here rather than at the caller because this is the
-        only method that opens a socket, and a gate somewhere else is a gate a
-        later caller can walk around.
+        Only the hosts the client itself stores addresses on are contacted, and
+        the check lives here because this is the only method that opens a
+        socket -- a whitelist somewhere else is one a later caller can walk
+        around.
         """
-        if not fetching_allowed() or not _permitted(url):
+        if not _permitted(url):
             return None
         path = self.cached_path(url)
         try:

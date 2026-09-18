@@ -1128,17 +1128,8 @@ class App:
         return f"{label} ▸"
 
     def _photos_drawable(self) -> bool:
-        """Whether a picture can be shown at all, terminal and permission both.
-
-        The opt-in belongs here rather than only at the fetch, because this is
-        what puts the ▸ on a label. Offering to open something the reader has
-        not allowed the network for is an invitation to a failure notice.
-        """
-        return (
-            self._photos_supported
-            and self.theme.enabled
-            and images.fetching_allowed()
-        )
+        """Whether this terminal can show a picture at all."""
+        return self._photos_supported and self.theme.enabled
 
     def opened_photo_ids(self) -> set[int]:
         chat = self.chat

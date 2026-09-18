@@ -334,9 +334,9 @@ than failing. Only when too many are already in line is one refused, and that
   database does not make that cache current with the server.
 - **Attachments are not rendered.** A kind label is not access to the contents.
   The commands in this document never fetch one, so an attachment stays a label
-  no matter what. (The interactive `tui` can draw a *photo* when the reader sets
-  `KAMADO_PHOTOS=1`, which is the one place this tool opens a socket; it changes
-  nothing about the JSON these commands return.)
+  no matter what. (The interactive `tui` draws a *photo* by fetching it from the
+  address the message carries, which is the one place this tool opens a socket;
+  it changes nothing about the JSON these commands return.)
 - **Plaintext exposure.** With SQLite `deserialize` (normally Python 3.11+),
   the plaintext database opens in memory. Without it, including Python 3.9/3.10,
   a temporary plaintext file is used and deleted. Deletion is not secure erasure.

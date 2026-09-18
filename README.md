@@ -204,14 +204,14 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 | `KAMADO_TUI_MARGIN` | 오른쪽 여백 칸 수(0–10, 기본 0). 스크롤바가 마지막 칸을 덮을 때 |
 | `KAMADO_TUI_SIZE` | `110x30` 처럼 화면 크기를 고정. 화면을 그대로 찍어 볼 때 씁니다 |
 | `KAMADO_FORCE_COLOR` | 파이프로 연결해도 색을 켭니다. `NO_COLOR`가 있으면 그쪽이 이깁니다 |
-| `KAMADO_PHOTOS` | `1`이면 사진을 터미널에 띄웁니다. **이 도구가 네트워크를 쓰는 유일한 스위치입니다** |
 
-### 사진 (`KAMADO_PHOTOS=1`)
+### 사진
 
-기본값은 꺼져 있고, 꺼져 있으면 사진은 `[사진]`으로만 표시되며 **주소를 한 번도
-접속하지 않습니다.** 다른 모든 읽기는 이미 이 컴퓨터에 있는 데이터로 답하지만 사진은
-그럴 수 없습니다. 클라이언트가 픽셀이 아니라 CDN 주소만 저장하기 때문입니다. 켤 때
-무엇이 일어나는지는 아래가 전부입니다.
+기본으로 동작합니다. `tui` 에서 `[사진] ▸` 를 누르면 그 자리에 그림이 등장하고,
+다시 누르면 라벨로 돌아갑니다. 다른 모든 읽기는 이미 이 컴퓨터에 있는 데이터로
+답하지만 사진은 그럴 수 없습니다. 클라이언트가 픽셀이 아니라 CDN 주소만 저장하기
+때문이고, 그래서 사진을 여는 순간이 이 도구가 네트워크를 여는 유일한 지점입니다.
+그 지점에서 일어나는 일은 아래가 전부입니다.
 
 | | |
 | --- | --- |
@@ -220,11 +220,11 @@ KAMADO_THEME=light python3 -m kamado tui    # dark 도 됩니다
 | **무엇을** | 썸네일 한 장 (측정값 1.7–9.4 KB, 상한 4 MB, 타임아웃 8초) |
 | **어디에** | `~/Library/Application Support/kamado-cli/photos/<sha256 앞 40자>.img` — 주소를 해시로 바꿔 저장하므로 파일명에 계정 토큰이 남지 않습니다 |
 
-캐시는 지워도 됩니다. 지우면 다음에 열 때 다시 받습니다. 껐다면 이전에 받아 둔
-캐시조차 읽지 않습니다.
+캐시는 지워도 됩니다. 지우면 다음에 열 때 다시 받습니다. 사진은 `tui` 에서만
+보이며, CLI 가 내는 JSON 은 이 기능이 없을 때와 바이트 단위로 동일합니다.
 
 터미널이 Kitty 그래픽 프로토콜을 지원해야 그림이 보입니다(Ghostty·kitty·WezTerm).
-지원하지 않으면 켜도 `[사진]`으로 남습니다.
+지원하지 않는 터미널에서는 여는 표시 없는 `[사진]` 으로 남습니다.
 
 <table>
 <tr>
@@ -427,7 +427,7 @@ python3 install.py --target "$HOME/.claude/skills/kamado-cli" --force
 ## 못 하는 것
 
 - **로컬에 있는 것만.** 서버의 전체 이력을 내려받거나 빈 기록을 복원하지 않습니다.
-- **첨부는 종류만 압니다.** 동영상·파일·이모티콘은 `[영상]`처럼 종류만 표시합니다. 사진은 `KAMADO_PHOTOS=1`로 켜면 터미널에 띄울 수 있고, 켜지 않으면 마찬가지로 `[사진]`으로 남습니다.
+- **첨부는 사진만 봅니다.** 사진은 `tui` 에서 터미널에 띄울 수 있고, 동영상·파일·이모티콘은 `[영상]`처럼 종류만 표시합니다.
 - **글자만 보냅니다.** 첨부 전송, 로그인 자동화, 프로토콜 재구현, 기록 수집은 없습니다.
 - **macOS 전용입니다.** 다른 운영체제는 지원하지 않습니다.
 - **일관성이 없으면 거절합니다.** 읽기가 충돌하면 `BUSY` 등으로 실패하며 완전한 기록인 척하지 않습니다.
@@ -464,14 +464,13 @@ MIT. [LICENSE](LICENSE) 참조.
 호출하거나 프로토콜을 구현하거나 애플리케이션을 변조하지 않습니다. 실제 전송에 필요한
 네트워크 통신은 카카오톡 클라이언트가 합니다.
 
-한 가지 예외가 있고, 사용자가 직접 켜야 합니다. `KAMADO_PHOTOS=1`을 설정하면 사진을
-클릭한 순간 그 사진의 CDN 주소(`talk.kakaocdn.net`, `dn-talk.kakaocdn.net`)로 https
-요청을 보냅니다. 카카오 API를 호출하거나 프로토콜을 구현하는 것이 아니라, 메시지에
-들어 있는 주소를 그대로 받아오는 것입니다. 설정하지 않으면 이 도구는 어떤 주소에도
-접속하지 않습니다. 자세한 내용은 위의 [사진](#사진-kamado_photos1) 항목에 있습니다.
+한 가지 예외는 사진입니다. `tui` 에서 사진을 클릭하면 그 사진의 CDN 주소
+(`talk.kakaocdn.net`, `dn-talk.kakaocdn.net`)로 https 요청을 보냅니다. 카카오 API를
+호출하거나 프로토콜을 구현하는 것이 아니라, 메시지에 이미 들어 있는 주소를 그대로
+받아오는 것입니다. 클릭하지 않으면 어떤 주소에도 접속하지 않습니다. 자세한 내용은
+위의 [사진](#사진) 항목에 있습니다.
 
 *Not affiliated with or endorsed by Kakao Corp. Reads data already on your own
 Mac and drives your own signed-in client; no direct Kakao API calls, no protocol
-reimplementation, no patching of the application. One opt-in exception:
-`KAMADO_PHOTOS=1` fetches a clicked photo from the CDN address stored in the
-message. Unset, nothing is ever contacted.*
+reimplementation, no patching of the application. One exception: clicking a
+photo in `tui` fetches it from the CDN address stored in the message.*
