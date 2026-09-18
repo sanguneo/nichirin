@@ -49,6 +49,19 @@ def require_windows_crypto() -> None:
         )
 
 
+def require_windows_imaging() -> None:
+    """Skip unless the Windows Imaging Component can be called.
+
+    Photos arrive as JPEG and WebP, which the standard library cannot read, so
+    `wic` calls the decoders the operating system already has. It is COM rather
+    than a flat export, which means `ole32` as well as `windowscodecs`.
+    """
+    if not _has_windows_libraries():
+        raise unittest.SkipTest(
+            "decoding photos goes through Windows Imaging (no WinDLL here)"
+        )
+
+
 def require_windows_libraries() -> None:
     """Skip unless ``ctypes.WinDLL`` is there to be replaced.
 
