@@ -129,8 +129,60 @@ class ScreenShareSizingTests(unittest.TestCase):
         self.assertLessEqual(rows, images.MAX_ROWS)
 
 
+class GateTests(unittest.TestCase):
+    """The switch that decides whether this tool opens a socket at all.
+
+    Every other read answers itself from data already on the machine, so
+    fetching is the one thing the reader has to ask for. A default that fetched
+    would quietly replace the promise the README makes.
+    """
+
+    def test_it_is_off_when_the_variable_is_absent(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(images.FETCH_VARIABLE, None)
+            self.assertFalse(images.fetching_allowed())
+
+    def test_the_documented_value_turns_it_on(self) -> None:
+        self.assertTrue(images.fetching_allowed("1"))
+
+    def test_the_obvious_spellings_also_turn_it_on(self) -> None:
+        for value in ("true", "TRUE", "yes", "on", " 1 "):
+            with self.subTest(value=value):
+                self.assertTrue(images.fetching_allowed(value))
+
+    def test_a_value_that_reads_as_off_is_off(self) -> None:
+        for value in ("", "0", "false", "no", "off", "maybe"):
+            with self.subTest(value=value):
+                self.assertFalse(images.fetching_allowed(value))
+
+    def test_nothing_is_requested_while_it_is_off(self) -> None:
+        store = images.PhotoStore(directory=tempfile.mkdtemp())
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(images.FETCH_VARIABLE, None)
+            with patch.object(images.urllib.request, "urlopen") as opener:
+                self.assertIsNone(store.fetch("https://talk.kakaocdn.net/photo.jpg"))
+                opener.assert_not_called()
+
+    def test_an_already_cached_photo_is_still_not_served_while_it_is_off(self) -> None:
+        # The gate is about the promise, not only about the socket: a cache from
+        # an earlier opted-in run must not make the next run look like it fetched.
+        store = images.PhotoStore(directory=tempfile.mkdtemp())
+        url = "https://talk.kakaocdn.net/photo.jpg"
+        with patch.dict(os.environ, {images.FETCH_VARIABLE: "1"}):
+            with patch.object(
+                images.urllib.request, "urlopen", return_value=_Response(b"\x89PNG")
+            ):
+                self.assertEqual(store.fetch(url), b"\x89PNG")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(images.FETCH_VARIABLE, None)
+            self.assertIsNone(store.fetch(url))
+
+
 class FetchTests(unittest.TestCase):
     def setUp(self) -> None:
+        allowed = patch.dict(os.environ, {images.FETCH_VARIABLE: "1"})
+        allowed.start()
+        self.addCleanup(allowed.stop)
         self.directory = tempfile.mkdtemp()
         self.store = images.PhotoStore(directory=self.directory)
 

@@ -125,8 +125,6 @@ class ChatState:
     those: the browser is already in front of them, so the line has done its job
     and should step aside the way the delivery tick does.
     """
-    watcher: Optional[Watcher] = None
-    """Follows this room so arrivals show up without reopening it."""
     unseen: int = 0
     """Arrivals that landed below the viewport while the reader was scrolled up."""
     anchor_top: bool = True
@@ -1130,8 +1128,17 @@ class App:
         return f"{label} ▸"
 
     def _photos_drawable(self) -> bool:
-        """Whether this terminal can show a picture at all."""
-        return self._photos_supported and self.theme.enabled
+        """Whether a picture can be shown at all, terminal and permission both.
+
+        The opt-in belongs here rather than only at the fetch, because this is
+        what puts the ▸ on a label. Offering to open something the reader has
+        not allowed the network for is an invitation to a failure notice.
+        """
+        return (
+            self._photos_supported
+            and self.theme.enabled
+            and images.fetching_allowed()
+        )
 
     def opened_photo_ids(self) -> set[int]:
         chat = self.chat
@@ -1142,6 +1149,15 @@ class App:
 
         Returns whether anything changed, so a click that landed on nothing
         does not cost a rebuild of the transcript.
+
+        A picture belongs to its conversation, not to the screen: several panes
+        can each have one open, and each draws only inside its own column. The
+        alternative -- only the focused pane may show one -- was rejected because
+        the panes exist so two conversations can be read at once, and a picture
+        that closed itself when the keyboard moved would undo that. What does
+        not survive is a pane going off screen: `_plan_placements` only places
+        panes the frame actually painted, so narrowing the window withdraws the
+        image and widening it again puts it back.
         """
         chat = self.chat
         if chat is None or not self._photos_drawable():

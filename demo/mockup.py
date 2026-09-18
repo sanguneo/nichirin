@@ -95,6 +95,46 @@ FRIEND, NOT_FRIEND = 1, 1000
 CREW_LINK, STUDY_LINK = 40001, 40002
 
 TEXT, PHOTO, REPLY = 1, 2, 26
+VIDEO, MULTI_PHOTO = 3, 27
+
+
+def picture(width: int, height: int, count: int = 1) -> str:
+    """A photo attachment, with an invented address on the host the client uses.
+
+    The address is never fetched by the demo -- nothing here has a network --
+    but it has to be shaped like a real one, because what the interface does
+    with a photo depends on parsing it.
+    """
+    if count > 1:
+        return json.dumps(
+            {
+                "imageUrls": [
+                    f"https://talk.kakaocdn.net/synthetic/demo-{index}.jpg"
+                    for index in range(count)
+                ],
+                "thumbnailWidths": [width] * count,
+                "thumbnailHeights": [height] * count,
+            }
+        )
+    return json.dumps(
+        {"url": "https://talk.kakaocdn.net/synthetic/demo.jpg", "w": width, "h": height}
+    )
+
+
+def clip(seconds: int) -> str:
+    """A video attachment: the same shape as a photo, plus the duration.
+
+    That ``d`` is what separates the two, so the demo carries one -- a label
+    that offered to open a video would be a defect this scene should catch.
+    """
+    return json.dumps(
+        {
+            "url": "https://talk.kakaocdn.net/synthetic/demo.mp4",
+            "w": 1280,
+            "h": 720,
+            "d": seconds * 1000,
+        }
+    )
 
 
 def at(hour: int, minute: int, days_ago: int = 0) -> int:
@@ -171,7 +211,7 @@ class Cache:
 CREW_LOG = [
     (5010, SEOYEON, TEXT, "다들 이번 주는 좀 쉬셨어요? 저는 무릎이 좀 아파서 쉬었어요", None, at(18, 44), 0),
     (5011, JISOO, TEXT, "이번 주말 코스 어디로 갈까요? 지난번 코스는 좀 짧았던 것 같아요", None, at(19, 2), 0),
-    (5012, MINJUN, PHOTO, "", None, at(19, 3), 0),
+    (5012, MINJUN, PHOTO, "사진", picture(1440, 1080), at(19, 3), 0),
     (5013, MINJUN, TEXT, "한강 잠수교에서 반포까지 한 바퀴 어떨까요", None, at(19, 3), 0),
     (5014, SEOYEON, TEXT, "좋아요! 몇 시 출발이에요?", None, at(19, 5), 0),
     (
@@ -198,6 +238,11 @@ CREW_LOG = [
     ),
     (5021, SEOYEON, TEXT, "트랙도 좋아요. 대신 끝나고 국밥은 꼭 먹어야 해요", None, at(19, 24), 0),
     (5022, DOYUN, TEXT, "국밥 찬성입니다", None, at(19, 25), 0),
+    # Three attachment kinds together, because each is handled differently: a
+    # photo can be opened, a set of them says how many, and a video is named
+    # but never offered -- there is nothing a terminal can do with it.
+    (5024, HAJUN, MULTI_PHOTO, "사진", picture(1200, 900, count=4), at(19, 26), 0),
+    (5025, MINJUN, VIDEO, "동상열", clip(12), at(19, 26), 0),
     # A reply that also names somebody: one row carrying both facts, which is
     # what a window of four messages has to be able to report.
     (

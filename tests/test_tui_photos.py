@@ -4,13 +4,21 @@ The store is a stand-in so no test reaches the network, and the terminal is
 told it supports images so the toggle is exercised rather than skipped. What is
 asserted is the transcript and the escapes the interface would write, because
 that is the whole of what the terminal ever sees.
+
+Fetching is behind an opt-in, so these cases set it: they are about what the
+interface does once the reader has allowed it. `test_tui_images.py` covers the
+switch itself, and `GateTests` below covers what the interface looks like with
+it off.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import unittest
+from unittest import mock
 
+from kamado.tui import images
 from kamado.tui.app import App
 from kamado.tui.console import Key
 from kamado.tui.layout import display_width, strip_ansi
@@ -40,6 +48,11 @@ class FakeStore:
 
 class PhotoCase(unittest.TestCase):
     def setUp(self) -> None:
+        allowed = mock.patch.dict(
+            os.environ, {images.FETCH_VARIABLE: "1"}, clear=False
+        )
+        allowed.start()
+        self.addCleanup(allowed.stop)
         self.reader = build_reader()
         self.addCleanup(self.reader.close)
         self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
@@ -51,7 +64,9 @@ class PhotoCase(unittest.TestCase):
         self.app.render(WIDTH, HEIGHT)
 
     def transcript(self) -> list[str]:
-        return [strip_ansi(line) for line in self.app._transcript_lines(WIDTH)]
+        chat = self.app.chat
+        assert chat is not None
+        return [strip_ansi(line) for line in self.app._transcript_of(chat, WIDTH)]
 
     def photo_row(self, message_id: int = PHOTO_MESSAGE) -> int:
         chat = self.app.chat
@@ -362,11 +377,76 @@ class VideoTests(PhotoCase):
         self.assertEqual(self.store.asked, [])
 
 
+class GateTests(unittest.TestCase):
+    """What the interface does when the reader has not opted into fetching.
+
+    Every other read this tool makes answers itself from the disk. A photo
+    cannot, so the promise changes the first time one is fetched -- and until
+    that is allowed, a photo has to look like what it is: something the tool is
+    not going to go and get.
+    """
+
+    def setUp(self) -> None:
+        off = mock.patch.dict(os.environ, {}, clear=False)
+        off.start()
+        self.addCleanup(off.stop)
+        os.environ.pop(images.FETCH_VARIABLE, None)
+        self.reader = build_reader()
+        self.addCleanup(self.reader.close)
+        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
+        self.store = FakeStore()
+        self.app._photos = self.store
+        self.app._photos_supported = True
+        self.app.load_rooms()
+        self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM))
+        self.app.render(WIDTH, HEIGHT)
+
+    def transcript(self) -> list[str]:
+        chat = self.app.chat
+        assert chat is not None
+        return [strip_ansi(line) for line in self.app._transcript_of(chat, WIDTH)]
+
+    def test_the_label_does_not_offer_to_open(self) -> None:
+        line = next(line for line in self.transcript() if "[사진]" in line)
+        self.assertNotIn("▸", line)
+        self.assertNotIn("▾", line)
+
+    def test_the_photo_is_still_named(self) -> None:
+        self.assertTrue(any("[사진]" in line for line in self.transcript()))
+
+    def test_a_click_on_the_label_does_nothing(self) -> None:
+        self.assertFalse(self.app.toggle_photo(PHOTO_MESSAGE))
+        chat = self.app.chat
+        assert chat is not None
+        self.assertEqual(chat.opened_photos, set())
+
+    def test_nothing_is_ever_asked_of_the_store(self) -> None:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.app.render(WIDTH, HEIGHT)
+        self.assertEqual(self.store.asked, [])
+
+    def test_no_placement_is_made(self) -> None:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.app.render(WIDTH, HEIGHT)
+        self.assertEqual(self.app.placements, [])
+        self.assertEqual(self.app.photo_escapes(), "")
+
+    def test_no_failure_notice_is_shown(self) -> None:
+        # A label that never offered to open has nothing to apologise for.
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        chat = self.app.chat
+        assert chat is not None
+        self.assertEqual(chat.notice, "")
+
+
 class PaneTests(PhotoCase):
     """A picture belongs to one pane's column, not to the screen."""
 
     WIDE = 120
     """Wide enough for two panes; at WIDTH only one fits."""
+
+    NARROW = 60
+    """Narrow enough that only the focused pane is painted."""
 
     def second_pane(self) -> None:
         other = next(r for r in self.app.rooms if r.id != GROUP_ROOM)
@@ -424,6 +504,52 @@ class PaneTests(PhotoCase):
             self.skipTest("the photo's label is not on screen in this layout")
         self.app.handle(Key.CLICK, f"{screen},10")
         self.assertIn(PHOTO_MESSAGE, pane.opened_photos)
+
+    def test_a_hidden_pane_has_its_photo_withdrawn(self) -> None:
+        """A pane the window is too narrow to show must not leave an image behind.
+
+        `_visible_panes` slides rather than closing anything, so the conversation
+        is still open when its column stops being painted -- and a placement
+        that outlives its column floats over whichever pane took the space.
+        """
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.second_pane()
+        self.scroll_photo_into_view()
+        self.assertTrue(self.app.placements)
+        self.app.photo_escapes()
+        self.app.render(self.NARROW, HEIGHT)
+        geometry = self.app._pane_geometry
+        assert geometry is not None
+        self.assertNotIn(GROUP_ROOM, [p.room.id for p in geometry[3]])
+        self.assertEqual(self.app.placements, [])
+        # The frame is painted and the escapes written together, the way the
+        # loop does it, so the withdrawal rides out with the narrowed frame.
+        self.assertIn("a=d", self.app.photo_escapes())
+
+    def test_moving_between_panes_does_not_redraw_a_photo(self) -> None:
+        """Tab changes which pane the keyboard is in, and nothing about the image."""
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.second_pane()
+        self.scroll_photo_into_view()
+        self.app.photo_escapes()
+        before = list(self.app.placements)
+        self.app.handle(Key.TAB, "")
+        self.app.render(self.WIDE, HEIGHT)
+        self.assertEqual(len(self.app.placements), len(before))
+        self.assertEqual(self.app.photo_escapes(), "")
+
+    def test_closing_every_pane_leaves_nothing_drawn(self) -> None:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.second_pane()
+        self.scroll_photo_into_view()
+        self.app.photo_escapes()
+        while self.app.chats:
+            self.app.handle(Key.ESCAPE, "")
+            self.app.render(self.WIDE, HEIGHT)
+            self.app.photo_escapes()
+        self.assertEqual(self.app.placements, [])
+        self.assertEqual(self.app._drawn, {})
+        self.assertEqual(self.app._transmitted, set())
 
     def test_a_click_on_the_rule_between_panes_does_nothing(self) -> None:
         self.second_pane()
