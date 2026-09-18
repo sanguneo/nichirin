@@ -519,6 +519,7 @@ class Reader:
             mentions_me=own is not None and any(one.user_id == own for one in mentions),
             reply=reply,
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
+            photo=model.photo_in(kind, extra),
         )
 
     def search(self, keyword: str, limit: int = 20) -> Iterator[Message]:

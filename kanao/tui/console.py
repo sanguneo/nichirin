@@ -186,6 +186,22 @@ class _CHARACTER(ctypes.Union):
     _fields_ = [("UnicodeChar", ctypes.c_wchar), ("AsciiChar", ctypes.c_char)]
 
 
+_LF_FACESIZE: Final = 32
+
+
+class _CONSOLE_FONT_INFOEX(ctypes.Structure):
+    """What the console says about the font it is drawing cells with."""
+
+    _fields_ = [
+        ("cbSize", wintypes.ULONG),
+        ("nFont", wintypes.DWORD),
+        ("dwFontSize", wintypes._COORD),
+        ("FontFamily", wintypes.UINT),
+        ("FontWeight", wintypes.UINT),
+        ("FaceName", ctypes.c_wchar * _LF_FACESIZE),
+    ]
+
+
 class _KEY_EVENT_RECORD(ctypes.Structure):
     _fields_ = [
         ("bKeyDown", wintypes.BOOL),
@@ -306,8 +322,61 @@ class Console:
         _restore_vt(self._mode)
         _restore_codepage(self._codepage)
 
-    def draw(self, lines: list[str], cursor: Optional[tuple[int, int]] = None) -> None:
+    def cell_pixels(self) -> Optional[tuple[int, int]]:
+        """Return how large one cell is, in device pixels, or None.
+
+        A picture has to be sized in pixels and the frame is laid out in cells,
+        so the two only agree if the cell's size is known. The macOS sibling
+        asks the terminal with ``CSI 16 t`` and waits for a reply; Windows does
+        not need to ask anybody — the console knows its own font, and
+        ``GetCurrentConsoleFontEx`` answers immediately and cannot be ignored
+        by a terminal that does not implement the query. Windows Terminal is
+        one that does not.
+        """
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        except (AttributeError, OSError):
+            return None
+        handle = kernel32.GetStdHandle(_STD_OUTPUT)
+        if handle in (0, -1, None):
+            return None
+        kernel32.GetCurrentConsoleFontEx.argtypes = (
+            wintypes.HANDLE,
+            wintypes.BOOL,
+            ctypes.POINTER(_CONSOLE_FONT_INFOEX),
+        )
+        kernel32.GetCurrentConsoleFontEx.restype = wintypes.BOOL
+        font = _CONSOLE_FONT_INFOEX()
+        font.cbSize = ctypes.sizeof(_CONSOLE_FONT_INFOEX)
+        if not kernel32.GetCurrentConsoleFontEx(
+            wintypes.HANDLE(handle), False, ctypes.byref(font)
+        ):
+            return None
+        width, height = int(font.dwFontSize.X), int(font.dwFontSize.Y)
+        return (width, height) if width > 0 and height > 0 else None
+
+    def forget(self) -> None:
+        """Discard the remembered frame so the next draw repaints every row.
+
+        A sixel picture is written into the cells the transcript left blank,
+        and a blank row that is still blank is exactly the row :meth:`draw`
+        skips — so without this the picture stays behind after it has moved.
+        """
+        self._painted = None
+
+    def draw(
+        self,
+        lines: list[str],
+        cursor: Optional[tuple[int, int]] = None,
+        overlay: str = "",
+    ) -> None:
         """Cut and pad every row, write what changed, and park the caret.
+
+        *overlay* is written after the frame and before the caret is parked:
+        a picture is not text and cannot live in a line, so the transcript
+        reserves blank rows and the escape that draws it is laid over them
+        here. It is passed through untouched — the caller has already decided
+        where it goes and how big it is.
 
         *cursor* is where the caret is parked afterwards. It matters more than
         it looks: a Korean IME draws its composition at the terminal caret, so
@@ -365,8 +434,10 @@ class Console:
                 for row, body in enumerate(painted)
                 if body != previous[row]
             ]
-            if not frame and cursor == self._painted_cursor:
+            if not frame and not overlay and cursor == self._painted_cursor:
                 return
+        if overlay:
+            frame.append(overlay)
         if cursor is None:
             frame.append(HIDE_CURSOR)
         else:

@@ -214,6 +214,86 @@ class Quote:
         }
 
 
+PHOTO_ADDRESS_KEYS: Final = ("url", "thumbnailUrl")
+"""Where a single photo's address lives, best first.
+
+The full-size address comes first on purpose: the terminal scales whatever it
+is given into the same cells, so a thumbnail is only a softer picture in the
+same space.
+"""
+
+PHOTO_LIST_KEYS: Final = ("imageUrls", "thumbnailUrls")
+"""The same for a multi-photo message, which stores lists instead."""
+
+
+def photo_address(attachment: dict[str, Any]) -> Optional[str]:
+    """Return the address of the picture to show, or None when there is none.
+
+    A multi-photo message shows its first picture: the transcript has one line
+    to spend on it, and the first is the one the client shows as the cover.
+    """
+    for key in PHOTO_ADDRESS_KEYS:
+        value = attachment.get(key)
+        if isinstance(value, str) and value.startswith("http"):
+            return value
+    for key in PHOTO_LIST_KEYS:
+        values = attachment.get(key)
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+    return None
+
+
+@dataclass(frozen=True)
+class Photo:
+    """Where a picture lives and how large it was sent.
+
+    The client stores an address rather than the picture, so this is what it
+    takes to go and get one. The size is what the transcript reserves rows
+    against before anything has been fetched — it is the *stored* size, which
+    a rotated photo can disagree with, so whatever is fetched is measured again.
+
+    Deliberately absent from :meth:`Message.as_json`: a picture is drawn in the
+    interface and nowhere else, and the commands' JSON stays exactly what it
+    was before photos existed.
+    """
+
+    url: str
+    width: int
+    height: int
+
+
+def photo_in(type_code: int, attachment: dict[str, Any]) -> Optional[Photo]:
+    """Return the picture a photo message carries, or None for anything else.
+
+    Only the kinds that really are pictures: a single photo and an album. A
+    video stores the same shaped attachment and is deliberately left out, so it
+    keeps its label rather than offering to open something that is not there.
+    """
+    if type_code not in (2, 27):
+        return None
+    url = photo_address(attachment)
+    if url is None:
+        return None
+    width = attachment.get("w") or _first_number(attachment.get("wl"))
+    height = attachment.get("h") or _first_number(attachment.get("hl"))
+    if not isinstance(width, int) or not isinstance(height, int):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return Photo(url=url, width=width, height=height)
+
+
+def _first_number(values: object) -> Optional[int]:
+    """The first usable number of an album's parallel size list."""
+    if isinstance(values, list):
+        for value in values:
+            if isinstance(value, int) and value > 0:
+                return value
+    return None
+
+
 @dataclass(frozen=True)
 class Message:
     """One message, already attributed to a named sender."""
@@ -233,6 +313,8 @@ class Message:
     """Whether the signed-in account is one of the ids this message named."""
     reply: Optional[Quote] = None
     replies_to_me: bool = False
+    photo: Optional[Photo] = None
+    """The picture this message carries, for the interface to draw on request."""
 
     @property
     def has_text(self) -> bool:
