@@ -49,6 +49,14 @@ _CELL_QUERY_SECONDS: Final = 0.05
 _SHIFT_PRESSED: Final = 0x0010
 CLEAR_BOX: Final = "\x15"
 """Ctrl+U, which empties the composer; it is passed through as itself."""
+SHOW_PHOTO: Final = "\x10"
+"""Ctrl+P, which opens the newest picture in the focused conversation.
+
+The composer holds the keyboard for as long as a room is open, so an ordinary
+letter cannot carry a shortcut -- it would simply be typed. A control character
+can, and this is the key the Windows branch settled on, where there is no click
+to offer instead.
+"""
 _HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
 _LOW_SURROGATE: Final = range(0xDC00, 0xE000)
 

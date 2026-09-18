@@ -46,7 +46,7 @@ from .worker import (
     Done,
     Job,
 )
-from .console import CLEAR_BOX, Console, Key, force_size
+from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
     Segment,
@@ -916,6 +916,7 @@ class App:
                     ("enter", "전송"),
                     ("↑↓", "scroll"),
                     ("tab", "방 전환"),
+                    ("^P", "사진"),
                     ("/open", "방 추가"),
                     ("/sum 30m", "요약"),
                     ("/older", "이전"),
@@ -1170,6 +1171,16 @@ class App:
         chat = self.chat
         return set() if chat is None else chat.opened_photos
 
+    def newest_photo(self) -> Optional[int]:
+        """The id of the newest message in the focused pane carrying a picture."""
+        chat = self.chat
+        if chat is None:
+            return None
+        for message in reversed(chat.messages):
+            if message.photo is not None:
+                return message.id
+        return None
+
     def toggle_photo(self, message_id: int) -> bool:
         """Open a message's picture, or close it if it is already open.
 
@@ -1209,6 +1220,32 @@ class App:
             self._keep_photo_in_view(message_id)
         self._settle_offset()
         return True
+
+    def _toggle_newest_photo(self, chat: ChatState) -> None:
+        """Open the newest picture in this conversation, or close what is open.
+
+        A click points at the picture it means. A key has nothing to point
+        with, so it takes the newest one -- which is the picture somebody means
+        when they ask for a picture at all -- and the same key closes it again.
+        Closing goes back through :meth:`toggle_photo` so the scroll position
+        the picture borrowed is handed back exactly as a second click hands it
+        back.
+        """
+        if not self._photos_drawable():
+            chat.notice = (
+                "이 터미널은 사진을 그리지 못합니다 "
+                f"({images.PROTOCOL_ENV}=sixel 로 지정할 수 있습니다)"
+            )
+            return
+        if chat.opened_photos:
+            for message_id in list(chat.opened_photos):
+                self.toggle_photo(message_id)
+            return
+        newest = self.newest_photo()
+        if newest is None:
+            chat.notice = "이 대화에는 사진이 없습니다"
+            return
+        self.toggle_photo(newest)
 
     def _settle_offset(self) -> None:
         """Hold the viewport inside what there is to scroll.
@@ -2034,6 +2071,8 @@ class App:
             if text == CLEAR_BOX:
                 chat.draft = ""
                 chat.caret = 0
+            elif text == SHOW_PHOTO:
+                self._toggle_newest_photo(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -2409,6 +2448,8 @@ class App:
             # Joined rather than indexed: a nickname routinely holds spaces,
             # and "Some Name (handle)" is one name, not two arguments.
             self._real(chat, " ".join(arguments))
+        elif name in ("photo", "pic"):
+            self._toggle_newest_photo(chat)
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name in ("back", "close"):
@@ -2419,7 +2460,7 @@ class App:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
                 "(사용 가능: /open 방 · /close · /sum 30m · /older · "
-                "/real 닉 · /export · /quit)"
+                "/real 닉 · /photo · /export · /quit)"
             )
 
     def _open_beside(self, chat: ChatState, wanted: str) -> None:

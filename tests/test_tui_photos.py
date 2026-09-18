@@ -16,11 +16,11 @@ from unittest.mock import patch
 
 from kamado.tui.app import App
 from kamado.tui import images
-from kamado.tui.console import Key
+from kamado.tui.console import SHOW_PHOTO, Key
 from kamado.tui.layout import display_width, strip_ansi
 from kamado.tui.theme import Theme
 
-from tests.fixtures import GROUP_ROOM, build_reader
+from tests.fixtures import DIRECT_ROOM, GROUP_ROOM, build_reader
 
 WIDTH = 80
 HEIGHT = 24
@@ -181,6 +181,93 @@ class ClickTests(PhotoCase):
         chat = self.app.chat
         assert chat is not None
         self.assertEqual(chat.draft, "")
+
+
+class NewestPhotoKeyTests(PhotoCase):
+    """Ctrl+P and /photo, which open a picture with nothing to point at.
+
+    The Windows branch has no click to offer at all, so this key is what both
+    sides share; here it stands beside the click rather than replacing it.
+    Having no row to aim at, it takes the newest picture -- which is the one
+    somebody means when they ask for a picture -- and closes what is open.
+    """
+
+    def press(self) -> None:
+        self.app.handle("char", SHOW_PHOTO)
+
+    def opened(self) -> set[int]:
+        chat = self.app.chat
+        assert chat is not None
+        return chat.opened_photos
+
+    def notice(self) -> str:
+        chat = self.app.chat
+        assert chat is not None
+        return chat.notice
+
+    def test_the_key_opens_the_newest_picture(self) -> None:
+        self.press()
+        self.assertEqual(self.opened(), {MULTI_PHOTO_MESSAGE})
+
+    def test_the_newest_picture_is_not_the_newest_message(self) -> None:
+        # The video is newer than both pictures and carries none of its own.
+        self.assertEqual(self.app.newest_photo(), MULTI_PHOTO_MESSAGE)
+
+    def test_pressing_it_again_closes_what_it_opened(self) -> None:
+        self.press()
+        self.press()
+        self.assertEqual(self.opened(), set())
+
+    def test_it_closes_a_picture_the_click_opened(self) -> None:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.press()
+        self.assertEqual(self.opened(), set())
+
+    def test_the_key_does_not_type_into_the_draft(self) -> None:
+        self.press()
+        chat = self.app.chat
+        assert chat is not None
+        self.assertEqual(chat.draft, "")
+
+    def test_the_command_opens_and_closes_the_same_picture(self) -> None:
+        self.app._run_command("/photo")
+        self.assertEqual(self.opened(), {MULTI_PHOTO_MESSAGE})
+        self.app._run_command("/pic")
+        self.assertEqual(self.opened(), set())
+
+    def test_the_command_is_listed_among_the_others(self) -> None:
+        self.app._run_command("/없는명령")
+        self.assertIn("/photo", self.notice())
+
+    def test_a_terminal_that_cannot_draw_says_how_to_ask_for_one(self) -> None:
+        self.app._protocol = images.NONE
+        self.press()
+        self.assertEqual(self.opened(), set())
+        self.assertIn("KAMADO_IMAGE", self.notice())
+        self.assertEqual(self.store.asked, [])
+
+
+class PhotolessRoomKeyTests(unittest.TestCase):
+    """The same key in a conversation that never carried a picture."""
+
+    def setUp(self) -> None:
+        self.reader = build_reader()
+        self.addCleanup(self.reader.close)
+        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=True))
+        self.store = FakeStore()
+        self.app._photos = self.store
+        self.app._protocol = images.KITTY
+        self.app.load_rooms()
+        self.app.open_room(next(r for r in self.app.rooms if r.id == DIRECT_ROOM))
+        self.app.render(WIDTH, HEIGHT)
+
+    def test_it_says_there_is_no_picture_rather_than_nothing(self) -> None:
+        chat = self.app.chat
+        assert chat is not None
+        self.assertIsNone(self.app.newest_photo())
+        self.app.handle("char", SHOW_PHOTO)
+        self.assertIn("사진이 없습니다", chat.notice)
+        self.assertEqual(self.store.asked, [])
 
 
 class ScrollTests(PhotoCase):
