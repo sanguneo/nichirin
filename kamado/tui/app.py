@@ -46,7 +46,15 @@ from .worker import (
     Done,
     Job,
 )
-from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
+from .console import (
+    CLEAR_BOX,
+    SELECT_MODE,
+    SHOW_PHOTO,
+    Console,
+    Key,
+    force_size,
+    mouse_default,
+)
 from .layout import (
     ELLIPSIS,
     Segment,
@@ -100,6 +108,13 @@ terminal. Scrolling asks for a new crop every line, so the keys are unbounded
 and something has to be dropped; 64 covers a picture moving through a pane
 several times over without letting one room's photos grow without limit.
 """
+
+CLICK_HINT = "드래그 복사"
+SELECT_HINT = "클릭 복귀"
+"""What Ctrl+G does next, which is the half of the switch not currently on."""
+SELECT_NOTICE = "선택 모드: 드래그로 긁고 ⌘C 복사 · ^G 로 사진·링크 클릭 복귀"
+CLICK_NOTICE = "클릭 모드: 사진·링크 클릭 · ^G 로 드래그 복사"
+"""Said on the switch itself, because the hint row alone never explains why."""
 
 WHEEL_LINES = 3
 """How far one wheel notch moves the view, matching a terminal's own step."""
@@ -229,6 +244,13 @@ class App:
         """Which of them the keyboard and the composer belong to."""
         self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
+        self.mouse_clicks = mouse_default()
+        """Whether the terminal reports buttons here instead of selecting text.
+
+        Held rather than asked of the console, so every caller — the loop that
+        carries it to the terminal and the frame that says which mode is on —
+        reads one answer, and a test can drive the switch without a terminal.
+        """
         self.running = True
         self.zone = KST
         self.drafts: dict[int, str] = {}
@@ -917,6 +939,7 @@ class App:
                     ("↑↓", "scroll"),
                     ("tab", "방 전환"),
                     ("^P", "사진"),
+                    ("^G", CLICK_HINT if self.mouse_clicks else SELECT_HINT),
                     ("/open", "방 추가"),
                     ("/sum 30m", "요약"),
                     ("/older", "이전"),
@@ -1975,6 +1998,11 @@ class App:
     # -- input --------------------------------------------------------------
 
     def handle(self, kind: str, text: str) -> None:
+        if kind == "char" and text == SELECT_MODE:
+            # Taken before anything else can read it as a character: the
+            # composer and the list filter both type what they are given.
+            self._toggle_mouse()
+            return
         if self.chat is not None and not self.picking:
             self._handle_chat(kind, text)
         elif self.show_friends:
@@ -2123,6 +2151,20 @@ class App:
                 chat.offset = 0
         if chat.offset == 0:
             chat.unseen = 0
+
+    def _toggle_mouse(self) -> None:
+        """Switch between clicking photos and selecting text with the mouse.
+
+        Only the flag moves here. The escape that changes what the terminal
+        reports is written by the loop, which is the one place that holds the
+        console — and it writes nothing when the mode did not change.
+        """
+        self.mouse_clicks = not self.mouse_clicks
+        said = CLICK_NOTICE if self.mouse_clicks else SELECT_NOTICE
+        self.status = said
+        chat = self.chat
+        if chat is not None:
+            self._passing_notice(chat, said)
 
     def _click(self, position: str) -> None:
         """Act on the clicked cell: a photo toggles, a link opens.
@@ -2559,6 +2601,7 @@ class App:
         last_key_at = 0.0
         while self.running:
             width, height = force_size() or console.size
+            console.set_mouse(self.mouse_clicks)
             self._pump(width)
             self._paint(console, width, height)
 
