@@ -17,6 +17,11 @@ class FakeWindows:
         self.control = 84
         self.actions: list[str] = []
         self.fail_submit = False
+        self.keeps_draft = False
+        """A client that never takes the message, leaving it in the box."""
+        self.unreadable = False
+        self.unreadable_after_submit = False
+        """A box that cannot be read once the Enter has been posted."""
 
     def chat_windows(self) -> list[ChatWindow]:
         return self.windows
@@ -25,6 +30,8 @@ class FakeWindows:
         return self.control or None
 
     def get_text(self, control: int) -> str:
+        if self.unreadable:
+            raise OSError("synthetic cross-process read failure")
         return self.draft
 
     def set_text(self, control: int, text: str) -> None:
@@ -35,12 +42,25 @@ class FakeWindows:
         self.actions.append("submit")
         if self.fail_submit:
             raise OSError("synthetic queue failure")
+        # The real client empties its input box when it takes the message,
+        # and that emptying is the only evidence a send has that it happened.
+        if self.unreadable_after_submit:
+            self.unreadable = True
+        elif not self.keeps_draft:
+            self.draft = ""
 
 
 class SendTests(unittest.TestCase):
     def setUp(self) -> None:
         self.backend = FakeWindows()
-        self.sender = Sender(self.backend, running=lambda: True)
+        self.settles = 0
+        self.sender = Sender(
+            self.backend, running=lambda: True, settle=self.settle, attempts=4
+        )
+
+    def settle(self) -> None:
+        """Stand in for the wait between looks at the box; no test sleeps."""
+        self.settles += 1
 
     def test_empty_target_cannot_resolve_the_only_window(self) -> None:
         with self.assertRaises(KanaoError) as caught:
@@ -52,7 +72,9 @@ class SendTests(unittest.TestCase):
         self.backend.draft = "an unfinished synthetic draft"
         result = self.sender.send("Synthetic room", "replacement")
         self.assertTrue(result["submitted"])
-        self.assertEqual(self.backend.draft, "replacement")
+        # The box is empty because the client took the message, which is the
+        # same fact `submitted` now reports.
+        self.assertEqual(self.backend.draft, "")
         self.assertEqual(self.backend.actions, ["fill", "submit"])
 
     def test_clearing_a_draft_is_reported_rather_than_done_quietly(self) -> None:
@@ -79,6 +101,41 @@ class SendTests(unittest.TestCase):
         self.assertTrue(result["submitted"])
         self.assertNotIn("sent", result)
         self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_a_client_that_took_the_message_is_not_waited_for(self) -> None:
+        """The ceiling is three seconds; the cost on a working client is one read."""
+        self.sender.send("Synthetic room", "synthetic text")
+        self.assertEqual(self.settles, 0)
+
+    def test_a_message_left_in_the_box_is_not_reported_as_submitted(self) -> None:
+        """Posting Enter only queues a keystroke; the client may never act on it."""
+        self.backend.keeps_draft = True
+        with self.assertRaises(KanaoError) as caught:
+            self.sender.send("Synthetic room", "synthetic text")
+        self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
+        self.assertEqual(self.backend.draft, "synthetic text")
+        self.assertEqual(self.settles, 3)
+
+    def test_an_unreadable_box_is_not_a_successful_submission(self) -> None:
+        """An unknown outcome reported as success is the failure being fixed."""
+        self.backend.unreadable_after_submit = True
+        with self.assertRaises(KanaoError) as caught:
+            self.sender.send("Synthetic room", "synthetic text")
+        self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
+
+    def test_the_box_is_read_until_it_empties_rather_than_once(self) -> None:
+        """A client that is slow to take the message has not failed to take it."""
+        self.backend.keeps_draft = True
+        counted = self.settle
+
+        def settle_then_clear() -> None:
+            counted()
+            if self.settles == 2:
+                self.backend.draft = ""
+
+        self.sender._settle = settle_then_clear
+        self.assertTrue(self.sender.send("Synthetic room", "synthetic text")["submitted"])
+        self.assertEqual(self.settles, 2)
 
     def test_duplicate_exact_titles_are_refused(self) -> None:
         self.backend.windows.append(ChatWindow(43, "Synthetic room"))

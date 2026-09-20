@@ -233,8 +233,9 @@ push of small JSON messages, and SSE rides plain HTTP, passes any proxy a
   and a main window taken out of the tray is put back; a window the user
   already had open is never moved.
 - Space sends at least two seconds apart. The caller enforces the interval.
-- `submitted: true` means Enter was queued, not delivered. Read `context` or
-  `messages` to find a new matching `fromMe` record before claiming success.
+- `submitted: true` means the input box emptied, not that the message was
+  delivered. Read `context` or `messages` to find a new matching `fromMe`
+  record before claiming success.
   Never automatically retry an uncertain send.
 - `WINDOW_NOT_FOUND`: the room's window is closed. Retry once with `--open`,
   which opens it from the room list without moving the cursor and refuses

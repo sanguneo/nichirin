@@ -5,8 +5,10 @@ the real client: a message is placed in the chat window's ``RICHEDIT50W`` input
 with ``EM_REPLACESEL`` and submitted by posting Enter, both delivered to the
 control's message queue directly. The mouse is never moved and focus is never
 taken. WM_SETTEXT does not update this client's send-enabled state and must
-not be substituted here. Queue acceptance is reported as submitted, not sent;
-only a read-back of the new message can establish delivery.
+not be substituted here. A send is reported as submitted only once the input
+box has emptied, which is the client's own account of having taken the
+message; that is still not delivery, for which only a read-back of the new
+message will do.
 
 The catch this design accepts: the target conversation must be open in its own
 chat window. KakaoTalk titles that window with the room name, which is how the
@@ -49,6 +51,13 @@ POLL_SECONDS = 0.05
 """How often to look for the window a posted double-click produces."""
 POLL_ATTEMPTS = 40
 """How long to keep looking before treating the row as the wrong one."""
+SUBMIT_ATTEMPTS = 60
+"""How many times to look for an emptied input box before giving up on a send.
+
+With :data:`POLL_SECONDS` between looks this is three seconds, and it is a
+ceiling rather than a cost: a client that has taken the message empties the
+box before the first look.
+"""
 
 
 def row_geometry(dpi: int) -> tuple[int, int, int]:
@@ -339,10 +348,14 @@ class Sender:
         backend: WindowBackend,
         running: Callable[[], bool],
         opener: Optional[RoomOpener] = None,
+        settle: Optional[Callable[[], None]] = None,
+        attempts: int = SUBMIT_ATTEMPTS,
     ) -> None:
         self._backend = backend
         self._running = running
         self._opener = opener
+        self._settle = settle if settle is not None else (lambda: time.sleep(POLL_SECONDS))
+        self._attempts = attempts
 
     def resolve(
         self,
@@ -383,6 +396,28 @@ class Sender:
             )
         return matches[0]
 
+    def _confirm_sent(self, control: int) -> None:
+        """Wait for the input box to empty, which is what says the text left it.
+
+        Posting Enter only puts a keystroke on the control's queue, so
+        :meth:`WindowBackend.submit` returning says nothing about whether
+        KakaoTalk acted on it. The box going empty is the client's own account
+        of having taken the message, and reading it is something this module
+        already does once before the write.
+
+        An unreadable box is **not** an empty one. A cross-process read that
+        times out is an unknown outcome, and reporting an unknown as submitted
+        is the specific failure this exists to prevent, so the ``OSError`` is
+        left to travel: the caller turns it into ``SEND_FAILED``, and a send
+        that may have happened is never claimed to have.
+        """
+        for attempt in range(self._attempts):
+            if not self._backend.get_text(control).strip():
+                return
+            if attempt + 1 < self._attempts:
+                self._settle()
+        raise OSError("the message stayed in the input box; it was not sent")
+
     def send(
         self,
         room: str,
@@ -395,7 +430,9 @@ class Sender:
         """Type *text* into *room*'s window and send it, or preview when dry.
 
         The message is validated and the window resolved before anything is
-        typed. Queue acceptance is not proof of network delivery.
+        typed. ``submitted`` says the input box emptied, which is the client's
+        own account of having taken the message; it is still not proof of
+        network delivery.
         """
         if not text or not text.strip():
             raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
@@ -432,6 +469,7 @@ class Sender:
         try:
             self._backend.set_text(control, text)
             self._backend.submit(control)
+            self._confirm_sent(control)
         except OSError as error:
             raise KanaoError(
                 ErrorCode.SEND_FAILED, f"could not send to {window.title!r}: {error}",

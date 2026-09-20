@@ -116,4 +116,6 @@ class SendCommandTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertTrue(body["ok"])
         self.assertIs(body["clearedDraft"], True)
-        self.assertEqual(self.backend.draft, "synthetic")
+        # The unfinished draft is gone, and so is the message that replaced
+        # it: the client emptying the box is what licensed reporting the send.
+        self.assertEqual(self.backend.draft, "")

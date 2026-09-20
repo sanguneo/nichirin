@@ -94,6 +94,9 @@ class FakeDesktop:
 
     def submit(self, control: int) -> None:
         self.actions.append("submit")
+        # As the real client does: taking the message empties the box, which
+        # is what the send then reads back to confirm it went.
+        self.draft = ""
 
 
 def opener(desktop: FakeDesktop, rows: int = 6, remembered: Path | None = None) -> RoomOpener:

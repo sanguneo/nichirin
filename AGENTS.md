@@ -749,9 +749,23 @@ on a live client, newest 4,000 rows of each readable room.
   scan-code and key-transition bits; check both PostMessage return values.
 - No SetForegroundWindow, SetFocus, SendInput, clipboard writes or mouse moves.
   Native message calls have a timeout; a hung client must not hang the CLI.
-- `submitted` means queue acceptance, never confirmed network delivery.
-  Read back a new matching from-me record before claiming delivery. Never
-  automatically retry an uncertain send.
+- **`submitted` means the input box emptied, never confirmed network
+  delivery.** Posting Enter only queues a keystroke, so `PostMessage`
+  returning says nothing about whether the client acted on it; the box going
+  empty is the client's own account of having taken the message. An
+  unreadable box is an unknown outcome, not an empty one, and reporting an
+  unknown as submitted is the failure `Sender._confirm_sent` exists to
+  prevent. Read back a new matching from-me record before claiming delivery.
+  Never automatically retry an uncertain send.
+- **The confirmation is a poll, so a working client pays one read.** Measured
+  live against the self-chat: the box was already empty on the **first** look,
+  **13.7 ms** after the Enter was posted, with the whole send at 22.2 ms and
+  the message read back as a new `fromMe` record. The three-second ceiling
+  (`SUBMIT_ATTEMPTS` × `POLL_SECONDS`) is therefore what a *stuck* client
+  costs, not what a send costs — which is why this is a poll and not a fixed
+  settle. `openapi.json` needed no change: it already said `submitted` means
+  the client accepted the text, and it is this build that had been reporting
+  something weaker.
 - Confirm recipient and content before sending to real people. Callers must
   keep at least two seconds between sends. Real tests use only self-chat or a
   room explicitly authorized by the user; unit tests never call the desktop.

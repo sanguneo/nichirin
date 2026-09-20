@@ -140,8 +140,8 @@ streams as it will.
 
 ## Sending
 
-`send` returns `submitted: true` when the client **accepted** the text, which
-is queue acceptance and not confirmed delivery. A caller that needs proof
+`send` returns `submitted: true` when the client **accepted** the text — the
+input box emptied — which is not confirmed delivery. A caller that needs proof
 reads the room back and looks for a new `fromMe` message. `clearedDraft`
 reports that an unfinished line was in the box and is now gone — it is
 reported rather than refused, so a caller can say so.
