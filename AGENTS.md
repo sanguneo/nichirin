@@ -191,17 +191,23 @@ keystrokes. Everything below is what it took to get there.
   reading once the way it used to. The first read of the room list on a
   freshly drawn window then blocks while the client fills it: **41 s for 264
   rows**.
-- **A client whose main window is closed can quit itself, so the drawn window
-  is parked, never closed back.** Observed three times: the process outlived
-  the close by 3 s and was gone within the minute — once while a minimized
-  chat window was still open, so it is the *main* window going away that ends
-  the client rather than merely the last window. It is **not** reliable: the
-  same client has also sat windowless for 4 m 32 s without quitting, so this
-  is a risk to design against rather than a timer to predict. Closing a window
-  that was found closed can therefore take the messenger down and cannot be
-  made safe by waiting. Restoration therefore minimizes a window it had to
-  draw instead of closing it, which leaves the screen just as clear and the
-  client running.
+- **A client left with no windows is one macOS may kill, so the drawn window
+  is parked and never closed back.** The client does not quit itself. With
+  nothing open, AppKit turns on automatic termination for it — the unified log
+  shows `_NSEnableAutomaticTerminationAndLog ... No windows open yet` and then
+  `_kLSApplicationWouldBeTerminatedByTALKey=1` — which tells the system it may
+  be taken away silently. It was: `runningboardd` terminated KakaoTalk with
+  `CacheDeleteAppContainerCaches requesting termination assertion`, exit reason
+  `0xBADDD15C OS_REASON_RUNNINGBOARD`, and no crash report was written. The
+  machine measured on sat at **99% disk (3.6 GB free)** with the cache daemon
+  failing to reclaim 11 GB, which is what kept sending it after windowless
+  apps — and why the same client also sat windowless for 4 m 32 s untouched
+  when nothing was hunting. Checking `Info.plist` proves nothing here: neither
+  `NSSupportsAutomaticTermination` nor `NSSupportsSuddenTermination` is
+  declared, because AppKit enables it at runtime. So closing a window that was
+  found closed hands the client to the system, and no amount of waiting makes
+  it safe. Restoration minimizes the window it had to draw instead, which
+  leaves the screen just as clear while keeping one window open.
 - **A sent message is confirmed by reading it back**, never by the submit call
   alone; `submitted` means the composer emptied, delivery is proven by a new
   from-me row in the log.

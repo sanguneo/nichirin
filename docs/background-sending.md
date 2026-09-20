@@ -107,14 +107,18 @@ matching `fromMe` row was found.
 | Closed room | Row `AXPress`, `AXConfirm`, `AXOpen` were rejected. Process-directed double-click, including window-number fields, did not create the room. The live test room was initially prepared with the existing visible opener. |
 | Second physical display / other Spaces | Not live-verified. Only one display was attached. Synthetic geometry tests cover negative coordinates; this does not replace a multi-display or Space test. |
 
-Restoration parks a window it had to draw rather than closing it back. The
-client can quit a while after its main window goes away — observed three
-times, once while a minimized chat window was still open, so it is the main
-window rather than the last window that ends it. It does not happen every
-time: the same client also sat windowless for 4 m 32 s without quitting, so
-this is a hazard to avoid rather than a delay to wait out. Closing the window
-back would make taking the messenger down part of the tidying, and a
-minimized window leaves the screen just as clear.
+Restoration parks a window it had to draw rather than closing it back. A
+client left with no windows is one the system may take away: AppKit turns on
+automatic termination for it (`_NSEnableAutomaticTerminationAndLog ... No
+windows open yet`, then `_kLSApplicationWouldBeTerminatedByTALKey=1`), and
+`runningboardd` then terminated KakaoTalk with `CacheDeleteAppContainerCaches
+requesting termination assertion` — exit reason `0xBADDD15C
+OS_REASON_RUNNINGBOARD`, no crash report. The machine was at 99% disk with the
+cache daemon unable to reclaim 11 GB, which is what kept it hunting; the same
+client sat windowless for 4 m 32 s untouched when it was not. So this is a
+hazard to avoid rather than a delay to wait out, and closing the window back
+would make handing the messenger to the system part of the tidying. A
+minimized window leaves the screen just as clear and keeps it out of reach.
 
 Regression sequence:
 
