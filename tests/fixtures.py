@@ -58,7 +58,7 @@ CREATE TABLE chatMembers (chatId INTEGER, userId INTEGER, isActive INTEGER);
 LOG_SCHEMA = """
 CREATE TABLE chatLogs (
     logId INTEGER PRIMARY KEY, authorId INTEGER, type INTEGER, message TEXT,
-    attachement TEXT, sendAt INTEGER, deleted INTEGER
+    attachement TEXT, sendAt INTEGER, deleted INTEGER, threadId INTEGER
 );
 """
 
@@ -101,8 +101,17 @@ def _connect(script: str, rows: Optional[dict[str, list[tuple]]] = None) -> sqli
     for table, values in (rows or {}).items():
         if not values:
             continue
-        placeholders = ", ".join("?" * len(values[0]))
-        connection.executemany(f"INSERT INTO {table} VALUES ({placeholders})", values)
+        # Rows name the columns they fill, left to right, so a row may stop
+        # short of a column the client added later — and one row carrying that
+        # column does not oblige every other row to restate it.
+        width = max(len(value) for value in values)
+        names = [column[1] for column in connection.execute(f"PRAGMA table_info({table})")]
+        filled = ", ".join(names[:width])
+        placeholders = ", ".join("?" * width)
+        connection.executemany(
+            f"INSERT INTO {table} ({filled}) VALUES ({placeholders})",
+            [tuple(value) + (None,) * (width - len(value)) for value in values],
+        )
     connection.commit()
     return connection
 

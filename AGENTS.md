@@ -166,7 +166,8 @@ Taken from a live client, not guessed.
   there is no binary plist to parse.
 - Messages live in `chat_data/chatLogs_<roomId>.edb`, table `chatLogs`, columns
   `logId`, `authorId`, `type`, `message`, `attachement` (sic), `sendAt`,
-  `deleted`.
+  `deleted` and `threadId` — the last being where a reply now names the
+  message it answers, and the only one that may be missing from an older log.
 - **Order by `logId`, not `sendAt`.** `chatLogs` has no index on `sendAt`, so
   ordering by it scans and sorts every row; `logId` is the primary key. Over
   the newest 5,000 rows of a live room the two orders agreed exactly.
@@ -215,6 +216,30 @@ on a live client, newest 4,000 rows of each readable room.
 - **Parsing is keyed on `src_logId`, not on the type.** What makes a message a
   reply here is that it recorded a source; reading the type instead would drop
   every quote the moment the client numbers one differently.
+- **A reply is recorded two ways now, and the newer one carries no copy of
+  what it answered.** The client moved a reply out of the attachment and onto
+  a **`threadId`** column: an ordinary `type = 1` row that only points at the
+  message it answers. Reading the attachment alone therefore lost every recent
+  reply and the screen stopped drawing quote lines with nothing failing.
+  Measured here on 2026-09-21, newest 4,000 rows: the busiest room held **346
+  `threadId` replies against 26 `src_logId`**, and its newest 50 held **9
+  against 1**; the newest `src_logId` anywhere on this account was **three days
+  old** (2026-09-18). The same move was measured on the macOS side two days
+  earlier, so it is a client change rather than a platform difference.
+  `Reader._threaded_quote` reads the answered row back, which means a threaded
+  quote says what that message says *now* and goes when that message goes.
+  A thread naming a row this database does not hold — or one that was deleted
+  — quotes nothing rather than an empty line attributed to nobody, and a row
+  naming itself is not a reply to itself. Where both shapes are present the
+  attachment's own copy wins, because it is what the sender was looking at.
+  Live after the change: 9 quote lines across the account's newest-50 windows
+  where there had been none, the busiest room's 50-message window costing
+  36.7 ms with eight read-backs in it.
+- **The column is asked for, not assumed.** Naming `threadId` in the `SELECT`
+  fails the whole statement on a log written before the column existed, so
+  `Reader._selection` reads the schema once per room and substitutes `NULL`.
+  Unlike the macOS build, a room here *is* its own database, so the answered
+  row is found by `logId` alone — `chatLogs` carries no `chatId` to narrow by.
 - **A mention is an ordinary `type = 1` row** whose attachment holds
   `mentions`, each entry exactly `{"at": [offset], "len": n, "user_id": id}` —
   29 observed, every id an integer, every `at` a one-element list. `@전체` is

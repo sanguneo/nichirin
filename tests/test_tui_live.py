@@ -55,7 +55,8 @@ class LiveTests(unittest.TestCase):
     def arrive(self, log_id: int, text: str, room_id: int = DIRECT_ROOM, author: int = PEER_ID) -> None:
         connection = self.cache.databases[paths.chat_log_name(room_id)]
         connection.execute(
-            "INSERT INTO chatLogs VALUES (?, ?, 1, ?, NULL, ?, 0)",
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (?, ?, 1, ?, NULL, ?, 0)",
             (log_id, author, text, 1_800_000_000 + log_id),
         )
         connection.commit()

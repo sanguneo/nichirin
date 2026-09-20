@@ -33,6 +33,14 @@ from .snapshot import SnapshotCache, SnapshotSource
 _SELF_CHAT_TITLE = "나와의 채팅"
 _GROUP_TITLE_MEMBERS = 3
 
+_THREAD_COLUMN = "threadId"
+"""Where a newer client points a reply at the message it answers.
+
+The older shape kept the reply's own copy of what it answered inside the
+attachment.  This one writes an ordinary text row and records only the id, so
+the quote has to be read back out of the conversation.
+"""
+
 
 class Reader:
     """Read-only access to one signed-in KakaoTalk profile."""
@@ -62,6 +70,7 @@ class Reader:
         self._names: Optional[dict[int, str]] = None
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
+        self._selections: dict[int, str] = {}
 
     @property
     def user_directory(self) -> Path:
@@ -405,6 +414,25 @@ class Reader:
         name = paths.chat_log_name(room_id)
         return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
 
+    def _selection(self, room_id: int, connection: sqlite3.Connection) -> str:
+        """Name the columns one message is read from, for this room's log.
+
+        ``threadId`` is where the client now records which message a reply
+        answers, and a log written before it existed does not have the column
+        at all — naming a column that is not there fails the whole statement
+        rather than that one row, so the schema is asked instead of assumed.
+        The answer is kept per room because it is a property of the file, and
+        a client that gains the column mid-session is a client that has been
+        reinstalled underneath a reader that is already running.
+        """
+        known = self._selections.get(room_id)
+        if known is None:
+            columns = {column[1] for column in connection.execute("PRAGMA table_info(chatLogs)")}
+            thread = _THREAD_COLUMN if _THREAD_COLUMN in columns else "NULL"
+            known = f"logId, authorId, type, message, attachement, sendAt, {thread}"
+            self._selections[room_id] = known
+        return known
+
     def messages(
         self,
         room_id: int,
@@ -425,7 +453,8 @@ class Reader:
         again.  KakaoTalk backfills from the server after a reconnection, so
         a room really can gain thousands of rows between two polls.
         """
-        sql = "SELECT logId, authorId, type, message, attachement, sendAt FROM chatLogs"
+        connection = self._logs(room_id)
+        sql = f"SELECT {self._selection(room_id, connection)} FROM chatLogs"
         parameters: list[object] = []
         conditions = ["COALESCE(deleted, 0) = 0"]
         if before_id is not None:
@@ -439,7 +468,7 @@ class Reader:
         sql += f" ORDER BY logId {'ASC' if forwards else 'DESC'} LIMIT ?"
         parameters.append(limit)
 
-        rows = self._logs(room_id).execute(sql, parameters).fetchall()
+        rows = connection.execute(sql, parameters).fetchall()
         if not forwards:
             rows = list(reversed(rows))
         return [self._message(room_id, row) for row in rows]
@@ -490,7 +519,7 @@ class Reader:
         return None if row is None or row[0] is None else int(row[0])
 
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
-        log_id, author, type_code, text, attachment, sent_at = tuple(row)
+        log_id, author, type_code, text, attachment, sent_at, thread = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
         known = self.names()
@@ -500,7 +529,11 @@ class Reader:
         # into message text, which would show words nobody typed.
         extra = model.parse_attachment(attachment)
         mentions = model.mentions_in(extra, known.get)
-        reply = model.quoted_in(extra, known.get)
+        # Where both shapes are present the attachment's own copy wins: it is
+        # what the sender was actually looking at when they answered.
+        reply = model.quoted_in(extra, known.get) or self._threaded_quote(
+            room_id, int(log_id), thread
+        )
         return Message(
             id=int(log_id),
             room_id=room_id,
@@ -520,6 +553,51 @@ class Reader:
             reply=reply,
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
             photo=model.photo_in(kind, extra),
+        )
+
+    def _threaded_quote(
+        self, room_id: int, log_id: int, thread: Any
+    ) -> Optional[model.Quote]:
+        """Read back the message a threaded reply answers.
+
+        Where the attachment carried the reply's own copy of what it answered,
+        a thread carries only the id — so this is what that message says
+        *now*, and it goes when that message goes.  A thread naming a row this
+        database does not hold quotes nothing rather than an empty line
+        attributed to nobody; the reply still reads as an ordinary message,
+        which is what it looks like in the client too.
+
+        Unlike the macOS build, every room here is its own database, so the
+        answered row is found by ``logId`` alone — ``chatLogs`` carries no
+        ``chatId`` column to narrow by.
+        """
+        try:
+            source = int(thread)
+        except (TypeError, ValueError):
+            return None
+        # A row that names itself is answering nothing, and quoting it would
+        # stack a message above a copy of itself.
+        if source <= 0 or source == log_id:
+            return None
+        connection = self._logs(room_id)
+        row = connection.execute(
+            f"SELECT {self._selection(room_id, connection)} FROM chatLogs "
+            "WHERE logId = ? AND COALESCE(deleted, 0) = 0",
+            (source,),
+        ).fetchone()
+        if row is None:
+            return None
+        _log_id, author, type_code, text, _attachment, _sent_at, _thread = tuple(row)
+        sender_id = int(author or 0)
+        kind = int(type_code or 0)
+        return model.Quote(
+            message_id=source,
+            sender_id=sender_id,
+            sender=self.names().get(sender_id),
+            # A feed's text is the client's own JSON, which is not something
+            # anybody said; it is dropped here exactly as it is for a message.
+            text="" if kind == model.FEED_MESSAGE or not isinstance(text, str) else text,
+            type=kind,
         )
 
     def search(self, keyword: str, limit: int = 20) -> Iterator[Message]:
@@ -544,7 +622,7 @@ class Reader:
                 # Feeds are excluded rather than filtered afterwards: their
                 # message column is JSON, so a search for an ordinary word
                 # like "type" would match rows that show no text at all.
-                "SELECT logId, authorId, type, message, attachement, sendAt FROM chatLogs "
+                f"SELECT {self._selection(room.id, connection)} FROM chatLogs "
                 "WHERE COALESCE(deleted, 0) = 0 AND type != ? AND message LIKE ? "
                 "ORDER BY logId DESC LIMIT ?",
                 (model.FEED_MESSAGE, pattern, remaining),

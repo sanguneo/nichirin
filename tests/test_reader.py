@@ -198,7 +198,8 @@ class MessageTests(unittest.TestCase):
         self.addCleanup(reader.close)
         connection = cache.databases[paths.chat_log_name(DIRECT_ROOM)]
         connection.execute(
-            "INSERT INTO chatLogs VALUES (5004, ?, 1, 'withdrawn', NULL, 1800005004, 1)",
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (5004, ?, 1, 'withdrawn', NULL, 1800005004, 1)",
             (PEER_ID,),
         )
         connection.commit()
