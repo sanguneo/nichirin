@@ -99,6 +99,19 @@ class SendTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(self.backend.actions, [])
 
+    def test_a_hidden_window_is_recovered_before_any_write(self) -> None:
+        self.backend.windows = []
+
+        def recover(wanted: set[str]) -> list[ChatWindow]:
+            self.backend.actions.append("recover")
+            self.assertEqual(wanted, {"synthetic room"})
+            return [ChatWindow(42, "Synthetic room")]
+
+        sender = Sender(self.backend, running=lambda: True, recoverer=recover)
+        sender.send("Synthetic room", "synthetic text")
+
+        self.assertEqual(self.backend.actions, ["recover", "fill", "submit"])
+
     def test_invalid_message_is_refused_without_writes(self) -> None:
         for text in ("", " \n", "hello\x00world"):
             with self.subTest(text=text):

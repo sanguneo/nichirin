@@ -424,10 +424,13 @@ class Sender:
         backend: WindowBackend,
         running: Callable[[], bool],
         opener: Optional[RoomOpener] = None,
+        *,
+        recoverer: Optional[Callable[[set[str]], list[ChatWindow]]] = None,
     ) -> None:
         self._backend = backend
         self._running = running
         self._opener = opener
+        self._recoverer = recoverer
 
     def resolve(
         self,
@@ -451,6 +454,10 @@ class Sender:
         windows = self._backend.chat_windows()
         wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
         matches = [window for window in windows if window.title.casefold() in wanted]
+
+        if not matches and self._recoverer is not None:
+            recovered = self._recoverer(wanted)
+            matches = [window for window in recovered if window.title.casefold() in wanted]
 
         if not matches:
             if open_if_needed and self._opener is not None:
@@ -604,6 +611,48 @@ class AXBackend:
                 continue
             found.append(ChatWindow(handle=self._register(window), title=title))
         return found
+
+    def recover_windows(self, wanted: set[str]) -> list[ChatWindow]:
+        """Recover exact off-Space windows without activating the application.
+
+        Cocoa keeps one Window-menu item per window even when Accessibility
+        omits that window from every ordinary list. Pressing its
+        ``makeKeyAndOrderFront:`` item does not make KakaoTalk the frontmost
+        application, but it does publish the target through ``AXFocusedWindow``
+        and ``AXMainWindow``. Those direct references are the useful result:
+        re-reading ``AXWindows`` still omits the off-Space window.
+        """
+        menubar = self._app.attribute("AXMenuBar")
+        if not isinstance(menubar, ax.Element):
+            return []
+        recovered: list[ax.Element] = []
+        for bar_item in menubar.children():
+            if bar_item.title not in ("창", "Window"):
+                continue
+            menus = bar_item.children()
+            if not menus:
+                continue
+            for item in menus[0].children():
+                if (
+                    item.identifier != "makeKeyAndOrderFront:"
+                    or item.title.strip().casefold() not in wanted
+                ):
+                    continue
+                item.perform("AXPress")
+                for attribute in ("AXFocusedWindow", "AXMainWindow"):
+                    window = self._app.attribute(attribute)
+                    if (
+                        not isinstance(window, ax.Element)
+                        or window.role != "AXWindow"
+                        or window.title.strip().casefold() not in wanted
+                        or any(known.same_as(window) for known in recovered)
+                    ):
+                        continue
+                    recovered.append(window)
+        return [
+            ChatWindow(handle=self._register(window), title=window.title.strip())
+            for window in recovered
+        ]
 
     def input_handle(self, window: int) -> Optional[int]:
         """Find the message box: the text area that is not the transcript.
@@ -910,4 +959,9 @@ def make_sender() -> Sender:
             "KakaoTalk is not running; start it and sign in first",
         )
     backend = AXBackend(pid)
-    return Sender(backend, running, RoomOpener(backend))
+    return Sender(
+        backend,
+        running,
+        RoomOpener(backend),
+        recoverer=backend.recover_windows,
+    )

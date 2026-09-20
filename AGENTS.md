@@ -163,8 +163,13 @@ keystrokes. Everything below is what it took to get there.
   WindowServer bounds plus `AXUIElementCopyElementAtPosition` scoped to the
   application recovered it without an event, activation or unhide. Merge by
   `CFEqual`, never by title, then do the usual exact-title resolution.
-  This is best-effort discovery, not a guarantee for completely overlapping
-  windows or every Space. See `docs/background-sending.md` for live evidence.
+  A window on another Space stayed absent after both that hit-test and a
+  Window-menu `AXPress`, but the press published the exact target through
+  `AXFocusedWindow` and `AXMainWindow`. Reading those direct references
+  recovered it while the terminal remained frontmost. The fallback presses
+  only an exact requested title and still runs the ordinary ambiguity checks;
+  it never activates KakaoTalk or switches the current Space. See
+  `docs/background-sending.md` for live evidence.
 - **The button is a direct child of the chat window.** Finding it by crawling
   measured **3.5 s** — the transcript holds a button per message and every
   node is an IPC round trip — against **0.002 s** for reading the window's own

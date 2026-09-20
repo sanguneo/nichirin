@@ -229,10 +229,11 @@ or touch the clipboard.
 
 Minimized and hidden windows need not be shown. Discovery merges AX window
 lists with application-scoped hit-testing at WindowServer window positions:
-this is a read, not a click. Discovery failure never raises a window through
-the Window menu. A closed room still needs the explicit `--open` path; another
-physical monitor and another Space are different, and not every layout has
-been verified.
+this is a read, not a click. If another Space still hides the exact target,
+the sender presses only that title's Window-menu item and reads the resulting
+`AXFocusedWindow` directly. Live verification kept the terminal frontmost and
+did not switch Space. A closed room still needs the explicit `--open` path;
+another physical monitor has not been verified.
 
 ```bash
 python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --dry-run "Approved text"

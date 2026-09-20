@@ -20,8 +20,10 @@ The required outcome is `E AND D AND U AND W AND S AND L AND B`.
 These are conditions, not independent probabilities. Local observation `L`
 does not prove recipient receipt. `submitted` reports `S`, not `L`.
 The live checks below record before/after desktop state, not every intermediate
-frame. The implemented send path issues no activation, window-show, Space
-switch, keyboard or pointer operations.
+frame. The implemented send path issues no activation, Space switch, keyboard
+or pointer operations. Its off-Space fallback invokes the exact target's Cocoa
+Window-menu item; that may reorder the target within its own Space, but it did
+not make KakaoTalk frontmost or move the current Space in the live check.
 
 Restoring the desktop at the end is weaker than `B`: a window that appears
 briefly and is then minimized already violates it. Opening once and minimizing
@@ -42,8 +44,10 @@ impossible.
 2. `AXWindows` was treated as the complete set of windows. A hidden chat
    remained addressable through an existing AX reference while missing from
    both ordinary and navigation lists.
-3. Empty enumeration pressed `makeKeyAndOrderFront:` in the Window menu.
-   This contradicted background discovery rather than solving it.
+3. Empty enumeration once pressed an arbitrary `makeKeyAndOrderFront:` item
+   and then re-read `AXWindows`. That list still omitted another-Space windows.
+   The usable result is instead the exact title's direct `AXFocusedWindow`
+   reference, after recipient resolution has supplied that title.
 4. A failed composer read (`None`) counted as successful emptying. A disabled
    button's wait result was ignored, and a missing button posted Return to a
    process shared by multiple chats.
@@ -60,7 +64,7 @@ impossible.
 Let `A` be `AXWindows`, `N` the window elements in
 `AXChildrenInNavigationOrder`, and `H` the windows recovered by application-local
 hit-testing at the centers of that process's normal WindowServer windows.
-The candidate set is `A UNION N UNION H`, deduplicated with `CFEqual`.
+The initial candidate set is `A UNION N UNION H`, deduplicated with `CFEqual`.
 
 Hit-testing calls `AXUIElementCopyElementAtPosition` on the **KakaoTalk
 application element**, not the system-wide element. It reads an element; it
@@ -71,9 +75,13 @@ ambiguity checks still determine the recipient.
 
 WindowServer bounds include offscreen windows, and negative coordinates are
 preserved. Another monitor changes coordinates; another Space can change what
-the client exposes. Neither implies a universal guarantee. Fully overlapping
-windows may produce the same hit, and a client may expose no usable control.
-Discovery then fails without activating anything.
+the client exposes. When the initial set has no exact title match, the sender
+finds only matching `makeKeyAndOrderFront:` Window-menu items, presses them,
+and reads `AXFocusedWindow` and `AXMainWindow` directly. The live off-Space
+window remained absent from `A`, `N`, and `H` even after the press, but both
+direct attributes named its usable `AXWindow`; the terminal's frontmost PID
+was unchanged. A missing or mismatched direct reference still fails rather
+than substituting another window.
 
 ## Alternatives
 
@@ -104,8 +112,9 @@ matching `fromMe` row was found.
 | Chat minimized then restored while app remained hidden | Before the final repair, a fresh CLI returned `WINDOW_NOT_FOUND`; both AX lists contained only the main window. After the repair, a fresh CLI sent and read back once in 3.317 s, including account/database work. Both lists still lacked the target before the send. Hidden/inactive state and pointer were unchanged. |
 | Every window closed, process only | Before the repair a fresh CLI returned `WINDOW_NOT_FOUND` without touching anything. After it, a fresh CLI drew the main window, opened the room and sent, read back once, in 67.9 s — of which ~41 s is the client filling its 264-row list for the first read on a newly drawn window. |
 | App hidden, room already open, no main window | Sent and read back once in 3.055 s. The app stayed hidden and in the background, the main window stayed absent, and the pointer did not move. |
+| Chat on another Space, terminal frontmost | Ordinary discovery returned `WINDOW_NOT_FOUND`. Pressing the exact Window-menu item kept the frontmost PID unchanged; `AXFocusedWindow` and `AXMainWindow` both returned the target while `AXWindows` still omitted it. A real CLI `--dry-run` then resolved the composer without switching focus or Space. |
 | Closed room | Row `AXPress`, `AXConfirm`, `AXOpen` were rejected. Process-directed double-click, including window-number fields, did not create the room. The live test room was initially prepared with the existing visible opener. |
-| Second physical display / other Spaces | Not live-verified. Only one display was attached. Synthetic geometry tests cover negative coordinates; this does not replace a multi-display or Space test. |
+| Second physical display | Not live-verified. Only one display was attached. Synthetic geometry tests cover negative coordinates; this does not replace a multi-display test. |
 
 Restoration parks a window it had to draw rather than closing it back. A
 client left with no windows is one the system may take away: AppKit turns on

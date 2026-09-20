@@ -121,6 +121,41 @@ class WindowStateTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         other.perform.assert_not_called()
 
+    def test_window_menu_recovers_only_the_exact_hidden_target(self) -> None:
+        self.app.windows.return_value = []
+        target = Mock(spec=ax.Element)
+        target.role = "AXWindow"
+        target.identifier = ""
+        target.title = "Synthetic off-space room"
+        target.same_as.side_effect = lambda other: other is target
+
+        target_item = Mock(spec=ax.Element)
+        target_item.identifier = "makeKeyAndOrderFront:"
+        target_item.title = target.title
+        target_item.perform.return_value = True
+        other_item = Mock(spec=ax.Element)
+        other_item.identifier = "makeKeyAndOrderFront:"
+        other_item.title = "Other synthetic room"
+        menu = Mock(spec=ax.Element)
+        menu.children.return_value = [other_item, target_item]
+        bar_item = Mock(spec=ax.Element)
+        bar_item.title = "Window"
+        bar_item.children.return_value = [menu]
+        menubar = Mock(spec=ax.Element)
+        menubar.children.return_value = [bar_item]
+        self.app.attribute.side_effect = {
+            "AXMenuBar": menubar,
+            "AXFocusedWindow": target,
+            "AXMainWindow": target,
+        }.get
+
+        found = self.backend.recover_windows({target.title.casefold()})
+
+        self.assertEqual([window.title for window in found], [target.title])
+        target_item.perform.assert_called_once_with("AXPress")
+        other_item.perform.assert_not_called()
+        self.app.set_attribute.assert_not_called()
+
 
 class ClosedMainWindowTests(unittest.TestCase):
     """A client running with every window closed, which only a reopen changes.
