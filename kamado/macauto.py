@@ -1,21 +1,16 @@
 """Exact window targeting, draft replacement, and background text sending.
 
-The Windows build reached the client by posting messages to a window handle.
-macOS has no such handle, but it has something with the same two virtues: the
-accessibility tree addresses one control inside one window exactly, and
-``CGEventPostToPid`` delivers a keystroke to one process without activating it.
-So the shape of this module is the Windows one, and the properties it was
-built to protect are the same:
+The accessibility tree addresses one composer and one send button inside
+one window. A process-directed keystroke cannot make that same guarantee:
+several chat windows share one process.
 
-* **The desktop is left alone.**  Nothing is brought to the front, no window is
-  raised, the cursor is never moved, and the clipboard is never written.  The
-  reference implementation this port follows activates the app and types into
-  it; that works, but it takes the screen away from whoever is using it, and it
-  is not necessary.
+* **Sending to an existing window leaves the desktop alone.** Discovery never
+  raises a window, even when the client exposes none. Explicitly opening a
+  closed room is separate: it still activates the client and clicks its list.
 * **The text is written, not typed.**  Setting the input's value in one call is
   atomic from the client's point of view, where a synthesised keystroke per
   character is a race against the IME and against the user.
-* **A send is one Return, aimed at one process.**
+* **A send is one button press, aimed at that chat window.**
 * **An unfinished draft is cleared, not refused**, and the clearing is reported
   — ``clearedDraft`` on a send, ``wouldClearDraft`` on a dry run — because
   losing somebody's half-typed line silently is the indefensible part.
@@ -150,7 +145,7 @@ class WindowBackend(Protocol):
         ...
 
     def submit(self, control: int) -> None:
-        """Send the Return that makes KakaoTalk send what is in the input."""
+        """Submit this input through its own window's send control."""
         ...
 
 
@@ -274,7 +269,7 @@ def _learn_row(path: Path, room: str, row: int) -> None:
 
 
 class RoomOpener:
-    """Open a room that has no window yet, and put the desktop back after.
+    """Open a closed room and restore the main window's minimized state.
 
     Unlike the Windows list, which was owner-drawn and could only be addressed
     by pixel coordinate, the macOS list reports its rows through accessibility
@@ -306,15 +301,14 @@ class RoomOpener:
     def open(
         self, room: str, aliases: Iterable[str] = (), hint: Optional[int] = None
     ) -> ChatWindow:
-        """Open *room*'s window and leave the desktop as it was found."""
+        """Open and minimize *room*'s window using the client's visible list."""
         wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
         state = self._backend.main_state()
         if state == "missing":
             raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 "KakaoTalk's main window is not available, so no room can be opened. "
-                "If KakaoTalk is running, ensure its window is on the current desktop/Space "
-                "(or assign KakaoTalk to 'All Desktops' via Dock icon options)",
+                "Open the main window in KakaoTalk before using --open",
             )
         already_open = self._matching_window(wanted)
         if already_open is not None:
@@ -347,8 +341,7 @@ class RoomOpener:
                 f"showed {len(rows)} rows and none is that room, with "
                 f"{len(self._backend.chat_windows())} chat windows open. The list "
                 "only exposes rows it has drawn, so open the room once in "
-                "KakaoTalk; a window on another desktop/Space is invisible here "
-                "too, which the Dock icon's 'All Desktops' option fixes",
+                "KakaoTalk if its row is unavailable",
                 room=room,
             )
         finally:
@@ -468,7 +461,8 @@ class Sender:
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
                 "KakaoTalk (double-click it so it pops out) and try again. "
-                "If already open, ensure the window is on the current desktop/Space",
+                "If already open, the client did not expose it through background "
+                "discovery; no window was raised or Space changed",
             )
         if len(matches) > 1:
             raise KamadoError(
@@ -578,61 +572,24 @@ class AXBackend:
         return element
 
     def _windows(self) -> list[ax.Element]:
-        wins = self._app.windows()
-        if wins:
-            return wins
-        # If AXWindows returned empty (e.g. windows on inactive Spaces or behind
-        # full-screen apps), invoke Cocoa's Window menu action to restore accessibility
-        # visibility without taking foreground or moving desktop spaces.
-        self._order_front_via_menu()
-        return self._app.windows()
-
-    def _window_menu_items(self) -> dict[str, ax.Element]:
-        """Map window titles to their 'makeKeyAndOrderFront:' menu items."""
-        menubar = self._app.attribute("AXMenuBar")
-        if not menubar:
-            return {}
-        items: dict[str, ax.Element] = {}
-        for bar_item in menubar.children():
-            if bar_item.title in ("창", "Window"):
-                menus = bar_item.children()
-                if not menus:
-                    continue
-                for m in menus[0].children():
-                    if m.identifier == "makeKeyAndOrderFront:" and m.title:
-                        items[m.title.strip().casefold()] = m
-        return items
-
-    def _order_front_via_menu(self, title: Optional[str] = None) -> bool:
-        """Trigger Cocoa makeKeyAndOrderFront: via Window menu without activating."""
-        menu_items = self._window_menu_items()
-        if not menu_items:
-            return False
-        if title is not None:
-            target = menu_items.get(title.strip().casefold())
-            if target is not None and target.perform("AXPress"):
-                time.sleep(0.05)
-                return True
-            return False
-        # If no specific title requested, select '카카오톡' or first window item
-        candidate = menu_items.get("카카오톡") or next(iter(menu_items.values()), None)
-        if candidate is not None and candidate.perform("AXPress"):
-            time.sleep(0.05)
-            return True
-        return False
+        """Enumerate without changing visibility, focus or the active Space."""
+        windows = self._app.windows()
+        # A window restored while the app is hidden can disappear from both
+        # AX lists while its controls remain usable. Hit-testing within the
+        # application recovers its AXWindow without clicking or unhiding it.
+        for x, y in ax.window_centers(self._pid):
+            hit = self._app.element_at_position(x, y)
+            if hit is None:
+                continue
+            window = hit if hit.role == "AXWindow" else hit.attribute("AXWindow")
+            if not isinstance(window, ax.Element) or window.role != "AXWindow":
+                continue
+            if not any(known.same_as(window) for known in windows):
+                windows.append(window)
+        return windows
 
     def _main_window(self) -> Optional[ax.Element]:
         for window in self._windows():
-            if window.identifier == MAIN_WINDOW_IDENTIFIER:
-                return window
-        # Fallback: target '카카오톡' explicitly from the Window menu
-        if self._order_front_via_menu("카카오톡"):
-            for window in self._app.windows():
-                if window.identifier == MAIN_WINDOW_IDENTIFIER:
-                    return window
-        # If still missing (e.g. on another Space or completely closed), activate client to restore
-        activate()
-        for window in self._app.windows():
             if window.identifier == MAIN_WINDOW_IDENTIFIER:
                 return window
         return None
@@ -726,9 +683,8 @@ class AXBackend:
         going empty rather than by the press call's own return value, which
         this client reports as failure even on a press that works.
 
-        A Return aimed at the process is the fallback for a client that shows
-        no such button; it is posted to the pid, not to the session, so it too
-        cannot land in whatever the user has in front.
+        A missing button is a failure. A Return aimed at the process cannot
+        distinguish this composer from another chat in the same application.
 
         The button is enabled by the write, but not instantly, so it is waited
         for rather than pressed on faith — pressing a disabled button does
@@ -737,16 +693,16 @@ class AXBackend:
         """
         composer = self._element(control)
         button = self._send_button(control)
-        if button is not None:
-            self._wait(lambda: button.attribute("AXEnabled") is not False)
-            button.perform("AXPress")
-        else:
-            ax.post_key(self._pid, ax.KEY_RETURN)
+        if button is None:
+            raise OSError("the chat window has no accessible send button")
+        if not self._wait(lambda: button.attribute("AXEnabled") is True):
+            raise OSError("the send button did not become enabled; it was not pressed")
+        button.perform("AXPress")
 
         def emptied() -> bool:
             remaining = composer.value
             if not isinstance(remaining, str):
-                return True
+                raise OSError("could not read the composer after submission; outcome unknown")
             return not remaining.strip() or remaining.strip() in _EMPTY_HINTS
 
         if not self._wait(emptied):
@@ -893,9 +849,15 @@ class AXBackend:
             main = self._main_window()
         if main is None:
             return False
-        if main.attribute("AXMinimized") is True:
-            main.set_attribute("AXMinimized", "false")
-        return self._main_window() is not None
+        return self._set_minimized(main, False)
+
+    def _set_minimized(self, window: ax.Element, minimized: bool) -> bool:
+        """A setter's success does not prove the asynchronous state change."""
+        if window.attribute("AXMinimized") is minimized:
+            return True
+        return window.set_attribute("AXMinimized", minimized) and self._wait(
+            lambda: window.attribute("AXMinimized") is minimized
+        )
 
     def restore_main_window(self, state: str) -> None:
         """Put the main window back the way it was found."""
@@ -903,10 +865,12 @@ class AXBackend:
         if main is None:
             return
         if state == "minimized":
-            main.set_attribute("AXMinimized", "true")
+            if not self._set_minimized(main, True):
+                raise OSError("could not restore the main window's minimized state")
 
     def minimize_window(self, handle: int) -> None:
-        self._element(handle).set_attribute("AXMinimized", "true")
+        if not self._set_minimized(self._element(handle), True):
+            raise OSError("could not minimize the newly opened chat window")
 
     def close_window(self, handle: int) -> None:
         window = self._element(handle)

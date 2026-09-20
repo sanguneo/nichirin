@@ -222,9 +222,17 @@ Sending requires a running, signed-in KakaoTalk client and a uniquely targeted
 chat window. macOS Accessibility (`AXUIElement`) finds the composer, sets its
 `AXValue`, and presses the window's send button. A Return over AXValue-placed
 text is ignored, because the client does not count the write as typing, so the
-button is what actually sends; posting a Return to the process is the fallback
-for a client that shows no such button. It does not activate the app, take
-foreground, move the cursor, or touch the clipboard.
+button is what actually sends. A missing or disabled button fails rather than
+posting Return to an unspecified composer in the same process. Sending to an
+existing window does not activate the app, take foreground, move the cursor,
+or touch the clipboard.
+
+Minimized and hidden windows need not be shown. Discovery merges AX window
+lists with application-scoped hit-testing at WindowServer window positions:
+this is a read, not a click. Discovery failure never raises a window through
+the Window menu. A closed room still needs the explicit `--open` path; another
+physical monitor and another Space are different, and not every layout has
+been verified.
 
 ```bash
 python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --dry-run "Approved text"

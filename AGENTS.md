@@ -134,6 +134,22 @@ keystrokes. Everything below is what it took to get there.
   over AXValue-placed text is ignored, because the client does not count the
   write as typing. `AXUIElementPerformAction` reports failure even on a press
   that works, so success is judged by the composer going empty.
+- **An unreadable composer is not an empty composer.** A failed AX read
+  returns `None`; after a press that means the outcome is unknown, not
+  `submitted: true`. A disabled/unreadable button is never pressed, and a
+  missing button must not fall back to a process-wide Return.
+- **Minimization is a CFBoolean, not the text `"true"`.** The client accepted
+  the CFString setter with status 0 but emitted no event and did not minimize.
+  Real booleans produced `AXWindowMiniaturized`/`AXWindowDeminiaturized`.
+  Check the resulting state, not just the asynchronous setter's return.
+- **A missing AX list entry is not a missing window.** Hidden windows can
+  appear in `AXChildrenInNavigationOrder`; a chat restored while the app is
+  hidden was absent from both lists but its controls remained addressable.
+  WindowServer bounds plus `AXUIElementCopyElementAtPosition` scoped to the
+  application recovered it without an event, activation or unhide. Merge by
+  `CFEqual`, never by title, then do the usual exact-title resolution.
+  This is best-effort discovery, not a guarantee for completely overlapping
+  windows or every Space. See `docs/background-sending.md` for live evidence.
 - **The button is a direct child of the chat window.** Finding it by crawling
   measured **3.5 s** — the transcript holds a button per message and every
   node is an IPC round trip — against **0.002 s** for reading the window's own
@@ -144,9 +160,9 @@ keystrokes. Everything below is what it took to get there.
   delay, and removing the crawl exposed the race as a message left sitting in
   the box. Both that wait and the emptying check poll, so a quick client pays
   one read rather than a fixed sleep.
-- **Opening a *closed* room is the one step that must touch the screen.** The
+- **The implemented *closed* room opener still touches the screen.** The
   chat-list rows ignore `AXPress`, `AXSelected` and a posted Return — selecting
-  one only highlights it. Only a real double-click opens a room, and macOS does
+  one only highlights it. The verified opener uses a real double-click, and macOS does
   not infer one from two clicks: the second must carry a click state of 2.
   Because that is a click at screen coordinates, the client is brought forward
   first so it cannot land in another window, and the pointer is put back.

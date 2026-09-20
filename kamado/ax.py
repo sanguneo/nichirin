@@ -75,6 +75,8 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     core.CFRelease.restype = None
     core.CFRetain.argtypes = [ctypes.c_void_p]
     core.CFRetain.restype = ctypes.c_void_p
+    core.CFEqual.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    core.CFEqual.restype = ctypes.c_bool
     core.CFGetTypeID.argtypes = [ctypes.c_void_p]
     core.CFGetTypeID.restype = ctypes.c_ulong
     for name in (
@@ -90,6 +92,8 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     core.CFNumberGetValue.restype = ctypes.c_bool
     core.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
     core.CFBooleanGetValue.restype = ctypes.c_bool
+    core.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    core.CFDictionaryGetValue.restype = ctypes.c_void_p
 
     services.AXIsProcessTrusted.argtypes = []
     services.AXIsProcessTrusted.restype = ctypes.c_bool
@@ -101,6 +105,10 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
         ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)
     ]
     services.AXUIElementCopyAttributeValue.restype = ctypes.c_int
+    services.AXUIElementCopyElementAtPosition.argtypes = [
+        ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.POINTER(ctypes.c_void_p)
+    ]
+    services.AXUIElementCopyElementAtPosition.restype = ctypes.c_int
     services.AXUIElementSetAttributeValue.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
     ]
@@ -146,6 +154,12 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     services.CGEventSetIntegerValueField.restype = None
     services.AXValueGetValue.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
     services.AXValueGetValue.restype = ctypes.c_bool
+    services.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    services.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+    services.CGRectMakeWithDictionaryRepresentation.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(CGRect)
+    ]
+    services.CGRectMakeWithDictionaryRepresentation.restype = ctypes.c_bool
 
     _core, _services = core, services
     return core, services
@@ -157,6 +171,10 @@ class CGPoint(ctypes.Structure):
 
 class CGSize(ctypes.Structure):
     _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+
+class CGRect(ctypes.Structure):
+    _fields_ = [("origin", CGPoint), ("size", CGSize)]
 
 
 _kAXValueCGPointType: Final = 1
@@ -306,16 +324,21 @@ class Element:
         names = _unwrap(out.value)
         return [name for name in (names or []) if isinstance(name, str)]
 
-    def set_attribute(self, name: str, value: str) -> bool:
-        """Write a string attribute, reporting whether the client accepted it."""
-        _core, services = _load()
+    def set_attribute(self, name: str, value: str | bool) -> bool:
+        """Write a string or boolean with its actual CoreFoundation type."""
+        core, services = _load()
         key = _cfstr(name)
-        payload = _cfstr(value)
         try:
-            return services.AXUIElementSetAttributeValue(self._ref, key, payload) == 0
+            if isinstance(value, bool):
+                symbol = "kCFBooleanTrue" if value else "kCFBooleanFalse"
+                payload = ctypes.c_void_p(core.CFRetain(ctypes.c_void_p.in_dll(core, symbol)))
+            else:
+                payload = _cfstr(value)
+            try:
+                return services.AXUIElementSetAttributeValue(self._ref, key, payload) == 0
+            finally:
+                core.CFRelease(payload)
         finally:
-            core = _load()[0]
-            core.CFRelease(payload)
             core.CFRelease(key)
 
     def actions(self) -> list[str]:
@@ -372,8 +395,37 @@ class Element:
         return [item for item in (found or []) if isinstance(item, Element)]
 
     def windows(self) -> list["Element"]:
+        """Include hidden windows the client omits from ``AXWindows``.
+
+        Some omitted windows remain exposed in the navigation children.
+        Merge by native element identity, not title: duplicate chat titles
+        must remain distinct so the sender can refuse the ambiguity.
+        """
         found = self.attribute("AXWindows")
-        return [item for item in (found or []) if isinstance(item, Element)]
+        windows = [item for item in (found or []) if isinstance(item, Element)]
+        navigation = self.attribute("AXChildrenInNavigationOrder")
+        for item in navigation or []:
+            if not isinstance(item, Element) or item.role != "AXWindow":
+                continue
+            if not any(window.same_as(item) for window in windows):
+                windows.append(item)
+        return windows
+
+    def same_as(self, other: "Element") -> bool:
+        """Whether two wrappers address the same native accessibility object."""
+        core, _services = _load()
+        return bool(core.CFEqual(self._ref, other._ref))
+
+    def element_at_position(self, x: float, y: float) -> Optional["Element"]:
+        """Query inside this application, without posting a mouse event."""
+        _core, services = _load()
+        out = ctypes.c_void_p()
+        status = services.AXUIElementCopyElementAtPosition(self._ref, x, y, ctypes.byref(out))
+        if status == AX_ERROR_API_DISABLED:
+            raise AccessibilityDenied("macOS has not granted Accessibility permission")
+        if status != AX_ERROR_SUCCESS:
+            return None
+        return Element(out.value) if out.value else None
 
     def descendants(self, depth: int = 12) -> "list[Element]":
         """Walk the subtree breadth-first, bounded so a cycle cannot trap us."""
@@ -429,6 +481,58 @@ def application(pid: int) -> Element:
     if not created:
         raise RuntimeError(f"no accessibility element for process {pid}")
     return Element(created)
+
+
+def window_centers(pid: int) -> list[tuple[float, float]]:
+    """Read this process's normal window bounds, including offscreen windows.
+
+    No screenshot, title, mouse event or activation is requested. WindowServer
+    bounds provide probe points, not recipient identity: the caller still has
+    to resolve the returned AX window by its exact title.
+    """
+    core, services = _load()
+    listing = services.CGWindowListCopyWindowInfo(0, 0)  # All windows, not only onscreen.
+    if not listing:
+        return []
+    owner_key, layer_key, bounds_key = (
+        _cfstr(name) for name in ("kCGWindowOwnerPID", "kCGWindowLayer", "kCGWindowBounds")
+    )
+    found: list[tuple[float, float]] = []
+    try:
+        for index in range(core.CFArrayGetCount(listing)):
+            entry = core.CFArrayGetValueAtIndex(listing, index)
+            owner_ref = core.CFDictionaryGetValue(entry, owner_key)
+            layer_ref = core.CFDictionaryGetValue(entry, layer_key)
+            if owner_ref is None or layer_ref is None:
+                continue
+            owner, layer = ctypes.c_int64(), ctypes.c_int64()
+            if not core.CFNumberGetValue(owner_ref, _kCFNumberSInt64Type, ctypes.byref(owner)):
+                continue
+            if owner.value != pid:
+                continue
+            if not core.CFNumberGetValue(layer_ref, _kCFNumberSInt64Type, ctypes.byref(layer)):
+                continue
+            if layer.value != 0:
+                continue
+            bounds = core.CFDictionaryGetValue(entry, bounds_key)
+            rectangle = CGRect()
+            if not bounds or not services.CGRectMakeWithDictionaryRepresentation(
+                bounds, ctypes.byref(rectangle)
+            ):
+                continue
+            if rectangle.size.width <= 0 or rectangle.size.height <= 0:
+                continue
+            point = (
+                rectangle.origin.x + rectangle.size.width / 2,
+                rectangle.origin.y + rectangle.size.height / 2,
+            )
+            if point not in found:
+                found.append(point)
+    finally:
+        for key in (owner_key, layer_key, bounds_key):
+            core.CFRelease(key)
+        core.CFRelease(listing)
+    return found
 
 
 def post_key(pid: int, keycode: int, flags: int = 0) -> None:

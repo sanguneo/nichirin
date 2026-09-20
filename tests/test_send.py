@@ -138,6 +138,16 @@ class AXMessageTests(unittest.TestCase):
         with patch("kamado.macauto.ax.application", return_value=Mock()):
             self.backend = AXBackend(99)
         self.control = self.backend._register(self.element)
+        self.elapsed = 0.0
+        clock = patch("kamado.macauto.time.monotonic", side_effect=lambda: self.elapsed)
+        sleep = patch("kamado.macauto.time.sleep", side_effect=self.advance)
+        clock.start()
+        sleep.start()
+        self.addCleanup(clock.stop)
+        self.addCleanup(sleep.stop)
+
+    def advance(self, seconds: float) -> None:
+        self.elapsed += seconds
 
     def test_the_message_is_written_with_a_value_and_nothing_else(self) -> None:
         # One AXValue write fills the composer and enables the client's send
@@ -175,6 +185,7 @@ class AXMessageTests(unittest.TestCase):
         button = Mock()
         button.role = "AXButton"
         button.title = "전송"
+        button.attribute.return_value = True
         button.perform.return_value = press_returns
         window = Mock()
         # The button is a *direct* child of the chat window, so submit reads
@@ -210,13 +221,37 @@ class AXMessageTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.backend.submit(self.control)
 
-    def test_return_is_the_fallback_when_there_is_no_send_button(self) -> None:
-        # With no send button, submit falls back to a Return aimed at the
-        # process — not at the session, so it cannot land in another app.
+    def test_a_missing_button_never_sends_return_to_another_composer(self) -> None:
+        # A PID names every chat, not the selected chat. Missing controls must
+        # fail rather than deliver Return to whichever window happens to be key.
         self.element.value = ""
         with patch("kamado.macauto.ax.post_key") as post_key:
+            with self.assertRaises(OSError):
+                self.backend.submit(self.control)
+        post_key.assert_not_called()
+
+    def test_an_unreadable_composer_is_not_a_successful_submission(self) -> None:
+        self._window_with_send_button()
+        self.element.value = None
+        with self.assertRaises(OSError):
             self.backend.submit(self.control)
-        post_key.assert_called_once_with(99, ax.KEY_RETURN)
+
+    def test_a_disabled_or_unreadable_button_is_never_pressed(self) -> None:
+        for enabled in (False, None):
+            with self.subTest(enabled=enabled):
+                button = self._window_with_send_button()
+                button.attribute.return_value = enabled
+                self.element.value = ""
+                with self.assertRaises(OSError):
+                    self.backend.submit(self.control)
+                button.perform.assert_not_called()
+
+    def test_the_button_can_enable_after_the_write_without_a_fixed_delay(self) -> None:
+        button = self._window_with_send_button()
+        button.attribute.side_effect = [False, True]
+        self.element.value = ""
+        self.backend.submit(self.control)
+        button.perform.assert_called_once_with("AXPress")
 
     def test_empty_hints_are_not_drafts(self) -> None:
         for hint in ("메시지 입력", "Enter message", "", None):
