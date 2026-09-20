@@ -26,6 +26,8 @@ ALT_SCREEN_ON: Final = "\x1b[?1049h"
 ALT_SCREEN_OFF: Final = "\x1b[?1049l"
 HIDE_CURSOR: Final = "\x1b[?25l"
 SHOW_CURSOR: Final = "\x1b[?25h"
+MOUSE_VARIABLE: Final = "KAMADO_MOUSE"
+"""Set to ``0`` to start with the mouse left to the terminal."""
 MOUSE_ON: Final = "\x1b[?1000h\x1b[?1006h"
 """Report button presses in SGR form, which is the only encoding wide enough.
 
@@ -56,6 +58,15 @@ The composer holds the keyboard for as long as a room is open, so an ordinary
 letter cannot carry a shortcut -- it would simply be typed. A control character
 can, and this is the key the Windows branch settled on, where there is no click
 to offer instead.
+"""
+SELECT_MODE: Final = "\x07"
+"""Ctrl+G, which hands the mouse to the terminal and takes it back.
+
+While buttons are reported the terminal gives every press to this program, so
+its own drag-to-select never starts and there is nothing for Cmd+C to copy.
+The two uses of the mouse cannot both be on, so this key switches between them
+rather than trying to tell a click from a drag -- which the button reports
+this console asks for cannot answer, since motion is never requested.
 """
 _HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
 _LOW_SURROGATE: Final = range(0xDC00, 0xE000)
@@ -146,6 +157,14 @@ def _wrap_free_mode(previous: int) -> int:
     return (previous | 0x0004 | 0x0001) & ~0x0002
 
 
+def mouse_default() -> bool:
+    """Whether to ask for button reports at startup; ``KAMADO_MOUSE=0`` says no."""
+    raw = os.environ.get(MOUSE_VARIABLE)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "off", "false", "no")
+
+
 def right_margin() -> int:
     raw = os.environ.get(RIGHT_MARGIN_VARIABLE)
     if raw is None:
@@ -196,6 +215,25 @@ class Console:
         self._painted_cursor: Optional[tuple[int, int]] = None
         self._painted_shape: Optional[tuple[int, int, str]] = None
         """What those rows were cut to; a different screen invalidates them."""
+        self._mouse = False
+        """Whether the terminal is currently reporting buttons to this program."""
+
+    @property
+    def mouse(self) -> bool:
+        """Whether clicks reach this program instead of the terminal's selection."""
+        return self._mouse
+
+    def set_mouse(self, enabled: bool) -> None:
+        """Ask for button reports, or give the mouse back to the terminal.
+
+        A request for the state the terminal is already in writes nothing: the
+        loop calls this every frame, and a write while a selection is up would
+        be one more thing that could clear it.
+        """
+        if not self._entered or enabled == self._mouse:
+            return
+        self._mouse = enabled
+        _write(MOUSE_ON if enabled else MOUSE_OFF)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -217,7 +255,14 @@ class Console:
             self._entered = True
             # The alternate screen starts blank, so the first frame is whole.
             self._painted = None
-            _write(_SAVE_AUTOWRAP + ALT_SCREEN_ON + HIDE_CURSOR + AUTOWRAP_OFF + MOUSE_ON)
+            self._mouse = mouse_default()
+            _write(
+                _SAVE_AUTOWRAP
+                + ALT_SCREEN_ON
+                + HIDE_CURSOR
+                + AUTOWRAP_OFF
+                + (MOUSE_ON if self._mouse else "")
+            )
         except BaseException:
             self.__exit__()
             raise
@@ -237,6 +282,7 @@ class Console:
                 )
         finally:
             self._entered = False
+            self._mouse = False
             if self._mode is not None and self._input_fd is not None:
                 termios.tcsetattr(self._input_fd, termios.TCSANOW, self._mode)
                 # macOS sets PENDIN when ICANON returns. A readiness check
