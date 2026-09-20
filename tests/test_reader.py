@@ -326,7 +326,9 @@ class MessageTests(unittest.TestCase):
         reader = Reader(cache=cache, keyring=keyring)
         self.addCleanup(reader.close)
         cache.database.execute(
-            "INSERT INTO NTChatMessage VALUES (5004, ?, ?, 1, 'withdrawn', NULL, ?, 1)",
+            "INSERT INTO NTChatMessage "
+            "(logId, chatId, authorId, type, message, attachment, sentAt, deleted) "
+            "VALUES (5004, ?, ?, 1, 'withdrawn', NULL, ?, 1)",
             (DIRECT_ROOM, PEER_ID, 1_700_000_400),
         )
         cache.database.commit()
@@ -344,7 +346,9 @@ class MessageTests(unittest.TestCase):
         reader = Reader(cache=cache, keyring=keyring)
         self.addCleanup(reader.close)
         cache.database.executemany(
-            "INSERT INTO NTChatMessage VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
+            "INSERT INTO NTChatMessage "
+            "(logId, chatId, authorId, type, message, attachment, sentAt, deleted) "
+            "VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
             [
                 (log_id, DIRECT_ROOM, PEER_ID, f"burst {log_id}", 1_700_001_000 + log_id)
                 for log_id in range(5200, 5210)

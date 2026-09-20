@@ -62,7 +62,8 @@ CREATE TABLE NTChatRoom (
 );
 CREATE TABLE NTChatMessage (
     logId INTEGER PRIMARY KEY, chatId INTEGER, authorId INTEGER, type INTEGER,
-    message TEXT, attachment TEXT, sentAt INTEGER, deleted INTEGER
+    message TEXT, attachment TEXT, sentAt INTEGER, deleted INTEGER,
+    threadId INTEGER
 );
 CREATE TABLE NTUser (
     userId INTEGER, linkId INTEGER, type INTEGER, nickName TEXT,
@@ -144,8 +145,17 @@ def _connect(rows: Optional[dict[str, list[tuple]]] = None) -> sqlite3.Connectio
     for table, values in (rows or {}).items():
         if not values:
             continue
-        placeholders = ", ".join("?" * len(values[0]))
-        connection.executemany(f"INSERT INTO {table} VALUES ({placeholders})", values)
+        # Rows name the columns they fill, left to right, so a row may stop
+        # short of a column the client added later — and one row carrying that
+        # column does not oblige every other row to restate it.
+        width = max(len(value) for value in values)
+        names = [column[1] for column in connection.execute(f"PRAGMA table_info({table})")]
+        filled = ", ".join(names[:width])
+        placeholders = ", ".join("?" * width)
+        connection.executemany(
+            f"INSERT INTO {table} ({filled}) VALUES ({placeholders})",
+            [tuple(value) + (None,) * (width - len(value)) for value in values],
+        )
     connection.commit()
     return connection
 

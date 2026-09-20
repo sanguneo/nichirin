@@ -60,6 +60,14 @@ the type is what separates a name from the other things kept beside it.
 _ATTACHMENT_COLUMNS = ("attachment", "attachement", "attachments", "extra")
 """What the attachment column may be called; the Windows client misspelled it."""
 
+_THREAD_COLUMNS = ("threadId",)
+"""Where a newer client points a reply at the message it answers.
+
+The older shape kept the reply's own copy of what it answered inside the
+attachment. This one writes an ordinary text row and records only the id, so
+the quote has to be read back out of the conversation.
+"""
+
 _DELETED_COLUMNS = ("deleted", "isDeleted")
 _MESSAGE_TEXT_COLUMNS = ("message", "text")
 _SENT_AT_COLUMNS = ("sentAt", "sendAt", "createdAt")
@@ -616,9 +624,13 @@ class Reader:
         text = _first_present(columns, _MESSAGE_TEXT_COLUMNS) or "NULL"
         attachment = _first_present(columns, _ATTACHMENT_COLUMNS) or "NULL"
         sent_at = _first_present(columns, _SENT_AT_COLUMNS) or "NULL"
+        thread = _first_present(columns, _THREAD_COLUMNS) or "NULL"
         deleted = _first_present(columns, _DELETED_COLUMNS)
         predicate = f"COALESCE({deleted}, 0) = 0" if deleted else "1 = 1"
-        return f"logId, authorId, type, {text}, {attachment}, {sent_at}", predicate
+        return (
+            f"logId, authorId, type, {text}, {attachment}, {sent_at}, {thread}",
+            predicate,
+        )
 
     def messages(
         self,
@@ -688,7 +700,7 @@ class Reader:
         return None if row is None or row[0] is None else int(row[0])
 
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
-        log_id, author, type_code, text, attachment, sent_at = tuple(row)
+        log_id, author, type_code, text, attachment, sent_at, thread = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
         known = self.names()
@@ -698,7 +710,9 @@ class Reader:
         # into message text, which would show words nobody typed.
         extra = model.parse_attachment(attachment)
         mentions = model.mentions_in(extra, known.get)
-        reply = model.quoted_in(extra, known.get)
+        reply = model.quoted_in(extra, known.get) or self._threaded_quote(
+            room_id, int(log_id), thread
+        )
         photo = model.photo_in(extra, kind)
         return Message(
             id=int(log_id),
@@ -719,6 +733,47 @@ class Reader:
             reply=reply,
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
             photo=photo,
+        )
+
+    def _threaded_quote(
+        self, room_id: int, log_id: int, thread: Any
+    ) -> Optional[model.Quote]:
+        """Read back the message a threaded reply answers.
+
+        Where the attachment carried the reply's own copy of what it answered,
+        a thread carries only the id — so this is what that message says
+        *now*, and it goes when the message goes. A thread naming a row this
+        database does not hold quotes nothing rather than an empty line
+        attributed to nobody; the reply still reads as an ordinary message,
+        which is what it looks like in the client too.
+        """
+        try:
+            source = int(thread)
+        except (TypeError, ValueError):
+            return None
+        # A row that names itself is answering nothing, and quoting it would
+        # stack a message above a copy of itself.
+        if source <= 0 or source == log_id:
+            return None
+        selected, deleted = self._message_query()
+        row = self.connection().execute(
+            f"SELECT {selected} FROM {MESSAGE_TABLE} "
+            f"WHERE chatId = ? AND logId = ? AND {deleted}",
+            (room_id, source),
+        ).fetchone()
+        if row is None:
+            return None
+        _log_id, author, type_code, text, _attachment, _sent_at, _thread = tuple(row)
+        sender_id = int(author or 0)
+        kind = int(type_code or 0)
+        return model.Quote(
+            message_id=source,
+            sender_id=sender_id,
+            sender=self.names().get(sender_id),
+            # A feed's text is the client's own JSON, which is not something
+            # anybody said; it is dropped here exactly as it is for a message.
+            text="" if kind == model.FEED_MESSAGE or not isinstance(text, str) else text,
+            type=kind,
         )
 
     def feed_details(self, room_id: int, log_ids: Sequence[int]) -> dict[int, str]:

@@ -32,6 +32,8 @@ from tests.fixtures import (
     build_reader,
 )
 
+from kamado.reader import Reader
+
 def NOBODY(user_id: int) -> None:
     """A resolver for a profile that has never seen the id being asked about."""
     return None
@@ -202,6 +204,99 @@ class ReadMessageTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         assert found[0].reply is not None
         self.assertEqual(found[0].reply.sender_id, OWN_ID)
+
+
+class ThreadedReplyTests(unittest.TestCase):
+    """A reply the client recorded as a thread rather than as its own copy.
+
+    The attachment used to carry a snapshot of what was answered. This client
+    writes an ordinary text row and points a ``threadId`` at the message it
+    answers, so the quote is no longer in the row: it has to be read back out
+    of the conversation, and it says what that message says *now*.
+    """
+
+    def build(self, rows: list[tuple]) -> Reader:
+        reader = build_reader(messages=rows)
+        self.addCleanup(reader.close)
+        return reader
+
+    def answered(self, rows: list[tuple], log_id: int):
+        reader = self.build(rows)
+        found = {message.id: message for message in reader.messages(DIRECT_ROOM, limit=50)}
+        return found[log_id]
+
+    def test_a_threaded_reply_is_read_as_a_reply(self) -> None:
+        answer = self.answered(
+            [
+                (5000, DIRECT_ROOM, PEER_ID, 1, "먼저 한 말", None, 1_700_000_000, 0),
+                (5001, DIRECT_ROOM, OWN_ID, 1, "거기 답", None, 1_700_000_100, 0, 5000),
+            ],
+            5001,
+        )
+        assert answer.reply is not None
+        self.assertEqual(answer.reply.message_id, 5000)
+        self.assertEqual(answer.reply.sender_id, PEER_ID)
+        self.assertEqual(answer.reply.text, "먼저 한 말")
+        self.assertFalse(answer.replies_to_me)
+
+    def test_a_threaded_reply_to_my_own_line_is_marked_as_one(self) -> None:
+        answer = self.answered(
+            [
+                (5000, DIRECT_ROOM, OWN_ID, 1, "내가 남긴 줄", None, 1_700_000_000, 0),
+                (5001, DIRECT_ROOM, PEER_ID, 1, "거기 답", None, 1_700_000_100, 0, 5000),
+            ],
+            5001,
+        )
+        self.assertTrue(answer.replies_to_me)
+
+    def test_a_thread_naming_no_stored_message_quotes_nothing(self) -> None:
+        # The answered message can be older than anything kept locally, and
+        # inventing a blank quote for it would claim to know what it said.
+        answer = self.answered(
+            [(5001, DIRECT_ROOM, PEER_ID, 1, "거기 답", None, 1_700_000_100, 0, 4999)],
+            5001,
+        )
+        self.assertIsNone(answer.reply)
+
+    def test_a_row_naming_itself_is_not_a_reply_to_itself(self) -> None:
+        answer = self.answered(
+            [(5000, DIRECT_ROOM, PEER_ID, 1, "혼잣말", None, 1_700_000_000, 0, 5000)],
+            5000,
+        )
+        self.assertIsNone(answer.reply)
+
+    def test_the_copy_the_reply_carried_wins_over_the_thread(self) -> None:
+        """What the sender was answering is what they saw, not what it says now."""
+        answer = self.answered(
+            [
+                (5000, DIRECT_ROOM, PEER_ID, 1, "고쳐 쓴 줄", None, 1_700_000_000, 0),
+                (
+                    5001, DIRECT_ROOM, OWN_ID, REPLY_TYPE, "거기 답",
+                    json.dumps(
+                        {
+                            "src_logId": 5000,
+                            "src_userId": PEER_ID,
+                            "src_message": "보낼 때 있던 줄",
+                            "src_type": 1,
+                        }
+                    ),
+                    1_700_000_100, 0, 5000,
+                ),
+            ],
+            5001,
+        )
+        assert answer.reply is not None
+        self.assertEqual(answer.reply.text, "보낼 때 있던 줄")
+
+    def test_a_threaded_reply_is_rendered_for_a_caller(self) -> None:
+        answer = self.answered(
+            [
+                (5000, DIRECT_ROOM, PEER_ID, 1, "먼저 한 말", None, 1_700_000_000, 0),
+                (5001, DIRECT_ROOM, OWN_ID, 1, "거기 답", None, 1_700_000_100, 0, 5000),
+            ],
+            5001,
+        )
+        self.assertEqual(answer.as_json()["replyTo"]["messageId"], "5000")
 
 
 if __name__ == "__main__":

@@ -40,7 +40,9 @@ class WatcherTests(unittest.TestCase):
         """Append a message the way the client would: row plus a changed log."""
         connection = self.cache.database
         connection.execute(
-            "INSERT INTO NTChatMessage VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
+            "INSERT INTO NTChatMessage "
+            "(logId, chatId, authorId, type, message, attachment, sentAt, deleted) "
+            "VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
             (log_id, room_id, author, text, 1_800_000_000 + log_id),
         )
         connection.commit()
@@ -130,7 +132,9 @@ class CatchUpTests(WatcherTests):
         connection = self.cache.database
         ids = list(range(first_id, first_id + count))
         connection.executemany(
-            "INSERT INTO NTChatMessage VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
+            "INSERT INTO NTChatMessage "
+            "(logId, chatId, authorId, type, message, attachment, sentAt, deleted) "
+            "VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
             [
                 (log_id, room_id, PEER_ID, f"burst {log_id}", 1_800_000_000 + log_id)
                 for log_id in ids
@@ -197,7 +201,9 @@ class ResumeTests(WatcherTests):
         connection = self.cache.database
         ids = list(range(5400, 5920))
         connection.executemany(
-            "INSERT INTO NTChatMessage VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
+            "INSERT INTO NTChatMessage "
+            "(logId, chatId, authorId, type, message, attachment, sentAt, deleted) "
+            "VALUES (?, ?, ?, 1, ?, NULL, ?, 0)",
             [(i, DIRECT_ROOM, PEER_ID, f"gap {i}", 1_800_000_000 + i) for i in ids],
         )
         connection.commit()

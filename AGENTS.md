@@ -81,6 +81,21 @@ code that depends on them without re-checking will quietly break.
 - `NTUser` has no `type` column; a friend is `friendType = 1`. The message
   attachment column is spelled `attachment` here (the Windows client
   misspelled it `attachement`).
+- **A reply is recorded two ways, and the newer one carries no copy of what it
+  answered.** The old shape put the reply's own snapshot in the attachment
+  (`src_logId`, `src_userId`, `src_message`), which is why a quote outlived the
+  original being deleted. This client writes an ordinary `type = 1` row and
+  points a **`threadId`** column at the message it answers — measured 248 of
+  4,000 rows, while the newest `src_logId` anywhere was two days old and the
+  busiest room's last 50 messages held three `threadId` replies and zero
+  `src_logId`. Reading only the attachment therefore lost every recent reply,
+  and the interface stopped drawing quote lines without anything failing.
+  `Reader._threaded_quote` reads the answered row back instead, so a threaded
+  quote says what that message says *now* rather than what it said when it was
+  answered; a thread naming a row this database does not hold quotes nothing
+  rather than an empty line, and a row naming itself is not a reply to itself.
+  Where both shapes are present the attachment's own copy still wins, because
+  it is what the sender was actually looking at.
 - **Which end the limit cuts from depends on the question.** A window wants the
   newest rows, so `messages` orders descending. Catch-up does not: asked for
   what arrived after a cursor, taking the newest page skips everything between
