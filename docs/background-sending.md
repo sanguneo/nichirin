@@ -47,6 +47,13 @@ impossible.
 4. A failed composer read (`None`) counted as successful emptying. A disabled
    button's wait result was ignored, and a missing button posted Return to a
    process shared by multiple chats.
+5. A client running with **every window closed** was refused outright:
+   `RoomOpener.open` raised `WINDOW_NOT_FOUND` on `main_state == "missing"`
+   before trying anything, so the interface could not send to a closed room —
+   and it refused even when the room's own window was already open. Removing
+   that refusal alone was not enough: `show_main_window` asked the client to
+   reopen and then read the window list **once**, after `activate`'s fixed
+   0.6 s settle, while the client draws the window at 0.828 s.
 
 ## Implemented discovery
 
@@ -95,8 +102,19 @@ matching `fromMe` row was found.
 | Chat and main window minimized; app inactive | Sent and read back once. Both remained minimized; foreground and pointer unchanged. |
 | App hidden; chat not minimized | Actual CLI sent and read back once. App remained hidden and inactive; pointer unchanged. |
 | Chat minimized then restored while app remained hidden | Before the final repair, a fresh CLI returned `WINDOW_NOT_FOUND`; both AX lists contained only the main window. After the repair, a fresh CLI sent and read back once in 3.317 s, including account/database work. Both lists still lacked the target before the send. Hidden/inactive state and pointer were unchanged. |
+| Every window closed, process only | Before the repair a fresh CLI returned `WINDOW_NOT_FOUND` without touching anything. After it, a fresh CLI drew the main window, opened the room and sent, read back once, in 67.9 s — of which ~41 s is the client filling its 264-row list for the first read on a newly drawn window. |
+| App hidden, room already open, no main window | Sent and read back once in 3.055 s. The app stayed hidden and in the background, the main window stayed absent, and the pointer did not move. |
 | Closed room | Row `AXPress`, `AXConfirm`, `AXOpen` were rejected. Process-directed double-click, including window-number fields, did not create the room. The live test room was initially prepared with the existing visible opener. |
 | Second physical display / other Spaces | Not live-verified. Only one display was attached. Synthetic geometry tests cover negative coordinates; this does not replace a multi-display or Space test. |
+
+Restoration parks a window it had to draw rather than closing it back. The
+client can quit a while after its main window goes away — observed three
+times, once while a minimized chat window was still open, so it is the main
+window rather than the last window that ends it. It does not happen every
+time: the same client also sat windowless for 4 m 32 s without quitting, so
+this is a hazard to avoid rather than a delay to wait out. Closing the window
+back would make taking the messenger down part of the tidying, and a
+minimized window leaves the screen just as clear.
 
 Regression sequence:
 
@@ -105,7 +123,12 @@ Regression sequence:
 - Application-local discovery: 18 tests, 3 errors before the change, including
   the real resolver seam returning `WINDOW_NOT_FOUND` for the synthetic target.
 - Final related suite: 79 tests, `OK`.
-- Full suite: `Ran 1005 tests in 44.157s`, `OK`, no skips.
+- Windowless client: `FAILED (failures=2, errors=4)` before the change — four
+  on the opener refusing `main_state == "missing"` outright, one on a window
+  drawn 0.828 s after the request being missed by a single read, one on
+  restoration leaving the drawn window where it stood.
+- Full suite: `Ran 1005 tests in 44.157s`, `OK`, no skips; `Ran 1034 tests in
+  45.953s`, `OK`, after the windowless-client repair.
 - Targeted basedpyright: `0 errors, 0 warnings, 0 notes`.
 - `python3 -m compileall -q kamado kakaoread`: exit 0.
 

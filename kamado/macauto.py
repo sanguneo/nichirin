@@ -304,15 +304,13 @@ class RoomOpener:
         """Open and minimize *room*'s window using the client's visible list."""
         wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
         state = self._backend.main_state()
-        if state == "missing":
-            raise KamadoError(
-                ErrorCode.WINDOW_NOT_FOUND,
-                "KakaoTalk's main window is not available, so no room can be opened. "
-                "Open the main window in KakaoTalk before using --open",
-            )
         already_open = self._matching_window(wanted)
         if already_open is not None:
             return already_open
+        # A client with every window closed is still running and still holds
+        # the list; the window simply has to be drawn before it can be read.
+        # That is the minimized case with a longer wait, not a broken install,
+        # so it is asked for here and put back in the same breath below.
         if state != "visible" and not self._backend.show_main_window():
             raise KamadoError(
                 ErrorCode.WINDOW_NOT_FOUND,
@@ -845,8 +843,16 @@ class AXBackend:
     def show_main_window(self) -> bool:
         main = self._main_window()
         if main is None:
+            # A closed window is not there to be addressed at all, so the
+            # client has to draw one — and it does that after answering the
+            # request, not during it. Measured 0.828 s against the live
+            # client, which outlasts activation's own settle: reading once
+            # after that settle finds nothing and calls the client empty.
             activate()
-            main = self._main_window()
+            if self._wait(
+                lambda: self._main_window() is not None, _OPEN_TIMEOUT_SECONDS
+            ):
+                main = self._main_window()
         if main is None:
             return False
         return self._set_minimized(main, False)
@@ -860,13 +866,20 @@ class AXBackend:
         )
 
     def restore_main_window(self, state: str) -> None:
-        """Put the main window back the way it was found."""
+        """Put the main window back the way it was found, as far as it can be.
+
+        One that was minimized goes back to minimized. One that was *closed*
+        is parked minimized instead, because closing it again is not a way
+        back: the client quits a while after its main window goes away, with
+        chat windows still open or not, and tidying the desktop is no reason
+        to shut down somebody's messenger. Minimized is what the room this
+        opened already gets, and it leaves the screen just as clear.
+        """
         main = self._main_window()
         if main is None:
             return
-        if state == "minimized":
-            if not self._set_minimized(main, True):
-                raise OSError("could not restore the main window's minimized state")
+        if state in ("minimized", "missing") and not self._set_minimized(main, True):
+            raise OSError("could not put the main window back")
 
     def minimize_window(self, handle: int) -> None:
         if not self._set_minimized(self._element(handle), True):

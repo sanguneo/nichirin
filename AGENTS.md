@@ -166,6 +166,27 @@ keystrokes. Everything below is what it took to get there.
   not infer one from two clicks: the second must carry a click state of 2.
   Because that is a click at screen coordinates, the client is brought forward
   first so it cannot land in another window, and the pointer is put back.
+- **A client with every window closed is a state to recover from, not to
+  refuse.** Closing them all leaves KakaoTalk running and signed in, but absent
+  from `AXWindows`, the navigation children and hit-testing alike, so
+  `main_state` is `missing` and there is nothing to unminimize. Only a reopen
+  request produces a window, and the client draws it *after* answering the
+  request — measured 0.828 s and 0.721 s, both longer than `activate`'s own
+  settle, which is why `show_main_window` waits for the window rather than
+  reading once the way it used to. The first read of the room list on a
+  freshly drawn window then blocks while the client fills it: **41 s for 264
+  rows**.
+- **A client whose main window is closed can quit itself, so the drawn window
+  is parked, never closed back.** Observed three times: the process outlived
+  the close by 3 s and was gone within the minute — once while a minimized
+  chat window was still open, so it is the *main* window going away that ends
+  the client rather than merely the last window. It is **not** reliable: the
+  same client has also sat windowless for 4 m 32 s without quitting, so this
+  is a risk to design against rather than a timer to predict. Closing a window
+  that was found closed can therefore take the messenger down and cannot be
+  made safe by waiting. Restoration therefore minimizes a window it had to
+  draw instead of closing it, which leaves the screen just as clear and the
+  client running.
 - **A sent message is confirmed by reading it back**, never by the submit call
   alone; `submitted` means the composer emptied, delivery is proven by a new
   from-me row in the log.

@@ -305,7 +305,7 @@ class TidinessTests(DesktopTests):
         self.assertEqual(desktop.log[-2:], ["minimize", "main:visible"])
 
     def test_every_main_window_state_is_restored(self) -> None:
-        for state in ("visible", "minimized", "hidden"):
+        for state in ("visible", "minimized", "hidden", "missing"):
             with self.subTest(state=state):
                 desktop = FakeDesktop(["target"])
                 desktop.main = state
@@ -322,13 +322,38 @@ class TidinessTests(DesktopTests):
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertEqual(desktop.clicks, [])
 
-    def test_a_missing_main_window_is_not_touched(self) -> None:
+    def test_a_closed_main_window_is_drawn_rather_than_refused(self) -> None:
+        # The client runs perfectly well with every window closed, and asking
+        # it for one is exactly what the reader would otherwise get up and do.
         desktop = FakeDesktop(["target"])
         desktop.main = "missing"
+        self.assertEqual(self.opener(desktop).open("target").title, "target")
+        self.assertEqual(desktop.restored, 1)
+        self.assertEqual(desktop.clicks, [0])
+
+    def test_a_main_window_that_was_closed_is_handed_to_restoration(self) -> None:
+        desktop = FakeDesktop(["target"])
+        desktop.main = "missing"
+        self.opener(desktop).open("target")
+        self.assertEqual(desktop.log[-2:], ["minimize", "main:missing"])
+
+    def test_a_client_that_draws_no_main_window_is_a_typed_failure(self) -> None:
+        desktop = FakeDesktop(["target"])
+        desktop.main = "missing"
+        desktop.restorable = False
         with self.assertRaises(KamadoError) as raised:
             self.opener(desktop).open("target")
         self.assertEqual(raised.exception.code, ErrorCode.WINDOW_NOT_FOUND)
+        self.assertEqual(desktop.clicks, [])
+
+    def test_an_already_open_room_needs_no_main_window_at_all(self) -> None:
+        # Nothing about a closed main window stops a room that is already
+        # open from being written to, so nothing is drawn to reach it.
+        desktop = FakeDesktop([], already_open=["target"])
+        desktop.main = "missing"
+        self.assertEqual(self.opener(desktop).open("target").title, "target")
         self.assertEqual(desktop.restored, 0)
+        self.assertEqual(desktop.log, [])
 
 
 class AimTests(DesktopTests):
