@@ -366,6 +366,12 @@ keep rather than one to rediscover.
   command does, and reaching into `cli` for it meant assembling an
   `argparse.Namespace` and pointing `serve` at the layer above it.
 
+- **`open` is in the shared contract, and does nothing here.** The Windows
+  build needs `open=true` on `/context` and `/digest` to have its client open a
+  room whose key is not in memory. Every room is readable on this side, so the
+  flag is accepted and opens nothing — but a value that is neither true nor
+  false is a 400 on both, or one typo would get two answers.
+
 ## Conventions
 
 - Every command returns `{"ok": true, ...}` or

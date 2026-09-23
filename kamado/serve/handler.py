@@ -28,6 +28,7 @@ from .config import (
     MAX_STREAMS,
     _status_for,
     validate_count,
+    validate_flag,
     validate_cursor,
     validate_max_streams,
     validate_min_interval,
@@ -366,6 +367,8 @@ def build_handler(
                 limit = validate_count(
                     query.get("limit", ["40"])[0], name="limit", maximum=MAX_LIMIT
                 )
+                # Every room is readable here, so there is nothing to open.
+                validate_flag(query.get("open", ["false"])[0], name="open")
             except KamadoError as error:
                 # Refused before the reader is opened: a bad number should cost
                 # the caller a round trip, not a decryption.
@@ -413,6 +416,7 @@ def build_handler(
                     name="highlights",
                     maximum=MAX_HIGHLIGHTS,
                 )
+                validate_flag(query.get("open", ["false"])[0], name="open")
             except KamadoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return

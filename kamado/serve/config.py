@@ -180,6 +180,23 @@ def validate_count(raw: object, *, name: str, maximum: int) -> int:
     return count
 
 
+def validate_flag(raw: object, *, name: str) -> bool:
+    """Accept ``true``/``false`` (and ``1``/``0``), else raise.
+
+    ``open`` is in the shared contract because the Windows build needs it: a
+    room's key there is in memory only once the client has opened it. Every
+    room is readable here, so the flag opens nothing — but a value that is
+    neither true nor false is refused the same way on both, or one caller
+    would get two answers for one typo.
+    """
+    text = str(raw).strip().lower()
+    if text in ("true", "1"):
+        return True
+    if text in ("false", "0", ""):
+        return False
+    raise KamadoError(ErrorCode.INVALID_REQUEST, f"{name} must be true or false")
+
+
 def validate_token(token: object) -> str:
     """Accept an ASCII bearer secret and return it, else raise INVALID_REQUEST."""
     if not isinstance(token, str) or len(token) < MIN_TOKEN_LENGTH:
