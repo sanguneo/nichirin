@@ -641,7 +641,7 @@ class Reader:
 
     # -- messages ------------------------------------------------------------
 
-    def _message_query(self) -> tuple[str, str]:
+    def _message_query(self, include_erased: bool = False) -> tuple[str, str]:
         """Return the column list for a message row and the deleted predicate."""
         columns = self._require_table(MESSAGE_TABLE)
         text = _first_present(columns, _MESSAGE_TEXT_COLUMNS) or "NULL"
@@ -650,7 +650,9 @@ class Reader:
         thread = _first_present(columns, _THREAD_COLUMNS) or "NULL"
         deleted = _first_present(columns, _DELETED_COLUMNS)
         conditions = [f"COALESCE({deleted}, 0) = 0"] if deleted else []
-        conditions.append(f"(COALESCE(type, 0) & {_ERASED_TYPE_BIT}) = 0")
+        erased = f"(COALESCE(type, 0) & {_ERASED_TYPE_BIT}) != 0"
+        if not include_erased:
+            conditions.append(f"NOT {erased}")
         if text != "NULL":
             # CASE keeps json_extract away from a body that is not JSON, which
             # would fail the whole statement rather than the one row.
@@ -660,7 +662,7 @@ class Reader:
             )
         predicate = " AND ".join(conditions)
         return (
-            f"logId, authorId, type, {text}, {attachment}, {sent_at}, {thread}",
+            f"logId, authorId, type, {text}, {attachment}, {sent_at}, {thread}, {erased}",
             predicate,
         )
 
@@ -670,6 +672,7 @@ class Reader:
         limit: int = 40,
         before_id: Optional[int] = None,
         after_id: Optional[int] = None,
+        include_erased: bool = False,
     ) -> list[Message]:
         """Return up to *limit* messages, oldest first.
 
@@ -687,7 +690,7 @@ class Reader:
         Ordered by ``logId`` rather than by the timestamp: it is the key the
         client indexes, and it is monotonic per room.
         """
-        selected, deleted = self._message_query()
+        selected, deleted = self._message_query(include_erased)
         conditions = ["chatId = ?", deleted]
         parameters: list[object] = [room_id]
         if before_id is not None:
@@ -766,9 +769,24 @@ class Reader:
         return feeds.get(user_id) or f"User {user_id}"
 
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
-        log_id, author, type_code, text, attachment, sent_at, thread = tuple(row)
+        log_id, author, type_code, text, attachment, sent_at, thread, erased = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
+        if erased:
+            # The client keeps the very words that were taken back; they are
+            # dropped here, so nothing downstream can show them by mistake.
+            own = self.own_user_id()
+            return Message(
+                id=int(log_id),
+                room_id=room_id,
+                sender_id=sender_id,
+                sender=self._sender_name(room_id, sender_id),
+                text="",
+                type=kind,
+                sent_at=None if sent_at is None else int(sent_at),
+                from_me=own is not None and sender_id == own,
+                erased=True,
+            )
         known = self.names()
         own = self.own_user_id()
         # The attachment is read for what it records about *other* messages —
@@ -829,7 +847,7 @@ class Reader:
         ).fetchone()
         if row is None:
             return None
-        _log_id, author, type_code, text, _attachment, _sent_at, _thread = tuple(row)
+        _log_id, author, type_code, text, _attachment, _sent_at, _thread, _erased = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
         return model.Quote(

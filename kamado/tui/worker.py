@@ -206,7 +206,9 @@ class DatabaseOwner:
         if job.kind == OLDER:
             before_id, limit = job.payload
             assert job.room_id is not None
-            return reader.messages(job.room_id, limit=limit, before_id=before_id)
+            return reader.messages(
+                job.room_id, limit=limit, before_id=before_id, include_erased=True
+            )
         if job.kind == FRIENDS:
             return reader.friends()
         if job.kind == FEEDS:
@@ -238,7 +240,7 @@ class DatabaseOwner:
         room, limit = job.payload
         self._follow(reader, room.id)
         try:
-            messages = reader.messages(room.id, limit=limit)
+            messages = reader.messages(room.id, limit=limit, include_erased=True)
             stored = reader.stored_title(room.id)
         except BaseException:
             # No pane will exist to read it, so it is not left followed.
@@ -250,7 +252,9 @@ class DatabaseOwner:
     def _follow(self, reader: Reader, room_id: int) -> None:
         """Add a room to the one watcher, building it on the first pane."""
         if self.watcher is None:
-            self.watcher = Watcher(reader, room_ids=[room_id], interval=self._interval)
+            self.watcher = Watcher(
+                reader, room_ids=[room_id], interval=self._interval, include_erased=True
+            )
             self.watcher.prime()
         else:
             self.watcher.watch(room_id)

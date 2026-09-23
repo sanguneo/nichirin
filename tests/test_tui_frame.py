@@ -266,6 +266,27 @@ class FeedLabelTests(unittest.TestCase):
         body = self.transcript({"feedType": 21, "logId": 7001, "hidden": True})
         self.assertIn("[feed 21]", body)
 
+    def test_a_join_reads_as_the_client_says_it(self) -> None:
+        body = self.transcript({"feedType": 4, "members": [{"nickName": "합성 닉"}]})
+        self.assertIn("합성 닉님이 입장하셨습니다.", body)
+        self.assertNotIn("[", body.split("합성 닉님이")[0][-3:], "a sentence was shown as a tag")
+
+    def test_a_leave_reads_as_the_client_says_it(self) -> None:
+        body = self.transcript({"feedType": 2, "member": {"nickName": "합성 닉"}})
+        self.assertIn("합성 닉님이 퇴장하셨습니다.", body)
+
+    def test_a_deleted_message_is_a_placeholder_and_never_its_words(self) -> None:
+        reader = build_reader(
+            messages=[(7003, DIRECT_ROOM, PEER_ID, 0x4000 | 1, "지운 말", None, 1_700_000_002, 0)]
+        )
+        self.addCleanup(reader.close)
+        app = App(reader, theme=Theme(truecolor=True, enabled=False))
+        app.load_rooms()
+        app.open_room(next(room for room in app.rooms if room.id == DIRECT_ROOM))
+        body = "\n".join(strip_ansi(line) for line in app._transcript_lines(60))
+        self.assertIn("삭제된 메시지입니다", body)
+        self.assertNotIn("지운 말", body)
+
 
 class EveryViewFitsTests(unittest.TestCase):
     """Producers must not hand the frame a line the screen cannot hold."""

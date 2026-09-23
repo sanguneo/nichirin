@@ -173,13 +173,25 @@ class RoomTests(unittest.TestCase):
         )
         messages = [(7002, DIRECT_ROOM, PEER_ID, 0, joining, None, 1_700_000_001, 0)]
         with build_reader(messages=messages) as reader:
-            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "입장 합성 닉"})
+            self.assertEqual(
+                reader.feed_details(DIRECT_ROOM, [7002]), {7002: "합성 닉님이 입장하셨습니다."}
+            )
 
     def test_a_leave_is_said_in_words(self) -> None:
         leaving = json.dumps({"feedType": 2, "member": {"nickName": "떠난 이름"}})
         messages = [(7002, DIRECT_ROOM, PEER_ID, 0, leaving, None, 1_700_000_001, 0)]
         with build_reader(messages=messages) as reader:
-            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "퇴장 떠난 이름"})
+            self.assertEqual(
+                reader.feed_details(DIRECT_ROOM, [7002]), {7002: "떠난 이름님이 퇴장하셨습니다."}
+            )
+
+    def test_several_who_join_together_are_named_together(self) -> None:
+        joining = json.dumps({"feedType": 4, "members": [{"nickName": "하나"}, {"nickName": "둘"}]})
+        messages = [(7002, DIRECT_ROOM, PEER_ID, 0, joining, None, 1_700_000_001, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(
+                reader.feed_details(DIRECT_ROOM, [7002]), {7002: "하나님, 둘님이 입장하셨습니다."}
+            )
 
     def test_a_feed_with_nothing_to_add_adds_nothing(self) -> None:
         hiding = json.dumps({"feedType": 21, "logId": 7001, "hidden": True})
@@ -550,6 +562,15 @@ class ErasedMessageTests(unittest.TestCase):
     def test_a_follower_is_never_pointed_at_what_was_hidden(self) -> None:
         with build_reader(messages=self.rows()) as reader:
             self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 7100)
+
+    def test_the_interface_is_given_the_gap_but_never_the_text(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            found = reader.messages(DIRECT_ROOM, limit=50, include_erased=True)
+        self.assertEqual([message.id for message in found], [7100, 7101])
+        self.assertTrue(found[1].erased)
+        self.assertEqual(found[1].text, "")
+        self.assertNotIn("지운 말", [message.text for message in found])
+        self.assertTrue(all("erased" not in message.as_json() for message in found))
 
     def test_an_erased_message_is_not_found_by_search(self) -> None:
         with build_reader(messages=self.rows()) as reader:

@@ -27,7 +27,15 @@ from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KamadoError
-from ..model import FEED_KINDS, FEED_MESSAGE, Friend, Message, Room, message_kind
+from ..model import (
+    ERASED_PLACEHOLDER,
+    FEED_MESSAGE,
+    Friend,
+    Message,
+    Room,
+    is_feed_sentence,
+    message_kind,
+)
 from ..reader import Reader
 from . import digest
 from . import images
@@ -1113,7 +1121,11 @@ class App:
             speaker = "나" if message.from_me else message.sender
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
-            if message.photo is not None:
+            if message.erased:
+                # Said the way the client says it; what was taken back is not
+                # carried here at all.
+                wrapped = [self.theme.fg("dim", ERASED_PLACEHOLDER)]
+            elif message.photo is not None:
                 # The live client writes "사진" into the text of a photo message,
                 # so its own words are not what a reader needs here; the label
                 # is rebuilt so it can carry the open/close marker.
@@ -1128,13 +1140,13 @@ class App:
                 wrapped = self._wrap_body(message.text, body_width)
             else:
                 detail = self._feed_detail(chat, message)
-                # A join or a leave says so in words; "feed" in front of that
-                # is the storage talking, not the conversation.
-                if detail.split()[:1] and detail.split()[0] in FEED_KINDS.values():
-                    label = detail.strip()
+                # A join or a leave is a sentence already, the one the client
+                # shows, so it is shown as one rather than as a tag.
+                if is_feed_sentence(detail):
+                    wrapped = [self.theme.fg("dim", detail.strip())]
                 else:
                     label = message_kind(message.type) + detail
-                wrapped = [self.theme.fg("dim", f"[{label}]")]
+                    wrapped = [self.theme.fg("dim", f"[{label}]")]
 
             head = (
                 self.theme.fg("dim", stamp)

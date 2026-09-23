@@ -146,9 +146,18 @@ code that depends on them without re-checking will quietly break.
   JSON fails the statement rather than the row. The Windows build leaves the
   text encrypted instead and marks it with a column this schema lacks — the
   bit is what the two share.
+- **The interface shows where a deleted message was; the commands do not.**
+  `Reader.messages(include_erased=True)` keeps a deleted row with its text
+  dropped in the reader — this client keeps the very words that were taken
+  back — and `Message.erased` set. Only `tui/worker.py`'s reads and its
+  watcher ask for that, so the screen says "삭제된 메시지입니다" where the
+  client does; every command, `serve` and the shared `openapi.json` still
+  leave the row out, and `as_json` never mentions the field.
 - **Feed types 4 and 2 are said in words** (`model.FEED_KINDS`): a join and a
   leave, checked on the Windows build against the client's own screen; here
   309 and 183 of the newest 20,000 feeds, every one naming a member.
+  They are shown as the client's own sentence, "이름님이 입장하셨습니다." —
+  three names at most, then "외 N명" — and not as a bracketed tag.
 - **A newcomer is looked for again.** `names()` is read once per reader and
   the interface keeps its reader, so somebody who joined after a room was
   opened stayed `User <id>`. `Reader._sender_name` re-reads the map at most

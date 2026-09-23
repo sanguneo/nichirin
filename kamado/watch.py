@@ -49,10 +49,12 @@ class Watcher:
         reader: Reader,
         room_ids: Optional[Sequence[int]] = None,
         interval: float = DEFAULT_INTERVAL_SECONDS,
+        include_erased: bool = False,
     ) -> None:
         if interval <= 0:
             raise ValueError("interval must be positive")
         self._reader = reader
+        self._include_erased = include_erased
         self._requested = None if room_ids is None else list(room_ids)
         self.interval = interval
         self._print: Optional[Fingerprint] = None
@@ -189,7 +191,10 @@ class Watcher:
         cursor = since
         while True:
             page = self._reader.messages(
-                room_id, limit=_CATCH_UP_LIMIT, after_id=cursor
+                room_id,
+                limit=_CATCH_UP_LIMIT,
+                after_id=cursor,
+                include_erased=self._include_erased,
             )
             if not page:
                 break

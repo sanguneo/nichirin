@@ -94,6 +94,11 @@ is the server's, not the platform's. Other codes stay numbers.
 """
 
 
+ERASED_PLACEHOLDER: Final = "삭제된 메시지입니다"
+"""What the client shows where a message deleted for everyone was."""
+_FEED_NAMES_SHOWN: Final = 3
+
+
 def feed_detail(raw: object) -> str:
     """Describe a feed row from what it carries, naming nothing it does not.
 
@@ -114,14 +119,7 @@ def feed_detail(raw: object) -> str:
     if not isinstance(payload, dict):
         return ""
 
-    parts: list[str] = []
     code = payload.get("feedType")
-    if isinstance(code, int):
-        parts.append(FEED_KINDS.get(code, str(code)))
-    cover = payload.get("coverType")
-    if isinstance(cover, str) and cover.strip():
-        parts.append(cover.strip())
-
     listed = payload.get("members")
     if not isinstance(listed, list):
         alone = payload.get("member")
@@ -131,9 +129,33 @@ def feed_detail(raw: object) -> str:
         for one in listed
         if isinstance(one, dict) and str(one.get("nickName") or "").strip()
     ]
+    if isinstance(code, int) and code in FEED_KINDS:
+        return feed_sentence(FEED_KINDS[code], named)
+
+    parts: list[str] = []
+    if isinstance(code, int):
+        parts.append(str(code))
+    cover = payload.get("coverType")
+    if isinstance(cover, str) and cover.strip():
+        parts.append(cover.strip())
     if named:
         parts.append("·".join(named[:3]))
     return " ".join(parts)
+
+
+def feed_sentence(kind: str, named: Sequence[str]) -> str:
+    """Say a join or a leave the way the client does: "이름님이 입장하셨습니다."."""
+    shown = [f"{name}님" for name in named[:_FEED_NAMES_SHOWN]]
+    if not shown:
+        return f"{kind}하셨습니다."
+    rest = len(named) - len(shown)
+    who = ", ".join(shown) + (f" 외 {rest}명" if rest > 0 else "")
+    return f"{who}이 {kind}하셨습니다."
+
+
+def is_feed_sentence(detail: str) -> bool:
+    """Whether a feed's detail is already a sentence rather than a label."""
+    return detail.strip().endswith("하셨습니다.")
 
 
 def message_kind(type_code: int) -> str:
@@ -297,6 +319,14 @@ class Message:
     replies_to_me: bool = False
     photo: Optional[Photo] = None
     """The picture this message carries, for the kinds that carry one."""
+    erased: bool = False
+    """Deleted for everyone; its text is never carried, only that it was there.
+
+    The client keeps the words that were taken back, so the text is dropped
+    here rather than at the screen. Only the interface asks for these rows, to
+    say "삭제된 메시지입니다" where the client does; the commands leave them
+    out, and ``as_json`` does not mention the field.
+    """
 
     @property
     def has_text(self) -> bool:
