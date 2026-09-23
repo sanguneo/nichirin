@@ -163,7 +163,15 @@ class GroupTests(unittest.TestCase):
         self.assertEqual([m["kind"] for m in carrying], ["photo"])
         self.assertEqual(
             carrying[0]["photo"],
-            {"url": "https://talk.kakaocdn.net/synthetic/full.jpg", "width": 400, "height": 300, "count": 1},
+            {
+                "url": "https://talk.kakaocdn.net/synthetic/full.jpg",
+                "width": 400,
+                "height": 300,
+                "count": 1,
+                "images": [
+                    {"url": "https://talk.kakaocdn.net/synthetic/full.jpg", "width": 400, "height": 300}
+                ],
+            },
         )
 
 

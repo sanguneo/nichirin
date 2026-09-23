@@ -296,9 +296,20 @@ class Photo:
     height: int
     count: int = 1
     """How many pictures the message carried; an album's cover is ``url``."""
+    images: tuple[tuple[str, int, int], ...] = ()
+    """Every picture, in order, as ``(url, width, height)``; one for a single photo."""
 
     def as_json(self) -> dict[str, Any]:
-        return {"url": self.url, "width": self.width, "height": self.height, "count": self.count}
+        images = self.images or ((self.url, self.width, self.height),)
+        return {
+            "url": self.url,
+            "width": self.width,
+            "height": self.height,
+            "count": self.count,
+            "images": [
+                {"url": url, "width": width, "height": height} for url, width, height in images
+            ],
+        }
 
 
 def photo_in(type_code: int, attachment: dict[str, Any]) -> Optional[Photo]:
@@ -319,18 +330,43 @@ def photo_in(type_code: int, attachment: dict[str, Any]) -> Optional[Photo]:
         return None
     if width <= 0 or height <= 0:
         return None
-    return Photo(url=url, width=width, height=height, count=_picture_count(attachment))
+    images = album_images(attachment) or ((url, width, height),)
+    return Photo(url=url, width=width, height=height, count=len(images), images=images)
 
 
-def _picture_count(attachment: dict[str, Any]) -> int:
-    """How many pictures an album lists; a single photo is one."""
-    for key in PHOTO_LIST_KEYS:
-        values = attachment.get(key)
-        if isinstance(values, list):
-            usable = [one for one in values if isinstance(one, str) and one.startswith("http")]
-            if usable:
-                return len(usable)
-    return 1
+def album_images(attachment: dict[str, Any]) -> tuple[tuple[str, int, int], ...]:
+    """Every picture an album lists, in order, with the size stored beside it.
+
+    An album keeps parallel lists: ``imageUrls`` with the originals' sizes in
+    ``wl``/``hl``, and ``thumbnailUrls`` with ``thumbnailWidths``/``Heights``.
+    Measured on live albums of 2, 4 and 6 pictures, every list held one entry
+    per picture on both builds. The originals are preferred; a size the list
+    does not hold is 0 rather than a guess. Empty for a single photo.
+    """
+    for key, widths_key, heights_key in (
+        ("imageUrls", "wl", "hl"),
+        ("thumbnailUrls", "thumbnailWidths", "thumbnailHeights"),
+    ):
+        addresses = attachment.get(key)
+        if not isinstance(addresses, list):
+            continue
+        widths, heights = attachment.get(widths_key), attachment.get(heights_key)
+        found = [
+            (address, _nth_number(widths, index), _nth_number(heights, index))
+            for index, address in enumerate(addresses)
+            if isinstance(address, str) and address.startswith("http")
+        ]
+        if found:
+            return tuple(found)
+    return ()
+
+
+def _nth_number(values: object, index: int) -> int:
+    if isinstance(values, list) and index < len(values):
+        value = values[index]
+        if isinstance(value, int) and value > 0:
+            return value
+    return 0
 
 
 def _first_number(values: object) -> Optional[int]:
