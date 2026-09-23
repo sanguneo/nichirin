@@ -20,6 +20,7 @@ guessed column aliases.  Two details from that schema shape the code:
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Iterator, Optional, Sequence
 
@@ -34,6 +35,16 @@ _SELF_CHAT_TITLE = "나와의 채팅"
 _GROUP_TITLE_MEMBERS = 3
 
 _THREAD_COLUMN = "threadId"
+NAME_RETRY_SECONDS = 5.0
+"""How long an unknown sender waits before the name map is read again."""
+_ERASED_COLUMN = "is_encrypt_delete_msg"
+"""Set on a message deleted for everyone, whose text the client then encrypts.
+
+Such a row keeps ``deleted = 0``, so filtering on that alone showed the
+encrypted remainder as if somebody had typed it. Measured over the newest
+4,000 rows of every readable room: the 60 rows with this flag were exactly the
+60 whose text was base64, and none of the 12,033 without it was.
+"""
 """Where a newer client points a reply at the message it answers.
 
 The older shape kept the reply's own copy of what it answered inside the
@@ -68,9 +79,13 @@ class Reader:
         self._keyring: Optional[Keyring] = keyring
         self._ledger = ledger
         self._names: Optional[dict[int, str]] = None
+        self._names_read_at = 0.0
+        self._feed_names: dict[int, dict[int, str]] = {}
+        self._feeds_lack: dict[int, set[int]] = {}
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
         self._selections: dict[int, str] = {}
+        self._live_conditions: dict[int, str] = {}
 
     @property
     def user_directory(self) -> Path:
@@ -84,6 +99,17 @@ class Reader:
         if self._keyring is None:
             self._keyring = Keyring.discover(self.user_directory)
         return self._keyring
+
+    def _key_for(self, name: str) -> bytes:
+        """The key for *name*, scanning again once if a remembered set lacks it.
+
+        The remembered addresses cannot know about a room opened after they
+        were recorded, so a miss against them is not yet an answer.
+        """
+        ring = self.keyring
+        if not ring.has(name) and ring.remembered:
+            self._keyring = ring = Keyring.discover(self.user_directory, rescan=True)
+        return ring.key_for(name)
 
     def close(self) -> None:
         """Close what this reader built, and leave a borrowed cache alone.
@@ -145,11 +171,11 @@ class Reader:
 
     def _catalog(self) -> sqlite3.Connection:
         name = paths.CATALOG_DATABASE
-        return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
+        return self._cache.connect(self.keyring.path_for(name), self._key_for(name))
 
     def _users(self) -> sqlite3.Connection:
         name = paths.USER_DATABASE
-        return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
+        return self._cache.connect(self.keyring.path_for(name), self._key_for(name))
 
     def names(self) -> dict[int, str]:
         """Map every known user id to the best available display name.
@@ -178,11 +204,45 @@ class Reader:
                 }
             )
             self._names = found
+            self._names_read_at = time.monotonic()
             if self._ledger is not None:
                 # Once per process: the map is memoised above, and only a name
                 # that differs from its last sighting is appended.
                 self._ledger.observe(found)
         return self._names
+
+    def _sender_name(self, room_id: int, user_id: int) -> str:
+        """Name *user_id*, looking again before settling for a number.
+
+        The name map is read once per reader, and the interface keeps one
+        reader for as long as it runs — so somebody who joined an open chat
+        after the room was opened stayed ``User <id>`` until the room was
+        opened again, when a fresh read found them. An unknown id now has
+        the map read again, at most every :data:`NAME_RETRY_SECONDS`, and
+        failing that the name the room's own join feed recorded for them.
+        """
+        found = self.names().get(user_id)
+        if found is not None:
+            return found
+        if time.monotonic() - self._names_read_at >= NAME_RETRY_SECONDS:
+            self._names = None
+            found = self.names().get(user_id)
+            if found is not None:
+                return found
+        feeds = self._feed_names.get(room_id)
+        lacking = self._feeds_lack.setdefault(room_id, set())
+        if feeds is None or (user_id not in feeds and user_id not in lacking):
+            # Newest last, so the name a person carried most recently wins.
+            feeds = {
+                record.user_id: record.name
+                for record in names_module.from_feeds(self._logs(room_id))
+            }
+            self._feed_names[room_id] = feeds
+            if user_id not in feeds:
+                # Read once per stranger: a sender no feed names would
+                # otherwise re-read every feed of the room for each line.
+                lacking.add(user_id)
+        return feeds.get(user_id) or f"User {user_id}"
 
     def name_history(self, room_id: int) -> dict[int, list[NameRecord]]:
         """Return every name each user has been seen under in one room.
@@ -412,7 +472,7 @@ class Reader:
 
     def _logs(self, room_id: int) -> sqlite3.Connection:
         name = paths.chat_log_name(room_id)
-        return self._cache.connect(self.keyring.path_for(name), self.keyring.key_for(name))
+        return self._cache.connect(self.keyring.path_for(name), self._key_for(name))
 
     def _selection(self, room_id: int, connection: sqlite3.Connection) -> str:
         """Name the columns one message is read from, for this room's log.
@@ -427,11 +487,30 @@ class Reader:
         """
         known = self._selections.get(room_id)
         if known is None:
-            columns = {column[1] for column in connection.execute("PRAGMA table_info(chatLogs)")}
-            thread = _THREAD_COLUMN if _THREAD_COLUMN in columns else "NULL"
-            known = f"logId, authorId, type, message, attachement, sendAt, {thread}"
-            self._selections[room_id] = known
+            self._read_schema(room_id, connection)
+            known = self._selections[room_id]
         return known
+
+    def _live(self, room_id: int, connection: sqlite3.Connection) -> str:
+        """The condition a row must meet to be a message nobody took back.
+
+        Two columns say a message was deleted, and the newer one is absent
+        from an older log, so it is asked for the way ``threadId`` is.
+        """
+        known = self._live_conditions.get(room_id)
+        if known is None:
+            self._read_schema(room_id, connection)
+            known = self._live_conditions[room_id]
+        return known
+
+    def _read_schema(self, room_id: int, connection: sqlite3.Connection) -> None:
+        columns = {column[1] for column in connection.execute("PRAGMA table_info(chatLogs)")}
+        thread = _THREAD_COLUMN if _THREAD_COLUMN in columns else "NULL"
+        self._selections[room_id] = f"logId, authorId, type, message, attachement, sendAt, {thread}"
+        live = "COALESCE(deleted, 0) = 0"
+        if _ERASED_COLUMN in columns:
+            live += f" AND COALESCE({_ERASED_COLUMN}, 0) = 0"
+        self._live_conditions[room_id] = live
 
     def messages(
         self,
@@ -456,7 +535,7 @@ class Reader:
         connection = self._logs(room_id)
         sql = f"SELECT {self._selection(room_id, connection)} FROM chatLogs"
         parameters: list[object] = []
-        conditions = ["COALESCE(deleted, 0) = 0"]
+        conditions = [self._live(room_id, connection)]
         if before_id is not None:
             conditions.append("logId < ?")
             parameters.append(before_id)
@@ -501,8 +580,9 @@ class Reader:
 
     def count_messages(self, room_id: int) -> int:
         """Return how many undeleted messages are stored locally for a room."""
-        row = self._logs(room_id).execute(
-            "SELECT COUNT(*) FROM chatLogs WHERE COALESCE(deleted, 0) = 0"
+        connection = self._logs(room_id)
+        row = connection.execute(
+            f"SELECT COUNT(*) FROM chatLogs WHERE {self._live(room_id, connection)}"
         ).fetchone()
         return int(row[0])
 
@@ -513,8 +593,9 @@ class Reader:
         a follower resumes from, and naming a row no query will ever return
         is how a cursor comes to point at nothing.
         """
-        row = self._logs(room_id).execute(
-            "SELECT MAX(logId) FROM chatLogs WHERE COALESCE(deleted, 0) = 0"
+        connection = self._logs(room_id)
+        row = connection.execute(
+            f"SELECT MAX(logId) FROM chatLogs WHERE {self._live(room_id, connection)}"
         ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
@@ -538,7 +619,7 @@ class Reader:
             id=int(log_id),
             room_id=room_id,
             sender_id=sender_id,
-            sender=known.get(sender_id, f"User {sender_id}"),
+            sender=self._sender_name(room_id, sender_id),
             # A membership feed's message column is the client's own JSON,
             # not words anybody typed, so it is not passed off as text.
             text=""
@@ -582,7 +663,7 @@ class Reader:
         connection = self._logs(room_id)
         row = connection.execute(
             f"SELECT {self._selection(room_id, connection)} FROM chatLogs "
-            "WHERE logId = ? AND COALESCE(deleted, 0) = 0",
+            f"WHERE logId = ? AND {self._live(room_id, connection)}",
             (source,),
         ).fetchone()
         if row is None:
@@ -623,7 +704,7 @@ class Reader:
                 # message column is JSON, so a search for an ordinary word
                 # like "type" would match rows that show no text at all.
                 f"SELECT {self._selection(room.id, connection)} FROM chatLogs "
-                "WHERE COALESCE(deleted, 0) = 0 AND type != ? AND message LIKE ? "
+                f"WHERE {self._live(room.id, connection)} AND type != ? AND message LIKE ? "
                 "ORDER BY logId DESC LIMIT ?",
                 (model.FEED_MESSAGE, pattern, remaining),
             ).fetchall()

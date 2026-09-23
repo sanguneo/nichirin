@@ -24,7 +24,7 @@ from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KanaoError
-from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
+from ..model import FEED_KINDS, FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest, images
 from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
@@ -841,7 +841,13 @@ class App:
             speaker = "나" if message.from_me else message.sender
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
-            label = message_kind(message.type) + self._feed_detail(chat, message)
+            detail = self._feed_detail(chat, message)
+            # A join or a leave says so in words; "feed" in front of that is
+            # the storage talking, not the conversation.
+            if detail.split()[:1] and detail.split()[0] in FEED_KINDS.values():
+                label = detail.strip()
+            else:
+                label = message_kind(message.type) + detail
             # A picture is offered only where it could actually be drawn, so a
             # terminal that cannot show one never suggests it can.
             has_picture = message.photo is not None

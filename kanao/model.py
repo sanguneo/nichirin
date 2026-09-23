@@ -75,13 +75,23 @@ def message_kind(type_code: int) -> str:
     return _MESSAGE_KINDS.get(type_code, f"other:{type_code}")
 
 
+FEED_KINDS: Final = {4: "입장", 2: "퇴장"}
+"""The feed types whose meaning has been checked against a live screen.
+
+Read off an open chat where the client's own view and this one sat side by
+side: every ``4`` named someone who had just come in and every ``2`` someone
+who had left — 736 and 161 of them across the readable rooms, all naming a
+member. Other codes stay numbers until they are checked the same way.
+"""
+
+
 def feed_detail(raw: object) -> str:
     """Describe a feed row from what it carries, naming nothing it does not.
 
     A feed's JSON is the client's own bookkeeping, and what a ``feedType``
-    means has never been confirmed against a live client — so the number is
-    passed through as a number, for the same reason :func:`message_kind`
-    leaves an unconfirmed code as one. Only what the client wrote in words is
+    means was never confirmed for most codes — so those are passed through as
+    numbers, for the same reason :func:`message_kind` leaves an unconfirmed
+    code as one. The few in :data:`FEED_KINDS` are said in words. Only what the client wrote in words is
     quoted: the ``coverType`` an open chat records when its SafeBot covers a
     message, and the nicknames a membership row lists.
 
@@ -102,7 +112,7 @@ def feed_detail(raw: object) -> str:
     parts: list[str] = []
     code = payload.get("feedType")
     if isinstance(code, int):
-        parts.append(str(code))
+        parts.append(FEED_KINDS.get(code, str(code)))
     cover = payload.get("coverType")
     if isinstance(cover, str) and cover.strip():
         parts.append(cover.strip())

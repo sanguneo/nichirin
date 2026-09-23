@@ -320,7 +320,12 @@ class FeedLabelTests(unittest.TestCase):
     def test_the_json_itself_never_reaches_the_transcript(self) -> None:
         body = self.transcript({"feedType": 4, "members": [{"nickName": "합성 닉"}]})
         self.assertNotIn("feedType", body)
-        self.assertIn("[feed 4 합성 닉]", body)
+        self.assertIn("[입장 합성 닉]", body)
+
+    def test_a_leave_reads_as_a_leave(self) -> None:
+        body = self.transcript({"feedType": 2, "members": [{"nickName": "합성 닉"}]})
+        self.assertIn("[퇴장 합성 닉]", body)
+        self.assertNotIn("feed", body)
 
 
 class EveryViewFitsTests(unittest.TestCase):

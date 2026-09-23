@@ -92,6 +92,13 @@ class Keyring:
     pid: Optional[int]
     keys: dict[str, bytes] = field(default_factory=dict)
     """Keys by profile-relative posix path, and again by bare filename."""
+    remembered: bool = False
+    """Built from a previous scan's addresses, so it may miss a newer room.
+
+    A remembered set is trusted when it pairs at least as many databases as
+    the scan that recorded it — which says nothing about a room the client
+    opened since. That room stayed unreadable until the client restarted.
+    """
 
     @property
     def running(self) -> bool:
@@ -99,7 +106,7 @@ class Keyring:
         return self.pid is not None
 
     @classmethod
-    def discover(cls, user_directory: Path) -> "Keyring":
+    def discover(cls, user_directory: Path, rescan: bool = False) -> "Keyring":
         """Scan the running client once and pair its keys with local databases."""
         pid = find_pid()
         if pid is None:
@@ -121,10 +128,10 @@ class Keyring:
         # again. Addresses from the last scan are re-read first; they are not
         # trusted, only tried, and a short answer sends us back to the scan.
         remembered, expected = _remembered(pid)
-        if remembered and expected > 0:
+        if remembered and expected > 0 and not rescan:
             keys = _pair(resolve_addresses(pid, remembered), databases, user_directory)
             if len(keys) >= expected:
-                return cls(user_directory=user_directory, pid=pid, keys=keys)
+                return cls(user_directory=user_directory, pid=pid, keys=keys, remembered=True)
 
         contexts = scan_process(pid)
         keys = _pair(contexts, databases, user_directory)

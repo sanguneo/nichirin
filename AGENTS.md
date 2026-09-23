@@ -79,6 +79,13 @@ Every command pays discovery before it answers, and both halves were slow:
   re-read in 0.8 ms. **Only addresses are stored — never a key or a salt**, and
   every cached address is decoded and followed exactly like a fresh candidate,
   so a moved heap yields fewer contexts and falls back to a full scan.
+- **A remembered set cannot know about a room opened after it.** It is
+  trusted when it pairs as many databases as before, which it still does
+  when the client has opened one more since — so that room read as
+  `KEY_UNAVAILABLE` until the client restarted. Found by sending to a room
+  that had just been opened for the send: remembered 32, fresh 33.
+  `Reader._key_for` rescans once, ignoring the remembered set, when it lacks
+  the database asked for.
 - **The profile is walked, not globbed.** `rglob("*")` stats every entry in a
   profile that also holds media and caches: 1.36 s for 298 databases against
   92.8 ms with `os.walk`. `test_paths.py` pins the resulting order, which the
@@ -202,6 +209,26 @@ Taken from a live client, not guessed.
   `search` excludes them because an ordinary word would otherwise match a row
   that shows no text at all. Live feeds carry a real `authorId`, so they are
   attributed like any other row.
+
+- **A message deleted for everyone is not `deleted = 1`.** The client keeps
+  the row with `deleted = 0`, sets `is_encrypt_delete_msg = 1` and replaces
+  the text with base64, often adding `0x4000` to the type (16385, 16386). The
+  screen showed that base64 as something the user had typed. Over the newest
+  4,000 rows of every readable room the flag and the base64 coincided
+  exactly: 60 rows each way, none of 12,033 others. `Reader._live` adds the
+  flag to every "not deleted" condition, asking the schema for it the way
+  `threadId` is asked for.
+- **A newcomer is looked for again, not left as a number.** `names()` is read
+  once per reader and the interface keeps one reader for its whole life, so
+  somebody who joined an open chat after the room was opened showed as
+  `User <id>` until the room was reopened. `Reader._sender_name` re-reads the
+  map for an unknown id at most every `NAME_RETRY_SECONDS`, then falls back to
+  the nickname the room's join feed recorded, reading the feeds once per
+  stranger rather than once per line.
+- **Two feed types are said in words.** `4` is a join and `2` a leave —
+  read off a live open chat beside the client's own screen, 736 and 161 rows,
+  every one naming a member. `model.FEED_KINDS` holds only those; every other
+  code stays a number until it is checked the same way.
 
 ### Being addressed: mentions and replies
 
@@ -733,6 +760,32 @@ on a live client, newest 4,000 rows of each readable room.
   four wrong rooms opened for a pinned room. Alternating brought that to one,
   and the remembered row brings it to zero: measured 10.0 s and four rooms,
   then 5.3 s and one, then 2.9 s and none.
+- **With a hint, two rows are guessed at, never eight.** The remembered row
+  and the hinted one; after that the search box. Alternating across the top
+  rows opened every one of them from the interface whenever its order
+  disagreed with the screen's, which it does for every pinned room. The
+  sweep survives only for a caller that has no hint at all.
+- **A room past the searched rows is searched for, not swept for.** With a
+  catalog hint beyond `SEARCHED_ROWS`, every hint guess fell out of range and
+  what remained was a sweep of the top rows — each a wrong room opened and
+  marked read before failing anyway. Such a room now gets only its remembered
+  row, then the client's search box: the text goes into the visible `Edit`
+  (140x23) with `EM_REPLACESEL`, and the results are drawn in a **separate,
+  previously hidden `SearchListCtrl`**, not in `ChatRoomListCtrl`. Clicking
+  the room list after searching opened the unfiltered top room at 0.15 s and
+  nothing at 1.0 s; clicking the result list's row 0 with the ordinary row
+  geometry opened the room. The box is 0x0 until search is opened, so a closed
+  one is opened by posting a click at the magnifier inside `ChatRoomListView`
+  (217,25 at 100%) and closed again afterwards at its X (297,72). A bare
+  down/up there does nothing: the view arms a button only after a
+  `WM_MOUSEMOVE` over it, which is posted too, so the cursor still never
+  moves. A search row the person had open is emptied but left open. Verified
+  live from a tray-hidden main window: the room sent, its window ended
+  minimised, the main window back in the tray and the search row closed.
+- **A minimise sent the moment a window appears can be undone.** A room opened
+  from the search results was left in front: the client's own show landed
+  after the minimise. `RoomOpener._park` watches the window until it has
+  stayed iconic for `PARKED_POLLS` looks and minimises it again if it rose.
 - **The old note, kept for the shape of the cost:** That
   is the true cost of a miss, not the flicker. Keep `SEARCHED_ROWS` small and
   prefer rooms near the top of the list.

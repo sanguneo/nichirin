@@ -131,5 +131,53 @@ class DiscoveryCacheTests(unittest.TestCase):
         self.assertNotIn(SALT, raw)
 
 
+class NewerRoomTests(DiscoveryCacheTests):
+    """A room the client opens after the scan is not in the remembered set.
+
+    The remembered addresses are trusted when they pair as many databases as
+    before, which is exactly what they still do when one more room has been
+    opened since — so that room stayed unreadable until the client restarted.
+    """
+
+    def test_a_remembered_ring_says_that_it_is_one(self) -> None:
+        self.assertFalse(Keyring.discover(self.profile).remembered)
+        self.assertTrue(Keyring.discover(self.profile).remembered)
+
+    def test_a_rescan_ignores_the_remembered_addresses(self) -> None:
+        Keyring.discover(self.profile)
+        ring = Keyring.discover(self.profile, rescan=True)
+        self.assertEqual(self.scans, 2)
+        self.assertFalse(ring.remembered)
+
+    def test_a_reader_scans_again_for_a_room_the_remembered_set_lacks(self) -> None:
+        from kanao.reader import Reader
+
+        newer = self.profile / "chat_data" / "chatLogs_2002.edb"
+        newer_salt, newer_key = bytes(range(16, 32)), bytes(range(200, 232))
+        newer.write_bytes(newer_salt + b"\x00" * 64)
+        Keyring.discover(self.profile)
+
+        def scan_process(pid: int) -> list[CodecContext]:
+            self.scans += 1
+            return [
+                CodecContext(address=ADDRESS, salt=SALT, key=KEY),
+                CodecContext(address=ADDRESS + 0x100, salt=newer_salt, key=newer_key),
+            ]
+
+        keyring_module.scan_process = scan_process
+        reader = Reader(user_directory=self.profile, cache=object())  # type: ignore[arg-type]
+        self.assertTrue(reader.keyring.remembered)
+        self.assertEqual(reader._key_for("chat_data/chatLogs_2002.edb"), newer_key)
+        self.assertEqual(self.scans, 2)
+
+    def test_a_reader_does_not_rescan_for_a_room_it_already_has(self) -> None:
+        from kanao.reader import Reader
+
+        Keyring.discover(self.profile)
+        reader = Reader(user_directory=self.profile, cache=object())  # type: ignore[arg-type]
+        reader._key_for("chat_data/chatLogs_1001.edb")
+        self.assertEqual(self.scans, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

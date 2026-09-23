@@ -221,6 +221,100 @@ class MessageTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, ErrorCode.KEY_UNAVAILABLE)
 
 
+class NewcomerNameTests(unittest.TestCase):
+    """Somebody who joins after the room was read is not left as a number.
+
+    The name map is read once per reader and the interface keeps its reader
+    for as long as it runs, so a newcomer stayed ``User <id>`` until the room
+    was opened again — when a fresh read found them.
+    """
+
+    NEWCOMER = 555000111
+
+    def rows(self, feed_name: str | None = None) -> list[tuple]:
+        rows = [(5200, self.NEWCOMER, 1, "안녕하세요", None, 1_700_001_000, 0)]
+        if feed_name is not None:
+            feed = {"feedType": 4, "members": [{"userId": self.NEWCOMER, "nickName": feed_name}]}
+            rows.insert(0, (5199, self.NEWCOMER, 0, json.dumps(feed), None, 1_700_000_990, 0))
+        return rows
+
+    def newest(self, reader: Reader) -> str:
+        return reader.messages(DIRECT_ROOM, limit=50)[-1].sender
+
+    def test_a_name_that_arrives_later_is_found_on_the_next_read(self) -> None:
+        from kanao import paths
+
+        with build_reader(messages=self.rows()) as reader:
+            self.assertEqual(self.newest(reader), f"User {self.NEWCOMER}")
+            users = reader._cache.databases[paths.USER_DATABASE]  # type: ignore[attr-defined]
+            users.execute(
+                "INSERT INTO talkUser (userId, type, nickName) VALUES (?, 1000, ?)",
+                (self.NEWCOMER, "새로 온 사람"),
+            )
+            users.commit()
+            reader._names_read_at -= reader_module.NAME_RETRY_SECONDS
+            self.assertEqual(self.newest(reader), "새로 온 사람")
+
+    def test_the_join_feed_names_somebody_the_profile_does_not(self) -> None:
+        with build_reader(messages=self.rows(feed_name="입장한 닉")) as reader:
+            self.assertEqual(self.newest(reader), "입장한 닉")
+
+    def test_the_map_is_not_reread_for_every_line(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            reader.names()
+            before = reader._names
+            self.newest(reader)
+            self.assertIs(reader._names, before, "the map was read again inside the retry window")
+
+
+class ErasedMessageTests(unittest.TestCase):
+    """A message deleted for everyone keeps ``deleted = 0`` and an encrypted text.
+
+    The client flags it in ``is_encrypt_delete_msg`` instead, and the text it
+    leaves behind is base64 that nobody wrote. Filtering on ``deleted`` alone
+    put that in the conversation as if it had been typed.
+    """
+
+    ERASED_TEXT = "c3ludGhldGljIGVyYXNlZCByZW1haW5kZXI="
+
+    def setUp(self) -> None:
+        from kanao import paths
+        from kanao.reader import Reader
+        from tests.fixtures import build_profile
+
+        cache, ring = build_profile()
+        self.addCleanup(cache.close)
+        self.reader = Reader(keyring=ring, cache=cache)
+        self.addCleanup(self.reader.close)
+        connection = cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        connection.execute("ALTER TABLE chatLogs ADD COLUMN is_encrypt_delete_msg INTEGER")
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, "
+            "deleted, is_encrypt_delete_msg) VALUES (5004, ?, 16385, ?, NULL, 1800005004, 0, 1)",
+            (PEER_ID, self.ERASED_TEXT),
+        )
+        connection.commit()
+
+    def test_an_erased_message_is_not_part_of_the_conversation(self) -> None:
+        found = self.reader.messages(DIRECT_ROOM, limit=50)
+        self.assertNotIn(5004, [message.id for message in found])
+        self.assertNotIn(self.ERASED_TEXT, [message.text for message in found])
+
+    def test_a_follower_is_never_pointed_at_an_erased_message(self) -> None:
+        self.assertEqual(self.reader.newest_log_id(DIRECT_ROOM), 5003)
+
+    def test_an_erased_message_is_not_counted(self) -> None:
+        from tests.fixtures import build_reader
+
+        with build_reader() as plain:
+            before = plain.count_messages(DIRECT_ROOM)
+        self.assertEqual(self.reader.count_messages(DIRECT_ROOM), before)
+
+    def test_an_erased_message_is_not_found_by_search(self) -> None:
+        found = list(self.reader.search("c3ludGhldGlj"))
+        self.assertEqual(found, [])
+
+
 class SearchTests(unittest.TestCase):
     def test_finds_matches_across_readable_rooms(self) -> None:
         with build_reader() as reader:
@@ -318,9 +412,9 @@ class MembershipFeedTests(unittest.TestCase):
 class FeedDetailTests(unittest.TestCase):
     """A feed can say which kind it is without its JSON reaching the screen.
 
-    The number is passed through as a number because no live client has ever
-    confirmed what a `feedType` means; only what the client wrote in words —
-    a cover reason, a nickname — is quoted.
+    A number is passed through as a number unless its meaning was checked
+    against a live screen — so far only a join and a leave; otherwise only
+    what the client wrote in words — a cover reason, a nickname — is quoted.
     """
 
     def feeds(self, payload: dict) -> dict[int, str]:
@@ -343,7 +437,11 @@ class FeedDetailTests(unittest.TestCase):
         said = self.feeds(
             {"feedType": 4, "members": [{"userId": PEER_ID, "nickName": "합성 닉"}]}
         )
-        self.assertEqual(said, {5100: "4 합성 닉"})
+        self.assertEqual(said, {5100: "입장 합성 닉"})
+
+    def test_a_leave_is_said_in_words(self) -> None:
+        said = self.feeds({"feedType": 2, "member": {"nickName": "떠난 이름"}})
+        self.assertEqual(said, {5100: "퇴장 떠난 이름"})
 
     def test_a_single_member_is_read_like_a_list_of_one(self) -> None:
         """The client writes `member` as often as `members` — 1,209 rows of it."""
