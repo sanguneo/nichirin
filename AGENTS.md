@@ -246,6 +246,21 @@ keystrokes. Everything below is what it took to get there.
   alone; `submitted` means the composer emptied, delivery is proven by a new
   from-me row in the log.
 
+- **The list reports rows it has not scrolled to, at their place in the
+  whole list.** Row 46 of 264 sat at y = 3,571 while the list showed
+  y = 167 to 712, so its double-click landed below the list, nothing opened,
+  and after 75 s the send failed while the screen said "보내는 중". A row is
+  now scrolled into view first by writing its position to the list's vertical
+  scroll bar `AXValue` (a number, 0 to 1 — `ax.Element.set_attribute` takes
+  one now), and a row that still is not inside the scroll area is **not
+  clicked at all**.
+- **Nothing below a table is walked.** `descendants` over the main window
+  visited 1,962 elements, nearly all of them cells inside rows, and took
+  15.8 s; `_room_table` stops at a table. Choosing a row reads names outward
+  from the catalog's recency hint (`outward`) and stops at the first match,
+  where reading all 264 names first cost about 18 s. Measured on two closed
+  one-to-one rooms, rows 46 and 70: 75 s and a failure became 3.8 s and 4.5 s.
+
 ### The demo
 
 - **`demo/mockup.py` keeps its own copy of the schema, and that copy rotted

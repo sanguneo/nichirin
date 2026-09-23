@@ -29,6 +29,7 @@ _AS_PATH: Final = "/System/Library/Frameworks/ApplicationServices.framework/Appl
 
 _UTF8: Final = 0x08000100
 _kCFNumberSInt64Type: Final = 4
+_kCFNumberFloat64Type: Final = 6
 
 MESSAGING_TIMEOUT_SECONDS: Final = 5.0
 """How long one accessibility round trip may take before it is a failure."""
@@ -90,6 +91,8 @@ def _load() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     core.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
     core.CFNumberGetValue.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
     core.CFNumberGetValue.restype = ctypes.c_bool
+    core.CFNumberCreate.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    core.CFNumberCreate.restype = ctypes.c_void_p
     core.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
     core.CFBooleanGetValue.restype = ctypes.c_bool
     core.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -324,14 +327,24 @@ class Element:
         names = _unwrap(out.value)
         return [name for name in (names or []) if isinstance(name, str)]
 
-    def set_attribute(self, name: str, value: str | bool) -> bool:
-        """Write a string or boolean with its actual CoreFoundation type."""
+    def set_attribute(self, name: str, value: "str | bool | float") -> bool:
+        """Write a string, boolean or number with its actual CoreFoundation type.
+
+        A number is what a scroll bar's ``AXValue`` takes — the position as a
+        fraction from 0 to 1 — which is how a row is brought into view without
+        the wheel or the pointer.
+        """
         core, services = _load()
         key = _cfstr(name)
         try:
             if isinstance(value, bool):
                 symbol = "kCFBooleanTrue" if value else "kCFBooleanFalse"
                 payload = ctypes.c_void_p(core.CFRetain(ctypes.c_void_p.in_dll(core, symbol)))
+            elif isinstance(value, (int, float)):
+                number = ctypes.c_double(float(value))
+                payload = ctypes.c_void_p(
+                    core.CFNumberCreate(None, _kCFNumberFloat64Type, ctypes.byref(number))
+                )
             else:
                 payload = _cfstr(value)
             try:

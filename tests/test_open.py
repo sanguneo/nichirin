@@ -405,5 +405,52 @@ class StoredTitleTests(unittest.TestCase):
             self.assertIsNone(reader.stored_title(GROUP_ROOM))
 
 
+class FinderDesktop(FakeDesktop):
+    """A list that can be read a row at a time, the way the live backend reads it."""
+
+    def __init__(self, rows: list[str]) -> None:
+        super().__init__(rows)
+        self.read: list[int] = []
+
+    def first_matching_row(self, wanted, hint=None):
+        from kamado.macauto import outward
+
+        for index in outward(hint, len(self.titles)):
+            self.read.append(index)
+            if self.titles[index].strip().casefold() in wanted:
+                return index, len(self.titles)
+        return None, len(self.titles)
+
+
+class EarlyStopTests(DesktopTests):
+    """Reading every name before choosing cost about 18 s on a list of 264."""
+
+    def test_the_rows_are_read_outward_from_the_hint(self) -> None:
+        from kamado.macauto import outward
+
+        self.assertEqual(list(outward(3, 7)), [3, 4, 2, 5, 1, 6, 0])
+        self.assertEqual(list(outward(None, 3)), [0, 1, 2])
+        self.assertEqual(list(outward(99, 3)), [0, 1, 2])
+
+    def test_reading_stops_at_the_room(self) -> None:
+        desktop = FinderDesktop([f"방 {index}" for index in range(50)])
+        window = RoomOpener(desktop, memory=self.memory, sleep=desktop.sleep, now=desktop.now).open(
+            "방 21", hint=20
+        )
+        self.assertEqual(window.title, "방 21")
+        self.assertEqual(desktop.read, [20, 21], "names were read past the room")
+        self.assertNotIn("rows", desktop.log, "the whole list was read anyway")
+        self.assertEqual(desktop.clicks, [21])
+
+    def test_a_room_the_list_lacks_still_goes_to_the_search(self) -> None:
+        desktop = FinderDesktop(["하나", "둘"])
+        desktop.searchable = ["찾는 방"]
+        window = RoomOpener(desktop, memory=self.memory, sleep=desktop.sleep, now=desktop.now).open(
+            "찾는 방"
+        )
+        self.assertEqual(window.title, "찾는 방")
+        self.assertEqual(desktop.searches, [{"찾는 방"}])
+
+
 if __name__ == "__main__":
     unittest.main()

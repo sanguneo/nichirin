@@ -196,6 +196,16 @@ class RoomListBackend(Protocol):
         ...
 
 
+def outward(hint: Optional[int], total: int) -> Iterable[int]:
+    """Every row index once, nearest *hint* first: hint, hint+1, hint-1, …"""
+    start = hint if hint is not None and 0 <= hint < total else 0
+    yield start
+    for step in range(1, total):
+        for index in (start + step, start - step):
+            if 0 <= index < total:
+                yield index
+
+
 def client_pid(runner=subprocess.run) -> Optional[int]:
     """Return the running client's process id, or None when it is closed."""
     try:
@@ -318,8 +328,16 @@ class RoomOpener:
             )
 
         try:
-            rows = self._backend.room_rows()
-            order = self._order(room, rows, wanted, hint)
+            finder = getattr(self._backend, "first_matching_row", None)
+            if finder is not None:
+                # Read from where the catalog says the room sits and stop at
+                # the first match: reading all 264 names cost about 18 s.
+                found, total = finder(wanted, hint)
+                rows = [""] * total
+                order = [] if found is None else [found]
+            else:
+                rows = self._backend.room_rows()
+                order = self._order(room, rows, wanted, hint)
             for row in order:
                 if not self._backend.open_row(row):
                     continue
@@ -768,15 +786,72 @@ class AXBackend:
 
     # -- room list ----------------------------------------------------------
 
-    def _room_rows(self) -> list[ax.Element]:
+    def _room_table(self) -> Optional[ax.Element]:
+        """The room list, found without walking into every row of it.
+
+        ``descendants`` over the main window visited 1,962 elements and took
+        15.8 s on a list of 264 rooms, nearly all of them the cells inside
+        each row — and a send walked it more than once, which is how opening
+        one room took 75 s while the screen said "보내는 중". A table's own
+        children are rows, so nothing below a table is looked at.
+        """
         main = self._main_window()
         if main is None:
-            return []
-        tables = [child for child in main.descendants() if child.role == "AXTable"]
+            return None
+        tables: list[ax.Element] = []
+        frontier: list[tuple[ax.Element, int]] = [(main, 0)]
+        while frontier:
+            element, level = frontier.pop(0)
+            if level >= 12:
+                continue
+            for child in element.children():
+                if child.role == "AXTable":
+                    tables.append(child)
+                elif child.role not in ("AXRow", "AXCell"):
+                    frontier.append((child, level + 1))
         if not tables:
+            return None
+        return max(tables, key=lambda table: len(table.children()))
+
+    def _room_rows(self) -> list[ax.Element]:
+        table = self._room_table()
+        if table is None:
             return []
-        largest = max(tables, key=lambda table: len(table.children()))
-        return [row for row in largest.children() if row.role == "AXRow"]
+        return [row for row in table.children() if row.role == "AXRow"]
+
+    @staticmethod
+    def _visible(row: ax.Element, area: ax.Element) -> bool:
+        frame, view = row.frame(), area.frame()
+        if frame is None or view is None:
+            return False
+        middle = frame[1] + frame[3] / 2
+        return view[1] <= middle <= view[1] + view[3]
+
+    def _reveal(self, row: ax.Element, table: ax.Element) -> bool:
+        """Scroll the list until *row* is on screen, through its scroll bar.
+
+        The list reports every row, drawn or not, and a row further down sits
+        at its place in the whole list: row 46 was at y = 3,571 while the list
+        showed y = 167 to 712. Double-clicking there clicked nothing, the room
+        never opened, and the send failed. The scroll bar takes its position
+        as a number, so this moves the list without the wheel or the pointer.
+        """
+        area = table.attribute("AXParent")
+        if area is None or getattr(area, "role", "") != "AXScrollArea":
+            return False
+        if self._visible(row, area):
+            return True
+        bar = area.attribute("AXVerticalScrollBar")
+        frame, whole, view = row.frame(), table.frame(), area.frame()
+        if bar is None or frame is None or whole is None or view is None:
+            return False
+        travel = whole[3] - view[3]
+        if travel <= 0:
+            return False
+        # Where the row starts within the whole list, centred in the view.
+        offset = (frame[1] - whole[1]) - (view[3] - frame[3]) / 2
+        bar.set_attribute("AXValue", min(1.0, max(0.0, offset / travel)))
+        return self._wait(lambda: self._visible(row, area), 1.5)
 
     @staticmethod
     def _row_title(row: ax.Element) -> str:
@@ -804,6 +879,23 @@ class AXBackend:
 
     def room_rows(self) -> list[str]:
         return [self._row_title(row) for row in self._room_rows()]
+
+    def first_matching_row(
+        self, wanted: set[str], hint: Optional[int] = None
+    ) -> tuple[Optional[int], int]:
+        """The first row titled any of *wanted*, and how many rows there are.
+
+        A name is one round trip of about 70 ms, so reading every row before
+        choosing cost about 18 s on a list of 264. The rows are read outward
+        from *hint* — where the catalog's recency order puts the room, which
+        the list mostly follows — and the reading stops at the first match.
+        """
+        rows = self._room_rows()
+        total = len(rows)
+        for index in outward(hint, total):
+            if self._row_title(rows[index]).strip().casefold() in wanted:
+                return index, total
+        return None, total
 
     def _search_field(self) -> Optional[ax.Element]:
         """The client's own room search box, which is a direct child."""
@@ -869,8 +961,14 @@ class AXBackend:
         forward first so the click cannot land in somebody else's window, and
         the pointer is put back where it was.
         """
-        rows = self._room_rows()
-        if row < 0 or row >= len(rows):
+        table = self._room_table()
+        rows = [] if table is None else [one for one in table.children() if one.role == "AXRow"]
+        if row < 0 or row >= len(rows) or table is None:
+            return False
+        # A row off screen is scrolled into view, and one that will not come
+        # into view is not clicked at all: its coordinates are somewhere
+        # below the list, where a click opens nothing or something else.
+        if not self._reveal(rows[row], table):
             return False
         rectangle = rows[row].frame()
         if rectangle is None:
