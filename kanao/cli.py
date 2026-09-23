@@ -24,6 +24,7 @@ from . import __version__
 from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
+from .model import Room
 from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
@@ -88,6 +89,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_room_selector(messages, required=True)
     messages.add_argument("--limit", type=_positive, default=DEFAULT_LIMIT)
     messages.add_argument("--before-id", type=int, help="Page backwards from this id")
+    messages.add_argument(
+        "--open",
+        dest="open_room",
+        action="store_true",
+        help="Open the room in KakaoTalk first when its key is not loaded (marks it read)",
+    )
 
     digest = commands.add_parser(
         "digest", help="Slice recent conversation into time windows and describe each"
@@ -240,6 +247,8 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "messages":
         room = _selected_room(reader, arguments)
+        if arguments.open_room and not room.readable:
+            _open_for_reading(reader, room)
         found = reader.messages(room.id, limit=arguments.limit, before_id=arguments.before_id)
         _emit(
             success(
@@ -405,13 +414,12 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _send(reader: Reader, arguments: argparse.Namespace) -> int:
-    """Resolve the catalog before targeting an exact client window."""
-    from .winauto import make_sender
+def _window_target(reader: Reader, room: Room) -> tuple[list[str], Optional[int]]:
+    """The titles a room's window may carry and where the list likely shows it.
 
-    if arguments.room is not None and not arguments.room.strip():
-        raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
-    room = _selected_room(reader, arguments)
+    Refuses a title two catalogued rooms share: a window can only be told
+    apart by its title, so neither of them can be opened or written to.
+    """
     catalogued = reader.rooms()
     # A window title cannot distinguish two catalog rooms with the same name,
     # even if the caller supplied an id and only one window is currently open.
@@ -429,6 +437,34 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     # The client lists rooms by recency too, so this is close before it is
     # right — close enough that opening one usually costs a single click.
     hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
+    return aliases, hint
+
+
+def _open_for_reading(reader: Reader, room: Room) -> None:
+    """Have the client open *room* so its key is loaded, then wait for the key.
+
+    The window is left minimised rather than closed: the key belongs to the
+    open log, and nothing says the client keeps it once the room is closed.
+    """
+    from .winauto import make_sender
+
+    aliases, hint = _window_target(reader, room)
+    make_sender().resolve(room.title, open_if_needed=True, aliases=aliases, hint=hint)
+    if not reader.unlock(room.id):
+        raise KanaoError(
+            ErrorCode.KEY_UNAVAILABLE,
+            f"opened {room.title!r} in KakaoTalk but its key did not appear; try again",
+        )
+
+
+def _send(reader: Reader, arguments: argparse.Namespace) -> int:
+    """Resolve the catalog before targeting an exact client window."""
+    from .winauto import make_sender
+
+    if arguments.room is not None and not arguments.room.strip():
+        raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+    room = _selected_room(reader, arguments)
+    aliases, hint = _window_target(reader, room)
     try:
         result = make_sender().send(
             room.title,

@@ -160,6 +160,14 @@ class RoomListBackend(Protocol):
         """Park a window in the taskbar, where it covers nothing."""
         ...
 
+    def foreground(self) -> Optional[int]:
+        """The window that has the keyboard right now, if any."""
+        ...
+
+    def return_focus(self, handle: int) -> None:
+        """Give the keyboard back to the window that had it before."""
+        ...
+
     def scroll_to_top(self, control: int) -> None:
         """Pin the list to its first row, so a row number means something."""
         ...
@@ -365,21 +373,24 @@ class RoomOpener:
 
     def _search(
         self, room: str, wanted: set[str], known: set[str]
-    ) -> Optional[ChatWindow]:
+    ) -> tuple[bool, Optional[ChatWindow]]:
         """Type the title into the client's search box and open the first row.
 
         The filtered list still names nothing, so the first row is verified
         exactly like a guessed one — but it is one room at most, where
         sweeping the top of an unfiltered list was every room up there.
+        Returns whether a row was opened at all, beside what it opened: a
+        search that ran and missed must not be followed by guessing rows,
+        each of which is another stranger's window on the screen.
         """
         search = getattr(self._backend, "search_rooms", None)
         if search is None:
-            return None
+            return False, None
         try:
             results = search(room)
             if results is None:
-                return None
-            return self._try_row(results, 0, wanted, known, scroll=False)
+                return False, None
+            return True, self._try_row(results, 0, wanted, known, scroll=False)
         finally:
             clear = getattr(self._backend, "clear_search", None)
             if clear is not None:
@@ -395,6 +406,20 @@ class RoomOpener:
         and a group with no custom title is named after its members by each
         side independently.
         """
+        foreground = getattr(self._backend, "foreground", None)
+        had_focus = foreground() if foreground is not None else None
+        try:
+            return self._open(room, aliases, hint)
+        finally:
+            # Whatever opened took the keyboard with it: the client activates
+            # a room's window as it shows it, and the person was typing
+            # somewhere else. It goes back to where it was.
+            if had_focus and foreground is not None and foreground() != had_focus:
+                self._backend.return_focus(had_focus)  # type: ignore[attr-defined]
+
+    def _open(
+        self, room: str, aliases: Iterable[str], hint: Optional[int]
+    ) -> ChatWindow:
         wanted = {room, *aliases}
         control = self._backend.room_list()
         disturbed: Optional[str] = None
@@ -412,14 +437,17 @@ class RoomOpener:
             )
 
         known = {window.title for window in self._backend.chat_windows()}
-        found: Optional[ChatWindow] = None
-        for row in self._order(room, hint):
-            found = self._try_row(control, row, wanted, known)
-            if found is not None:
-                _learn_row(self._remembered, room, row)
-                break
-        if found is None:
-            found = self._search(room, wanted, known)
+        # The search first: it opens the room itself or, at worst, one room
+        # whose title contains it. Guessing rows is kept for a client whose
+        # search could not be used, because every wrong guess is somebody
+        # else's window appearing on the screen and being closed again.
+        searched, found = self._search(room, wanted, known)
+        if not searched:
+            for row in self._order(room, hint):
+                found = self._try_row(control, row, wanted, known)
+                if found is not None:
+                    _learn_row(self._remembered, room, row)
+                    break
         if found is not None:
             if disturbed is not None:
                 self._backend.restore_main_window(disturbed)
@@ -592,6 +620,7 @@ _SW_RESTORE = 9
 _SW_HIDE = 0
 _SW_MINIMIZE = 6
 _SW_SHOWMINNOACTIVE = 7
+_SW_SHOWNOACTIVATE = 4
 _WM_MOUSEWHEEL = 0x020A
 _WHEEL_UP = 120
 _WHEEL_NOTCHES = 8
@@ -858,16 +887,38 @@ class Win32Backend:
         if state == "hidden":
             self._user32.ShowWindow(handle, _SW_HIDE)
         elif state == "minimized":
-            self._user32.ShowWindow(handle, _SW_MINIMIZE)
+            # SW_MINIMIZE activates the next window in line; this one was
+            # not the active window, so nothing should be activated for it.
+            self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
 
     def is_minimized(self, handle: int) -> bool:
         return bool(self._user32.IsIconic(handle))
 
     def minimize_window(self, handle: int) -> None:
-        # Minimised without being activated first: the activate/deactivate
-        # dance is time the window spends in front of whatever was there.
-        self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
+        # A window that took the keyboard is minimised the ordinary way, which
+        # hands activation to the window behind it; SW_SHOWMINNOACTIVE leaves
+        # a minimised window holding the keyboard, so typing went nowhere.
+        # One that did not take it is minimised without being activated, so
+        # it spends no time in front of whatever was there.
+        if self._user32.GetForegroundWindow() == handle:
+            self._user32.ShowWindow(handle, _SW_MINIMIZE)
+        else:
+            self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
         self._repair_placement(handle)
+
+    def foreground(self) -> Optional[int]:
+        handle = self._user32.GetForegroundWindow()
+        return int(handle) if handle else None
+
+    def return_focus(self, handle: int) -> None:
+        """Hand the keyboard back to the window that had it before a room opened.
+
+        One plain request and nothing more: this only ever returns focus to
+        where the person left it, and a refusal from Windows is accepted
+        rather than worked around.
+        """
+        if self._user32.IsWindow(handle) and self._user32.IsWindowVisible(handle):
+            self._user32.SetForegroundWindow(handle)
 
     def _repair_placement(self, handle: int) -> None:
         """Give a parked room somewhere on screen to come back to.
@@ -939,10 +990,11 @@ class Win32Backend:
         for handle in self._all_top_level():
             if self._title(handle) != MAIN_WINDOW_TITLE:
                 continue
-            if not self._user32.IsWindowVisible(handle):
-                self._user32.ShowWindow(handle, _SW_SHOW)
-            if self._user32.IsIconic(handle):
-                self._user32.ShowWindow(handle, _SW_RESTORE)
+            # Shown without being activated: SW_SHOW and SW_RESTORE both hand
+            # the main window the keyboard, which is where it was found after
+            # a room had been opened, instead of where the person was typing.
+            if not self._user32.IsWindowVisible(handle) or self._user32.IsIconic(handle):
+                self._user32.ShowWindow(handle, _SW_SHOWNOACTIVATE)
             return bool(self._user32.IsWindowVisible(handle))
         return False
 

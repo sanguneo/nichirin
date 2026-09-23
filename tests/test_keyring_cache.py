@@ -179,5 +179,46 @@ class NewerRoomTests(DiscoveryCacheTests):
         self.assertEqual(self.scans, 1)
 
 
+
+class UnlockTests(DiscoveryCacheTests):
+    """After the client opens a room, its key is waited for, not assumed."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.later = self.profile / "chat_data" / "chatLogs_3003.edb"
+        self.later_salt = bytes(range(32, 48))
+        self.later.write_bytes(self.later_salt + bytes(64))
+        self.appears_on_scan = 2
+
+        def scan_process(pid: int) -> list[CodecContext]:
+            self.scans += 1
+            found = [CodecContext(address=ADDRESS, salt=SALT, key=KEY)]
+            if self.scans >= self.appears_on_scan:
+                found.append(CodecContext(address=ADDRESS + 0x200, salt=self.later_salt, key=KEY))
+            return found
+
+        keyring_module.scan_process = scan_process
+
+    def reader(self):
+        from kanao.reader import Reader
+
+        return Reader(user_directory=self.profile, cache=object())  # type: ignore[arg-type]
+
+    def test_a_key_that_arrives_on_a_later_scan_is_waited_for(self) -> None:
+        pauses: list[int] = []
+        reader = self.reader()
+        self.assertTrue(reader.unlock(3003, attempts=4, settle=lambda: pauses.append(1)))
+        self.assertEqual(self.scans, 2)
+        self.assertEqual(len(pauses), 1)
+        self.assertTrue(reader.keyring.has("chat_data/chatLogs_3003.edb"))
+
+    def test_a_key_that_never_arrives_gives_up_after_the_attempts(self) -> None:
+        self.appears_on_scan = 99
+        pauses: list[int] = []
+        self.assertFalse(self.reader().unlock(3003, attempts=3, settle=lambda: pauses.append(1)))
+        self.assertEqual(self.scans, 3)
+        self.assertEqual(len(pauses), 2, "it paused after the last attempt too")
+
+
 if __name__ == "__main__":
     unittest.main()

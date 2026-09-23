@@ -172,6 +172,8 @@ class App:
         self.adding = False
         """Whether the room list is in front of conversations that stay open."""
         self.pending_send: Optional[str] = None
+        self.pending_unlock: Optional[tuple[Room, bool]] = None
+        """A room to open in the client, held for one frame like a send."""
         self._clock = time.monotonic
         """Read rather than called directly, so a test can hold time still."""
         """Text the last keystroke asked to send, not sent yet.
@@ -252,7 +254,9 @@ class App:
     def load_rooms(self) -> None:
         catalogued = self.reader.rooms()
         self.titles = [room.title for room in catalogued]
-        self.rooms = [room for room in catalogued if room.readable]
+        # Every room, not only the readable ones: a room whose key is not
+        # loaded can be opened in the client from here, which loads it.
+        self.rooms = list(catalogued)
 
     def visible_rooms(self) -> list[Room]:
         """The rooms the filter leaves, or all of them."""
@@ -317,10 +321,61 @@ class App:
             return
         room = next((r for r in self.rooms if r.id == friend.direct_chat_id), None)
         if room is None:
-            self.status = f"{friend.name}: 카카오톡에서 대화방을 먼저 열어주세요"
+            self.status = f"{friend.name}: 1:1 대화방이 목록에 없습니다"
             return
         self.show_friends = False
-        self.open_room(room)
+        self.request_open(room)
+
+    def request_open(self, room: Room, beside: bool = False) -> None:
+        """Open a conversation, first having the client load it if it must.
+
+        A room whose key is not in memory is one the client has not opened,
+        so the client is asked to open it - which marks it read there, the
+        cost of reading it here. That takes a second or more, so it is held
+        for one frame the way a send is, and the screen says what it waits on.
+        """
+        if room.readable:
+            self.open_room(room, beside=beside)
+            return
+        self.pending_unlock = (room, beside)
+        self._say(f"카카오톡에서 '{room.title}' 방을 여는 중…")
+
+    def _unlock(self, room: Room, beside: bool) -> None:
+        """Open *room* in the client, wait for its key, then show it."""
+        try:
+            self._refuse_ambiguous(room)
+            stored = self.reader.stored_title(room.id)
+            self._require_sender().resolve(
+                room.title,
+                open_if_needed=True,
+                aliases=[stored] if stored and stored != room.title else [],
+                hint=self.titles.index(room.title) if room.title in self.titles else None,
+            )
+            if not self.reader.unlock(room.id):
+                raise KanaoError(
+                    ErrorCode.KEY_UNAVAILABLE,
+                    f"'{room.title}' 방을 열었지만 키가 아직 올라오지 않았습니다. 다시 시도해 주세요",
+                )
+            self.load_rooms()
+            opened = next((one for one in self.rooms if one.id == room.id), None)
+            if opened is None or not opened.readable:
+                raise KanaoError(
+                    ErrorCode.KEY_UNAVAILABLE, f"'{room.title}' 방을 아직 읽을 수 없습니다"
+                )
+            self.open_room(opened, beside=beside)
+            self.adding = False
+            self._forget_filter()
+            self.status = ""
+        except KanaoError as error:
+            self._say(f"열기 실패: {error.message}")
+        except OSError as error:
+            self._say(f"열기 실패: {error}")
+
+    def _say(self, text: str) -> None:
+        """Put a line where the current view shows one."""
+        self.status = text
+        if self.chat is not None:
+            self.chat.notice = text
 
     def open_room(self, room: Room, beside: bool = False) -> None:
         """Show a conversation, replacing what is open or joining it.
@@ -381,14 +436,14 @@ class App:
         if not matches:
             matches = [room for room in self.rooms if needle in room.title.casefold()]
         if not matches:
-            chat.notice = f"'{name}': 읽을 수 있는 대화방이 없습니다"
+            chat.notice = f"'{name}': 그런 이름의 대화방이 없습니다"
             return
         if len(matches) > 1:
             shown = ", ".join(room.title for room in matches[:3])
             chat.notice = f"'{name}': {len(matches)}개가 맞습니다 ({shown})"
             return
         chat.notice = ""
-        self.open_room(matches[0], beside=True)
+        self.request_open(matches[0], beside=True)
 
     def close_pane(self, chat: ChatState) -> None:
         """Close one conversation, keeping whatever else is open.
@@ -478,10 +533,10 @@ class App:
         except KanaoError:
             return False
         self.titles = [room.title for room in catalogued]
-        rooms = [room for room in catalogued if room.readable]
+        rooms = list(catalogued)
         changed = [
-            (room.id, room.unread, room.last_log_id) for room in rooms
-        ] != [(room.id, room.unread, room.last_log_id) for room in self.rooms]
+            (room.id, room.unread, room.last_log_id, room.readable) for room in rooms
+        ] != [(room.id, room.unread, room.last_log_id, room.readable) for room in self.rooms]
         if not changed:
             return False
         selected_id = self.rooms[self.selected].id if self.rooms else None
@@ -549,8 +604,9 @@ class App:
     def _render_rooms(self, width: int, height: int) -> list[str]:
         shown = self.visible_rooms()
         total = len(shown)
+        readable = sum(1 for room in shown if room.readable)
         right = (
-            self.theme.fg("accent", "◉ Readable")
+            self.theme.fg("accent", f"◉ {readable} readable")
             + self.theme.fg("muted", f"  {total} rooms")
         )
         lines = [
@@ -578,6 +634,8 @@ class App:
             selected = index == self.selected
             cursor = self.theme.fg("accent", "› ") if selected else "  "
             meta = f"{room.member_count}명"
+            if not room.readable:
+                meta = "잠김 · " + meta
             if room.unread:
                 meta += f" · {room.unread} unread"
             stamp = _stamp(room.last_updated_at, self.zone)
@@ -586,7 +644,10 @@ class App:
             room_width = max(10, width - 2 - display_width(right_part) - 2)
             title = truncate_to_width(room.title, room_width, ELLIPSIS)
             styled = self.theme.bold(title) if selected else title
-            if room.unread:
+            if not room.readable:
+                # Openable, not readable yet: enter has the client load it.
+                styled = self.theme.fg("muted", styled)
+            elif room.unread:
                 styled = self.theme.fg("warning", styled)
 
             left = cursor + styled
@@ -1324,12 +1385,14 @@ class App:
             self.selected = max(0, len(shown) - 1)
         elif kind == Key.ENTER and shown:
             try:
-                self.open_room(
-                    shown[min(self.selected, len(shown) - 1)], beside=self.adding
-                )
-                self.adding = False
-                self._forget_filter()
-                self.status = ""
+                chosen = shown[min(self.selected, len(shown) - 1)]
+                self.request_open(chosen, beside=self.adding)
+                if chosen.readable:
+                    # An unreadable room is still on its way; _unlock tidies
+                    # up once it has opened, and the waiting line stays.
+                    self.adding = False
+                    self._forget_filter()
+                    self.status = ""
             except KanaoError as error:
                 self.status = error.message
         elif kind == "char" and text in ("r", "R"):
@@ -1459,6 +1522,10 @@ class App:
 
     def flush_pending(self) -> None:
         """Send what the last keystroke asked for, once a frame has been drawn."""
+        if self.pending_unlock is not None:
+            room, beside = self.pending_unlock
+            self.pending_unlock = None
+            self._unlock(room, beside)
         text = self.pending_send
         self.pending_send = None
         if text is None or self.chat is None:
@@ -1685,7 +1752,9 @@ class App:
 
         self.load_rooms()
         self.status = (
-            "" if self.rooms else "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
+            ""
+            if any(room.readable for room in self.rooms)
+            else "읽을 수 있는 대화방이 없습니다. 방을 골라 enter를 누르면 카카오톡에서 엽니다."
         )
         due_at = 0.0
         last_key_at = 0.0
@@ -1697,7 +1766,7 @@ class App:
             if kind or text:
                 last_key_at = time.monotonic()
                 self.handle(kind, text)
-                if self.pending_send is not None:
+                if self.pending_send is not None or self.pending_unlock is not None:
                     self._paint(console, width, height)
                     self.flush_pending()
                 continue

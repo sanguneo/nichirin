@@ -22,7 +22,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 from . import model, names as names_module, paths
 from .errors import ErrorCode, KanaoError
@@ -35,6 +35,9 @@ _SELF_CHAT_TITLE = "나와의 채팅"
 _GROUP_TITLE_MEMBERS = 3
 
 _THREAD_COLUMN = "threadId"
+UNLOCK_ATTEMPTS = 8
+UNLOCK_SECONDS = 0.25
+"""How long :meth:`Reader.unlock` waits between scans for a newly opened room."""
 NAME_RETRY_SECONDS = 5.0
 """How long an unknown sender waits before the name map is read again."""
 _ERASED_COLUMN = "is_encrypt_delete_msg"
@@ -210,6 +213,29 @@ class Reader:
                 # that differs from its last sighting is appended.
                 self._ledger.observe(found)
         return self._names
+
+    def unlock(
+        self,
+        room_id: int,
+        attempts: int = UNLOCK_ATTEMPTS,
+        settle: Optional[Callable[[], None]] = None,
+    ) -> bool:
+        """Wait for the client to load a room's key, after its window opened.
+
+        The key reaches memory only once the client opens the room's log,
+        which it does on its own schedule after the window appears, so the
+        heap is scanned again until the log pairs or the attempts run out.
+        True when the room is readable now.
+        """
+        name = paths.chat_log_name(room_id)
+        pause = settle if settle is not None else (lambda: time.sleep(UNLOCK_SECONDS))
+        for attempt in range(attempts):
+            self._keyring = Keyring.discover(self.user_directory, rescan=True)
+            if self._keyring.has(name):
+                return True
+            if attempt + 1 < attempts:
+                pause()
+        return False
 
     def _sender_name(self, room_id: int, user_id: int) -> str:
         """Name *user_id*, looking again before settling for a number.

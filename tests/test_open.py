@@ -324,15 +324,22 @@ class AimTests(unittest.TestCase):
         opener(desktop).open("받는 방", hint=3)
         self.assertEqual(desktop.clicks, [3], "rooms were opened on the way to a known row")
 
-    def test_a_hint_that_misses_goes_to_the_search_not_the_top(self) -> None:
+    def test_with_a_search_box_no_row_is_guessed_at(self) -> None:
         # A pinned room sits at the top however recent the catalog says it
-        # is; the search finds it without opening the rows in between.
+        # is; the search finds it without opening any other room first.
         desktop = FakeDesktop(["받는 방", "둘", "셋", "넷"])
         desktop.searchable = True
         opener(desktop).open("받는 방", hint=3)
-        self.assertEqual(desktop.clicks, [3, 0])
+        self.assertEqual(desktop.clicks, [0])
         self.assertEqual(desktop.searches, ["받는 방"])
-        self.assertEqual(desktop.closed, ["넷"], "more than the hinted row was opened")
+        self.assertEqual(desktop.closed, [], "another room's window appeared")
+
+    def test_a_search_that_misses_is_not_followed_by_guessing(self) -> None:
+        desktop = FakeDesktop(["하나", "받는 방 2", "받는 방"])
+        desktop.searchable = True
+        with self.assertRaises(KanaoError):
+            opener(desktop).open("받는 방", hint=2)
+        self.assertEqual(desktop.clicks, [0], "rows were guessed after the search had run")
 
     def test_a_hint_that_misses_without_a_search_box_opens_nothing_else(self) -> None:
         desktop = FakeDesktop(["하나", "둘", "셋", "받는 방"])
@@ -432,6 +439,56 @@ class ParkingTests(unittest.TestCase):
         desktop.is_minimized = lambda handle: True  # type: ignore[attr-defined]
         window = opener(desktop).open("받는 방")
         self.assertEqual(desktop.minimized, [window.handle])
+
+
+class FocusTests(unittest.TestCase):
+    """The keyboard goes back to whoever had it before a room was opened.
+
+    The client activates a room's window as it shows it, so opening one took
+    the keyboard from wherever the person was typing and left it with a
+    window that had just been minimised.
+    """
+
+    TYPING_HERE = 4242
+
+    def desktop(self, rows: list[str]) -> FakeDesktop:
+        desktop = FakeDesktop(rows)
+        desktop.focus = self.TYPING_HERE  # type: ignore[attr-defined]
+        desktop.returned = []  # type: ignore[attr-defined]
+        opened_by = desktop.click_row
+
+        def click_row(control: int, row: int) -> None:
+            before = {window.handle for window in desktop.windows}
+            opened_by(control, row)
+            for window in desktop.windows:
+                if window.handle not in before:
+                    desktop.focus = window.handle  # type: ignore[attr-defined]
+
+        def return_focus(handle: int) -> None:
+            desktop.returned.append(handle)  # type: ignore[attr-defined]
+            desktop.focus = handle  # type: ignore[attr-defined]
+
+        desktop.click_row = click_row  # type: ignore[method-assign]
+        desktop.foreground = lambda: desktop.focus  # type: ignore[attr-defined]
+        desktop.return_focus = return_focus  # type: ignore[attr-defined]
+        return desktop
+
+    def test_focus_returns_to_where_it_was(self) -> None:
+        desktop = self.desktop(["받는 방"])
+        opener(desktop).open("받는 방")
+        self.assertEqual(desktop.returned, [self.TYPING_HERE])  # type: ignore[attr-defined]
+
+    def test_focus_returns_after_a_room_that_was_not_found(self) -> None:
+        desktop = self.desktop(["남의 방"])
+        with self.assertRaises(KanaoError):
+            opener(desktop, rows=1).open("받는 방")
+        self.assertEqual(desktop.returned, [self.TYPING_HERE])  # type: ignore[attr-defined]
+
+    def test_focus_that_never_moved_is_left_alone(self) -> None:
+        desktop = self.desktop([])
+        with self.assertRaises(KanaoError):
+            opener(desktop, rows=1).open("받는 방")
+        self.assertEqual(desktop.returned, [])  # type: ignore[attr-defined]
 
 
 class FlashTests(unittest.TestCase):

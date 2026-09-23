@@ -801,6 +801,16 @@ on a live client, newest 4,000 rows of each readable room.
   EM_SETSEL + EM_REPLACESEL fires the ordinary change path. Post Enter with
   scan-code and key-transition bits; check both PostMessage return values.
 - No SetForegroundWindow, SetFocus, SendInput, clipboard writes or mouse moves.
+  The one exception gives focus *back*: opening a room lets the client
+  activate its window, so `RoomOpener.open` notes the foreground window first
+  and asks once for it again at the end. Windows usually refuses that request
+  from a background process — accepted and ignored, measured — so what really
+  keeps the keyboard where it was is not taking it: the main window is shown
+  with `SW_SHOWNOACTIVATE` (`SW_SHOW` and `SW_RESTORE` activated it, and it
+  was left holding focus), and a room window that did take focus is minimised
+  with `SW_MINIMIZE`, which hands activation to the window behind it, where
+  `SW_SHOWMINNOACTIVE` left a minimised window holding the keyboard. Checked
+  live with the self-chat: focus before and after was the same window.
   Native message calls have a timeout; a hung client must not hang the CLI.
 - **`submitted` means the input box emptied, never confirmed network
   delivery.** Posting Enter only queues a keystroke, so `PostMessage`
@@ -1088,8 +1098,20 @@ Not taken, and why:
 ## Deliberately absent
 
 Login automation, protocol reimplementation, history harvesting, attachment
-sending, automatic chat-window opening, and macOS support.
+sending, and macOS support.
 The supported write operation is text sent through an existing client window.
+
+**Opening a room so it can be read was absent, and is not any more.** A key
+is in memory only for a room the client has opened, and on the account this
+was decided on that was 6 of 271 rooms, so the interface listed six. The
+owner chose to trade the cost — the client marks a room read when it opens —
+for being able to read the rest: the list now shows every room, marks the
+ones without a key `잠김`, and enter on one has the client open it (the same
+remembered row, hinted row, then search as a send), waits for the key with
+`Reader.unlock`, and shows it. `messages --open` does the same for a caller.
+It only ever happens for a room somebody chose; nothing opens rooms in bulk,
+and the window is left minimised rather than closed, because the key belongs
+to the open log.
 
 **Calling an agent from inside the interface.** `/ask` shipped in 0.9.0 and
 was removed in 0.10.0, on both sides. The direction was inverted: the agent

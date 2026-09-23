@@ -42,7 +42,7 @@ Read the answer in this order:
 | `ok: false` | Read `error.code`. It is never an empty-but-successful conversation. |
 | `AMBIGUOUS_CHAT` | Several rooms matched. Show the `candidates` and ask which; retry with `--room-id`. |
 | `CHAT_NOT_FOUND` | Ask for the title as saved in KakaoTalk. Never guess that a contact is "mom". |
-| `KEY_UNAVAILABLE` | KakaoTalk has never opened that room this session. Ask the user to open it, then retry. |
+| `KEY_UNAVAILABLE` | KakaoTalk has never opened that room this session. Ask the user to open it, or — with their consent, since it marks the room read — retry `messages` with `--open`. |
 | `KAKAO_NOT_RUNNING` | Ask the user to start and sign in to KakaoTalk. |
 | `BUSY` | A concurrent database write while reading: retry once. |
 | `coverage.reachesLatestKnown: true` | The messages reach the newest record the catalog knows of — not necessarily the server's. |
@@ -117,6 +117,7 @@ python "<skill-dir>/scripts/kanao-cli.py" friends
 python "<skill-dir>/scripts/kanao-cli.py" friends --favorites
 python "<skill-dir>/scripts/kanao-cli.py" messages --room-id 12345 --limit 100
 python "<skill-dir>/scripts/kanao-cli.py" messages --room-id 12345 --before-id 9876
+python "<skill-dir>/scripts/kanao-cli.py" messages --room-id 12345 --open   # loads a room KakaoTalk has not opened; marks it read
 python "<skill-dir>/scripts/kanao-cli.py" digest --room-id 12345 --span 2h
 python "<skill-dir>/scripts/kanao-cli.py" search "meeting time" --limit 20
 python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345
@@ -226,10 +227,10 @@ push of small JSON messages, and SSE rides plain HTTP, passes any proxy a
 - Run `--dry-run` first: it checks the target and input without changing either.
   With `--open` it will still open the room; only the typing is skipped.
 - **`--open` has a cost worth naming to the user.** Rows in KakaoTalk's list
-  cannot be read, only clicked, so the tool clicks down the list until the
-  window that appears carries the right title — and **a room opened while
-  searching is marked read**. It is free when the room is near the top of the
-  list, which recent conversations are. Rooms this opened are left minimised
+  cannot be read, only clicked, so the tool tries the row it remembers and the
+  row the catalog suggests, then types the title into KakaoTalk's own search
+  and opens the first result. Whatever opens is checked by its title, and
+  **a room opened on the way is marked read** — at most a couple of them. Rooms this opened are left minimised
   and a main window taken out of the tray is put back; a window the user
   already had open is never moved.
 - Space sends at least two seconds apart. The caller enforces the interval.
