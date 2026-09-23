@@ -372,6 +372,11 @@ keep rather than one to rediscover.
   flag is accepted and opens nothing — but a value that is neither true nor
   false is a 400 on both, or one typo would get two answers.
 
+- **The `photo` key is part of the shared contract.** `Message.as_json` has
+  carried `photo: {url, width, height, count}` on a message with a picture,
+  and `openapi.json` now documents it as `Photo`. kanao-cli answers with the
+  same shape from 0.19.0. It is the address the client stored, not the image.
+
 ## Conventions
 
 - Every command returns `{"ok": true, ...}` or
