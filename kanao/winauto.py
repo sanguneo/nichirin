@@ -36,6 +36,8 @@ MAIN_WINDOW_TITLE = "카카오톡"
 INPUT_CLASS = "RICHEDIT50W"
 _INPUT_HINT = "메시지 입력"
 ROOM_LIST_PREFIX = "ChatRoomListCtrl"
+SEARCH_LIST_PREFIX = "SearchListCtrl"
+LIST_VIEW_PREFIX = "ChatRoomListView"
 
 # The room list is owner-drawn: its rows are neither child windows nor UIA
 # elements, so a row can only be addressed by coordinate. These were measured
@@ -49,6 +51,14 @@ SEARCHED_ROWS = 8
 """How far down the list a room is looked for before giving up."""
 POLL_SECONDS = 0.05
 """How often to look for the window a posted double-click produces."""
+SEARCH_SETTLE_SECONDS = 0.3
+"""How long the client is given to filter the list after the search changes."""
+ROOM_SIZE = (380, 640)
+"""The size a room window is given back when it was remembered as nothing."""
+MIN_ROOM_SIZE = (200, 200)
+"""Below this a remembered room window is the minimised one, not a real size."""
+PARKED_POLLS = 10
+"""Looks in a row a parked window must stay minimised before it is trusted to."""
 POLL_ATTEMPTS = 40
 """How long to keep looking before treating the row as the wrong one."""
 SUBMIT_ATTEMPTS = 60
@@ -162,6 +172,21 @@ class RoomListBackend(Protocol):
         """Close a chat window that was opened by mistake."""
         ...
 
+    def search_rooms(self, text: str) -> Optional[int]:
+        """Narrow the room list to *text* through the client's search box.
+
+        Returns the list the results are drawn in, which is **not** the room
+        list: the client swaps in a separate ``SearchListCtrl`` and hides the
+        other, so a row clicked on the room list opens a room from the
+        unfiltered order. None when there is no search box to type into or no
+        result list appeared, which leaves nothing to click.
+        """
+        ...
+
+    def clear_search(self) -> None:
+        """Empty the search box again, so the list goes back to recency order."""
+        ...
+
 
 class WindowBackend(Protocol):
     """Everything the sender needs from the windowing system."""
@@ -256,6 +281,14 @@ class RoomOpener:
         pinned and therefore near the top. The guesses alternate between those
         hypotheses instead of exhausting one first — a pinned room measured
         four wrong rooms opened before the top was reached.
+
+        With a hint, only two rows are guessed at: the one that worked before
+        and the one the hint names. Past those the client's search box finds
+        the room in one open, where alternating across the top rows opened
+        every one of them — each a stranger's conversation marked read —
+        whenever the screen's order disagreed with the catalog's, which it
+        does for every pinned room. A hint past the searched rows is not
+        guessed at at all. The sweep is kept only for a caller with no hint.
         """
         tried: list[int] = []
 
@@ -265,14 +298,92 @@ class RoomOpener:
 
         add(_recall_row(self._remembered, room))
         if hint is not None:
-            for step in range(self._rows):
-                add(hint + step)
-                add(step)
-            for step in range(1, self._rows):
-                add(hint - step)
+            add(hint)
+            return tried
         for row in range(self._rows):
             add(row)
         return tried
+
+    def _try_row(
+        self, control: int, row: int, wanted: set[str], known: set[str], scroll: bool = True
+    ) -> Optional[ChatWindow]:
+        """Open one row; keep the window if it is the room, close it if not."""
+        # Opening a room moves the list, so a row number only means
+        # something after the list is put back at its first row.
+        if scroll:
+            self._backend.scroll_to_top(control)
+        self._backend.click_row(control, row)
+        # Watched for rather than waited on: whatever opens is in front of
+        # whatever the person was doing until it is put away, so the flat
+        # wait that used to sit here was a second of someone else's
+        # conversation covering their screen.
+        opened: list[ChatWindow] = []
+        for _attempt in range(self._attempts):
+            opened = [
+                window
+                for window in self._backend.chat_windows()
+                if window.title not in known
+            ]
+            if opened:
+                break
+            self._settle()
+        found: Optional[ChatWindow] = None
+        for window in opened:
+            if found is None and window.title in wanted:
+                # Parked rather than left in front: a room this opened was
+                # not asked for by the person looking at the screen.
+                self._park(window.handle)
+                found = window
+                continue
+            # Opened by mistake: put the desktop back as it was.
+            self._backend.close_window(window.handle)
+        return found
+
+    def _park(self, handle: int) -> None:
+        """Minimise a window and keep it minimised while the client settles.
+
+        The window appears before KakaoTalk has finished showing it, so a
+        minimise sent the moment it appears can be undone by the client's own
+        show a moment later: a room opened from the search results was left
+        standing in front. It is watched until it has stayed down for
+        :data:`PARKED_POLLS` looks in a row, and put down again if it rose.
+        """
+        self._backend.minimize_window(handle)
+        is_minimized = getattr(self._backend, "is_minimized", None)
+        if is_minimized is None:
+            return
+        steady = 0
+        for _attempt in range(self._attempts):
+            if is_minimized(handle):
+                steady += 1
+                if steady >= PARKED_POLLS:
+                    return
+            else:
+                steady = 0
+                self._backend.minimize_window(handle)
+            self._settle()
+
+    def _search(
+        self, room: str, wanted: set[str], known: set[str]
+    ) -> Optional[ChatWindow]:
+        """Type the title into the client's search box and open the first row.
+
+        The filtered list still names nothing, so the first row is verified
+        exactly like a guessed one — but it is one room at most, where
+        sweeping the top of an unfiltered list was every room up there.
+        """
+        search = getattr(self._backend, "search_rooms", None)
+        if search is None:
+            return None
+        try:
+            results = search(room)
+            if results is None:
+                return None
+            return self._try_row(results, 0, wanted, known, scroll=False)
+        finally:
+            clear = getattr(self._backend, "clear_search", None)
+            if clear is not None:
+                clear()
 
     def open(
         self, room: str, aliases: Iterable[str] = (), hint: Optional[int] = None
@@ -301,42 +412,24 @@ class RoomOpener:
             )
 
         known = {window.title for window in self._backend.chat_windows()}
+        found: Optional[ChatWindow] = None
         for row in self._order(room, hint):
-            # Opening a room moves the list, so a row number only means
-            # something after the list is put back at its first row.
-            self._backend.scroll_to_top(control)
-            self._backend.click_row(control, row)
-            # Watched for rather than waited on: whatever opens is in front of
-            # whatever the person was doing until it is put away, so the flat
-            # wait that used to sit here was a second of someone else's
-            # conversation covering their screen.
-            opened: list[ChatWindow] = []
-            for _attempt in range(self._attempts):
-                opened = [
-                    window
-                    for window in self._backend.chat_windows()
-                    if window.title not in known
-                ]
-                if opened:
-                    break
-                self._settle()
-            for window in opened:
-                if window.title in wanted:
-                    _learn_row(self._remembered, room, row)
-                    # Parked rather than left in front: a room this opened was
-                    # not asked for by the person looking at the screen.
-                    self._backend.minimize_window(window.handle)
-                    if disturbed is not None:
-                        self._backend.restore_main_window(disturbed)
-                    return window
-                # Opened by mistake: put the desktop back as it was.
-                self._backend.close_window(window.handle)
+            found = self._try_row(control, row, wanted, known)
+            if found is not None:
+                _learn_row(self._remembered, room, row)
+                break
+        if found is None:
+            found = self._search(room, wanted, known)
+        if found is not None:
+            if disturbed is not None:
+                self._backend.restore_main_window(disturbed)
+            return found
         if disturbed is not None:
             self._backend.restore_main_window(disturbed)
         raise KanaoError(
             ErrorCode.WINDOW_NOT_FOUND,
-            f"{room!r} was not among the first {self._rows} rooms in the list; "
-            "scroll it into view or open it once by hand",
+            f"{room!r} was not among the first {self._rows} rooms in the list "
+            "and the client's search did not find it; open it once by hand",
         )
 
 
@@ -652,6 +745,98 @@ class Win32Backend:
     def close_window(self, handle: int) -> None:
         self._user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
 
+    def _search_box(self) -> Optional[int]:
+        """The search field inside the room-list view, shown or not.
+
+        It exists while the search row is closed too — hidden, but sized —
+        and typing into it swaps the result list in all the same. That
+        matters because the magnifier that opens the row takes a posted click
+        only while the main window is the active one, which this module never
+        makes it. Only the view's own ``Edit`` counts: the main window holds
+        others, 0x0 or belonging to other panes.
+        """
+        view = self._list_view()
+        if view is None:
+            return None
+        found: list[int] = []
+
+        def visit(handle: int, _param: int) -> bool:
+            if self._class(handle) == "Edit":
+                found.append(int(handle))
+                return False
+            return True
+
+        self._user32.EnumChildWindows(view, self._proc(visit), 0)
+        return found[0] if found else None
+
+    def _replace(self, control: int, text: str) -> None:
+        buffer = ctypes.create_unicode_buffer(text)
+        self._message(control, 0x00B1, 0, -1)  # EM_SETSEL
+        self._message(control, 0x00C2, 1, ctypes.addressof(buffer))  # EM_REPLACESEL
+
+    def _search_results(self) -> Optional[int]:
+        """The visible result list; the main window holds hidden ones too."""
+        main = self._main_window()
+        if main is None:
+            return None
+        found: list[int] = []
+
+        def visit(handle: int, _param: int) -> bool:
+            if self._title(handle).startswith(SEARCH_LIST_PREFIX) and self._user32.IsWindowVisible(
+                handle
+            ):
+                found.append(int(handle))
+                return False
+            return True
+
+        self._user32.EnumChildWindows(main, self._proc(visit), 0)
+        return found[0] if found else None
+
+    def _list_view(self) -> Optional[int]:
+        main = self._main_window()
+        if main is None:
+            return None
+        found: list[int] = []
+
+        def visit(handle: int, _param: int) -> bool:
+            if self._title(handle).startswith(LIST_VIEW_PREFIX):
+                found.append(int(handle))
+                return False
+            return True
+
+        self._user32.EnumChildWindows(main, self._proc(visit), 0)
+        return found[0] if found else None
+
+    def search_rooms(self, text: str) -> Optional[int]:
+        box = self._search_box()
+        if box is None:
+            return None
+        try:
+            self._replace(box, text)
+        except OSError:
+            return None
+        # The client filters as the box changes and swaps the result list in
+        # when it has; a row clicked before that lands on the unfiltered list,
+        # which measured as the most recent room opening instead.
+        for _attempt in range(POLL_ATTEMPTS):
+            results = self._search_results()
+            if results is not None:
+                time.sleep(SEARCH_SETTLE_SECONDS)
+                return results
+            time.sleep(POLL_SECONDS)
+        return None
+
+    def clear_search(self) -> None:
+        # Emptied, never escaped: Escape in this box sends the main window to
+        # the tray. An emptied box puts the room list back by itself.
+        box = self._search_box()
+        if box is None:
+            return
+        try:
+            self._replace(box, "")
+        except OSError:
+            pass
+
     def _main_window(self) -> Optional[int]:
         for handle in self._all_top_level():
             if self._title(handle) == MAIN_WINDOW_TITLE:
@@ -675,10 +860,74 @@ class Win32Backend:
         elif state == "minimized":
             self._user32.ShowWindow(handle, _SW_MINIMIZE)
 
+    def is_minimized(self, handle: int) -> bool:
+        return bool(self._user32.IsIconic(handle))
+
     def minimize_window(self, handle: int) -> None:
         # Minimised without being activated first: the activate/deactivate
         # dance is time the window spends in front of whatever was there.
         self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
+        self._repair_placement(handle)
+
+    def _repair_placement(self, handle: int) -> None:
+        """Give a parked room somewhere on screen to come back to.
+
+        A room closed while minimised is remembered by the client at the
+        minimised coordinates, -32000,-32000 and 160x28, and reopens there:
+        clicking it in the taskbar then restores it off every screen, and only
+        maximising shows it. Measured live on the room this was found in. A
+        normal position that touches no monitor is moved onto the main
+        window's monitor, still minimised, so nothing comes to the front.
+        """
+        from ctypes import wintypes
+
+        class _Placement(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_uint),
+                ("flags", ctypes.c_uint),
+                ("showCmd", ctypes.c_uint),
+                ("ptMinPosition", wintypes.POINT),
+                ("ptMaxPosition", wintypes.POINT),
+                ("rcNormalPosition", wintypes.RECT),
+            ]
+
+        class _MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_uint),
+                ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT),
+                ("dwFlags", ctypes.c_uint),
+            ]
+
+        placement = _Placement()
+        placement.length = ctypes.sizeof(_Placement)
+        if not self._user32.GetWindowPlacement(handle, ctypes.byref(placement)):
+            return
+        normal = placement.rcNormalPosition
+        width, height = normal.right - normal.left, normal.bottom - normal.top
+        if (
+            width >= MIN_ROOM_SIZE[0]
+            and height >= MIN_ROOM_SIZE[1]
+            and self._user32.MonitorFromRect(ctypes.byref(normal), 0)  # MONITOR_DEFAULTTONULL
+        ):
+            return
+        anchor = self._main_window() or handle
+        monitor = self._user32.MonitorFromWindow(anchor, 2)  # MONITOR_DEFAULTTONEAREST
+        info = _MonitorInfo()
+        info.cbSize = ctypes.sizeof(_MonitorInfo)
+        if not monitor or not self._user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return
+        work = info.rcWork
+        width = min(max(width, ROOM_SIZE[0]), work.right - work.left)
+        height = min(max(height, ROOM_SIZE[1]), work.bottom - work.top)
+        # Workspace coordinates: GetWindowPlacement's rectangle excludes the
+        # taskbar, so the work area's own origin is the zero here.
+        left = (work.right - work.left - width) // 2
+        top = (work.bottom - work.top - height) // 2
+        placement.rcNormalPosition = wintypes.RECT(left, top, left + width, top + height)
+        placement.showCmd = _SW_SHOWMINNOACTIVE
+        placement.flags = 0
+        self._user32.SetWindowPlacement(handle, ctypes.byref(placement))
 
     def show_main_window(self) -> bool:
         """Bring the main window back, including from the tray.

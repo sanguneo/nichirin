@@ -38,6 +38,10 @@ class FakeDesktop:
         self.minimized: list[int] = []
         self.draft = ""
         self.actions: list[str] = []
+        self.searchable = False
+        self.searches: list[str] = []
+        self.cleared = 0
+        self._all_rows: list[str] | None = None
 
     # -- opening --------------------------------------------------------
     def room_list(self) -> int | None:
@@ -71,6 +75,20 @@ class FakeDesktop:
             title = self.rows[row]
             if title not in [window.title for window in self.windows]:
                 self.windows.append(ChatWindow(handle=200 + row, title=title))
+
+    def search_rooms(self, text: str) -> int | None:
+        if not self.searchable:
+            return None
+        self.searches.append(text)
+        self.log.append(f"search:{text}")
+        self._all_rows = self.rows
+        self.rows = [title for title in self.rows if text in title]
+        return LIST_CONTROL
+
+    def clear_search(self) -> None:
+        self.cleared += 1
+        if self._all_rows is not None:
+            self.rows, self._all_rows = self._all_rows, None
 
     def close_window(self, handle: int) -> None:
         for window in list(self.windows):
@@ -306,16 +324,21 @@ class AimTests(unittest.TestCase):
         opener(desktop).open("받는 방", hint=3)
         self.assertEqual(desktop.clicks, [3], "rooms were opened on the way to a known row")
 
-    def test_a_hint_that_misses_looks_at_the_top_next(self) -> None:
-        # A pinned room sits at the top however recent the catalog says it is.
+    def test_a_hint_that_misses_goes_to_the_search_not_the_top(self) -> None:
+        # A pinned room sits at the top however recent the catalog says it
+        # is; the search finds it without opening the rows in between.
         desktop = FakeDesktop(["받는 방", "둘", "셋", "넷"])
+        desktop.searchable = True
         opener(desktop).open("받는 방", hint=3)
-        self.assertEqual(desktop.clicks, [3, 0], "the top was reached too late")
+        self.assertEqual(desktop.clicks, [3, 0])
+        self.assertEqual(desktop.searches, ["받는 방"])
+        self.assertEqual(desktop.closed, ["넷"], "more than the hinted row was opened")
 
-    def test_a_hint_that_is_merely_off_by_one_costs_one_room(self) -> None:
+    def test_a_hint_that_misses_without_a_search_box_opens_nothing_else(self) -> None:
         desktop = FakeDesktop(["하나", "둘", "셋", "받는 방"])
-        opener(desktop).open("받는 방", hint=2)
-        self.assertEqual(desktop.clicks, [2, 0, 3])
+        with self.assertRaises(KanaoError):
+            opener(desktop).open("받는 방", hint=2)
+        self.assertEqual(desktop.clicks, [2])
 
     def test_a_row_that_worked_is_remembered(self) -> None:
         desktop = FakeDesktop(["하나", "받는 방"])
@@ -338,6 +361,77 @@ class AimTests(unittest.TestCase):
         opener(desktop, remembered=self.remembered).open("받는 방")
         raw = self.remembered.read_bytes()
         self.assertNotIn("받는 방".encode(), raw)
+
+
+class FarRoomTests(unittest.TestCase):
+    """A room past the searched rows is not swept for; it is searched for.
+
+    Sweeping the top of the list for a room the catalog places lower down
+    opened every room up there, each marked read, and then failed anyway.
+    """
+
+    def test_a_far_hint_opens_no_row_without_a_search_box(self) -> None:
+        desktop = FakeDesktop(["하나", "둘", "셋"])
+        with self.assertRaises(KanaoError) as caught:
+            opener(desktop, rows=3).open("받는 방", hint=40)
+        self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
+        self.assertEqual(desktop.clicks, [], "rooms were opened for one out of reach")
+
+    def test_a_far_room_is_found_through_the_search_box(self) -> None:
+        desktop = FakeDesktop(["하나", "둘", "셋", "넷", "받는 방"])
+        desktop.searchable = True
+        window = opener(desktop, rows=3).open("받는 방", hint=4)
+        self.assertEqual(window.title, "받는 방")
+        self.assertEqual(desktop.searches, ["받는 방"])
+        self.assertEqual(desktop.clicks, [0], "more than the filtered row was opened")
+        self.assertEqual(desktop.closed, [])
+
+    def test_the_search_is_cleared_whatever_it_found(self) -> None:
+        desktop = FakeDesktop(["하나", "둘"])
+        desktop.searchable = True
+        with self.assertRaises(KanaoError):
+            opener(desktop, rows=2).open("없는 방", hint=9)
+        self.assertEqual(desktop.cleared, 1)
+
+    def test_a_filtered_row_that_is_someone_else_is_closed(self) -> None:
+        # The search box matches substrings; the title must still be exact.
+        desktop = FakeDesktop(["하나", "둘", "받는 방 2", "받는 방"])
+        desktop.searchable = True
+        with self.assertRaises(KanaoError):
+            opener(desktop, rows=2).open("받는 방", hint=3)
+        self.assertEqual(desktop.closed, ["받는 방 2"])
+
+    def test_a_near_miss_falls_back_to_the_search(self) -> None:
+        desktop = FakeDesktop(["하나", "둘", "셋", "받는 방"])
+        desktop.searchable = True
+        window = opener(desktop, rows=2).open("받는 방", hint=1)
+        self.assertEqual(window.title, "받는 방")
+        self.assertEqual(desktop.log[-2:], ["search:받는 방", 0])
+
+    def test_a_remembered_row_is_still_tried_for_a_far_room(self) -> None:
+        remembered = Path(tempfile.mkdtemp()) / "rows.json"
+        desktop = FakeDesktop(["하나", "받는 방"])
+        opener(desktop, rows=3, remembered=remembered).open("받는 방")
+        again = FakeDesktop(["하나", "받는 방"])
+        opener(again, rows=3, remembered=remembered).open("받는 방", hint=50)
+        self.assertEqual(again.clicks, [1])
+
+
+class ParkingTests(unittest.TestCase):
+    """A room the client shows again after it was minimised is put back down."""
+
+    def test_a_window_that_rises_again_is_minimised_again(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        rises = [False, False]  # the client's own show undoes the first minimise
+        desktop.is_minimized = lambda handle: rises.pop(0) if rises else True  # type: ignore[attr-defined]
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(desktop.minimized, [window.handle] * 3)
+
+    def test_a_window_that_stays_down_is_minimised_once(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.is_minimized = lambda handle: True  # type: ignore[attr-defined]
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(desktop.minimized, [window.handle])
 
 
 class FlashTests(unittest.TestCase):
