@@ -56,6 +56,7 @@ class FakeSender:
         open_if_needed: bool = False,
         aliases=(),
         hint=None,
+        search_row=None,
     ) -> SendResult:
         self.calls.append(
             {

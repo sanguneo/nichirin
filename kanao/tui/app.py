@@ -25,7 +25,7 @@ from typing import Optional, Sequence, TYPE_CHECKING
 from .. import __version__
 from ..errors import ErrorCode, KanaoError
 from ..model import FEED_KINDS, FEED_MESSAGE, Friend, Message, Room, message_kind
-from ..reader import Reader
+from ..reader import UNLOCK_SECONDS, Reader
 from . import digest, images
 from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
 from .layout import (
@@ -257,6 +257,18 @@ class App:
         # Every room, not only the readable ones: a room whose key is not
         # loaded can be opened in the client from here, which loads it.
         self.rooms = list(catalogued)
+        self._remember_members()
+
+    def _remember_members(self) -> None:
+        """Read who is in which room while the catalog is fresh anyway.
+
+        Predicting where the client's search lists a room needs it, and a
+        send must not read the catalog to find out.
+        """
+        try:
+            self.reader.memberships(refresh=True)
+        except KanaoError:
+            pass
 
     def visible_rooms(self) -> list[Room]:
         """The rooms the filter leaves, or all of them."""
@@ -345,13 +357,27 @@ class App:
         try:
             self._refuse_ambiguous(room)
             stored = self.reader.stored_title(room.id)
-            self._require_sender().resolve(
+            sender = self._require_sender()
+            window = sender.resolve(
                 room.title,
                 open_if_needed=True,
                 aliases=[stored] if stored and stored != room.title else [],
                 hint=self.titles.index(room.title) if room.title in self.titles else None,
+                search_row=self.reader.search_position(room.id, rooms=self.rooms),
             )
-            if not self.reader.unlock(room.id):
+            repark = getattr(sender, "repark", None)
+
+            def settle() -> None:
+                # The client can raise the window again while it loads a room
+                # it never opened, taking the keyboard from this terminal.
+                if repark is not None and window is not None:
+                    repark(window)
+                time.sleep(UNLOCK_SECONDS)
+
+            unlocked = self.reader.unlock(room.id, settle=settle)
+            if repark is not None and window is not None:
+                repark(window)
+            if not unlocked:
                 raise KanaoError(
                     ErrorCode.KEY_UNAVAILABLE,
                     f"'{room.title}' 방을 열었지만 키가 아직 올라오지 않았습니다. 다시 시도해 주세요",
@@ -534,6 +560,7 @@ class App:
             return False
         self.titles = [room.title for room in catalogued]
         rooms = list(catalogued)
+        self._remember_members()
         changed = [
             (room.id, room.unread, room.last_log_id, room.readable) for room in rooms
         ] != [(room.id, room.unread, room.last_log_id, room.readable) for room in self.rooms]
@@ -1590,6 +1617,7 @@ class App:
                 hint=self.titles.index(chat.room.title)
                 if chat.room.title in self.titles
                 else None,
+                search_row=self.reader.search_position(chat.room.id, rooms=self.rooms),
             )
         except KanaoError as error:
             chat.notice = f"전송 실패: {error.message}"

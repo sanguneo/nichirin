@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 
 from kanao import reader as reader_module
 from kanao.errors import ErrorCode, KanaoError
@@ -265,6 +266,53 @@ class NewcomerNameTests(unittest.TestCase):
             before = reader._names
             self.newest(reader)
             self.assertIs(reader._names, before, "the map was read again inside the retry window")
+
+
+class SearchPositionTests(unittest.TestCase):
+    """Where the client's own search lists a room, predicted from the catalog.
+
+    The search matches titles and members' names in recency order, so a
+    one-to-one room sat third below two open chats that only had that person
+    as a member — and opening the first result opened the wrong room.
+    """
+
+    PERSON = 606060
+
+    def reader(self) -> Reader:
+        reader = build_reader()
+        self.addCleanup(reader.close)
+        rooms = reader.rooms()
+        # Two busier rooms with the person as a member, then their own room.
+        reader._names = {self.PERSON: "합성 이름"}
+        reader._members = {rooms[0].id: [self.PERSON], rooms[1].id: [self.PERSON]}
+        self.rooms = [
+            replace(rooms[0], title="첫 번째 단톡"),
+            replace(rooms[1], title="두 번째 단톡"),
+            replace(rooms[2], title="합성 이름"),
+            *rooms[3:],
+        ]
+        return reader
+
+    def test_rooms_matched_by_a_member_come_first(self) -> None:
+        reader = self.reader()
+        self.assertEqual(reader.search_position(self.rooms[2].id, rooms=self.rooms), 2)
+
+    def test_a_room_matched_by_its_title_alone_is_first(self) -> None:
+        reader = self.reader()
+        reader._members = {}
+        self.assertEqual(reader.search_position(self.rooms[2].id, rooms=self.rooms), 0)
+
+    def test_a_room_the_search_would_not_match_has_no_position(self) -> None:
+        reader = self.reader()
+        self.assertIsNone(
+            reader.search_position(self.rooms[2].id, query="없는 말", rooms=self.rooms)
+        )
+
+    def test_given_the_rooms_it_reads_no_catalog(self) -> None:
+        reader = self.reader()
+        reader.rooms = lambda limit=None: self.fail("the catalog was read")  # type: ignore[method-assign]
+        reader._catalog = lambda: self.fail("the catalog was read")  # type: ignore[method-assign]
+        self.assertEqual(reader.search_position(self.rooms[2].id, rooms=self.rooms), 2)
 
 
 class ErasedMessageTests(unittest.TestCase):

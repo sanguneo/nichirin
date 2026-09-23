@@ -51,14 +51,24 @@ SEARCHED_ROWS = 8
 """How far down the list a room is looked for before giving up."""
 POLL_SECONDS = 0.05
 """How often to look for the window a posted double-click produces."""
-SEARCH_SETTLE_SECONDS = 0.3
-"""How long the client is given to filter the list after the search changes."""
+SEARCH_SETTLE_SECONDS = 0.1
+"""How long the client is given to fill the result list once it is shown.
+
+The early misses that made this 0.3 s clicked the hidden room list, not the
+result list; once the result list is shown it already holds the matches.
+"""
 ROOM_SIZE = (380, 640)
 """The size a room window is given back when it was remembered as nothing."""
 MIN_ROOM_SIZE = (200, 200)
 """Below this a remembered room window is the minimised one, not a real size."""
 PARKED_POLLS = 10
-"""Looks in a row a parked window must stay minimised before it is trusted to."""
+"""Looks in a row a parked window must stay down before it is trusted to.
+
+Down means minimised *and* not holding the keyboard. A room the client never
+opened can be raised again later than this, which is why the interface keeps
+re-parking while it waits for the room's key rather than this waiting longer:
+1.5 s here was most of what opening a room cost.
+"""
 POLL_ATTEMPTS = 40
 """How long to keep looking before treating the row as the wrong one."""
 SUBMIT_ATTEMPTS = 60
@@ -129,6 +139,7 @@ class MessageSender(Protocol):
         open_if_needed: bool = False,
         aliases: Iterable[str] = (),
         hint: Optional[int] = None,
+        search_row: Optional[int] = None,
     ) -> SendResult:
         ...
 
@@ -361,8 +372,8 @@ class RoomOpener:
         if is_minimized is None:
             return
         steady = 0
-        for _attempt in range(self._attempts):
-            if is_minimized(handle):
+        for _attempt in range(max(self._attempts, PARKED_POLLS * 2)):
+            if is_minimized(handle) and not self._holds_keyboard(handle):
                 steady += 1
                 if steady >= PARKED_POLLS:
                     return
@@ -371,8 +382,20 @@ class RoomOpener:
                 self._backend.minimize_window(handle)
             self._settle()
 
+    def _holds_keyboard(self, handle: int) -> bool:
+        foreground = getattr(self._backend, "foreground", None)
+        return foreground is not None and foreground() == handle
+
+    def repark(self, handle: int) -> None:
+        """Put a parked window down again if the client has raised it since."""
+        is_minimized = getattr(self._backend, "is_minimized", None)
+        if is_minimized is None:
+            return
+        if not is_minimized(handle) or self._holds_keyboard(handle):
+            self._backend.minimize_window(handle)
+
     def _search(
-        self, room: str, wanted: set[str], known: set[str]
+        self, room: str, wanted: set[str], known: set[str], row: int = 0
     ) -> tuple[bool, Optional[ChatWindow]]:
         """Type the title into the client's search box and open the first row.
 
@@ -390,14 +413,18 @@ class RoomOpener:
             results = search(room)
             if results is None:
                 return False, None
-            return True, self._try_row(results, 0, wanted, known, scroll=False)
+            return True, self._try_row(results, row, wanted, known, scroll=False)
         finally:
             clear = getattr(self._backend, "clear_search", None)
             if clear is not None:
                 clear()
 
     def open(
-        self, room: str, aliases: Iterable[str] = (), hint: Optional[int] = None
+        self,
+        room: str,
+        aliases: Iterable[str] = (),
+        hint: Optional[int] = None,
+        search_row: Optional[int] = None,
     ) -> ChatWindow:
         """Open *room*, accepting any of *aliases* as its window title.
 
@@ -409,7 +436,7 @@ class RoomOpener:
         foreground = getattr(self._backend, "foreground", None)
         had_focus = foreground() if foreground is not None else None
         try:
-            return self._open(room, aliases, hint)
+            return self._open(room, aliases, hint, search_row)
         finally:
             # Whatever opened took the keyboard with it: the client activates
             # a room's window as it shows it, and the person was typing
@@ -418,7 +445,11 @@ class RoomOpener:
                 self._backend.return_focus(had_focus)  # type: ignore[attr-defined]
 
     def _open(
-        self, room: str, aliases: Iterable[str], hint: Optional[int]
+        self,
+        room: str,
+        aliases: Iterable[str],
+        hint: Optional[int],
+        search_row: Optional[int] = None,
     ) -> ChatWindow:
         wanted = {room, *aliases}
         control = self._backend.room_list()
@@ -441,7 +472,9 @@ class RoomOpener:
         # whose title contains it. Guessing rows is kept for a client whose
         # search could not be used, because every wrong guess is somebody
         # else's window appearing on the screen and being closed again.
-        searched, found = self._search(room, wanted, known)
+        # The search lists members' rooms too, so the room asked for is not
+        # always the first result; the caller predicts which row it is.
+        searched, found = self._search(room, wanted, known, search_row or 0)
         if not searched:
             for row in self._order(room, hint):
                 found = self._try_row(control, row, wanted, known)
@@ -484,6 +517,7 @@ class Sender:
         open_if_needed: bool = False,
         aliases: Iterable[str] = (),
         hint: Optional[int] = None,
+        search_row: Optional[int] = None,
     ) -> ChatWindow:
         """Find the one open chat window for *room*, refusing to guess.
 
@@ -503,7 +537,7 @@ class Sender:
 
         if not matches:
             if open_if_needed and self._opener is not None:
-                return self._opener.open(room, aliases, hint)
+                return self._opener.open(room, aliases, hint, search_row)
             raise KanaoError(
                 ErrorCode.WINDOW_NOT_FOUND,
                 f"No open chat window matches {room!r}; open that conversation in "
@@ -516,6 +550,11 @@ class Sender:
                 candidates=[window.title for window in matches],
             )
         return matches[0]
+
+    def repark(self, window: ChatWindow) -> None:
+        """Keep a room this opened minimised while the caller waits on it."""
+        if self._opener is not None:
+            self._opener.repark(window.handle)
 
     def _confirm_sent(self, control: int) -> None:
         """Wait for the input box to empty, which is what says the text left it.
@@ -547,6 +586,7 @@ class Sender:
         open_if_needed: bool = False,
         aliases: Iterable[str] = (),
         hint: Optional[int] = None,
+        search_row: Optional[int] = None,
     ) -> SendResult:
         """Type *text* into *room*'s window and send it, or preview when dry.
 
@@ -561,7 +601,11 @@ class Sender:
             raise KanaoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
         window = self.resolve(
-            room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
+            room,
+            open_if_needed=open_if_needed,
+            aliases=aliases,
+            hint=hint,
+            search_row=search_row,
         )
         control = self._backend.input_handle(window.handle)
         if control is None:
@@ -608,6 +652,8 @@ class Sender:
 # -- Win32 backend -----------------------------------------------------------
 
 _WM_CLOSE = 0x0010
+_WM_SYSCOMMAND = 0x0112
+_SC_MINIMIZE = 0xF020
 _WM_KEYDOWN = 0x0100
 _WM_KEYUP = 0x0101
 _WM_LBUTTONDOWN = 0x0201
@@ -621,6 +667,10 @@ _SW_HIDE = 0
 _SW_MINIMIZE = 6
 _SW_SHOWMINNOACTIVE = 7
 _SW_SHOWNOACTIVATE = 4
+_HWND_BOTTOM = 1
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOACTIVATE = 0x0010
 _WM_MOUSEWHEEL = 0x020A
 _WHEEL_UP = 120
 _WHEEL_NOTCHES = 8
@@ -900,10 +950,14 @@ class Win32Backend:
         # a minimised window holding the keyboard, so typing went nowhere.
         # One that did not take it is minimised without being activated, so
         # it spends no time in front of whatever was there.
-        if self._user32.GetForegroundWindow() == handle:
-            self._user32.ShowWindow(handle, _SW_MINIMIZE)
-        else:
-            self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
+        # Asked of the window rather than done to it: a posted SC_MINIMIZE is
+        # the minimise button, handled on the client's own thread after it
+        # has finished showing — and activating — the room, so activation is
+        # handed back the way a click on the button hands it back. Minimising
+        # from here raced the client: done first, the client then activated
+        # a window already minimised, which kept the keyboard from the
+        # terminal; done synchronously, it waited 0.98 s on the client.
+        self._user32.PostMessageW(handle, _WM_SYSCOMMAND, _SC_MINIMIZE, 0)
         self._repair_placement(handle)
 
     def foreground(self) -> Optional[int]:
@@ -995,6 +1049,13 @@ class Win32Backend:
             # a room had been opened, instead of where the person was typing.
             if not self._user32.IsWindowVisible(handle) or self._user32.IsIconic(handle):
                 self._user32.ShowWindow(handle, _SW_SHOWNOACTIVATE)
+                # Beneath everything, too: shown on top, it was the window
+                # behind a room when the room was minimised, so it — not the
+                # terminal the person was typing in — was handed the keyboard.
+                self._user32.SetWindowPos(
+                    handle, _HWND_BOTTOM, 0, 0, 0, 0,
+                    _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
+                )
             return bool(self._user32.IsWindowVisible(handle))
         return False
 

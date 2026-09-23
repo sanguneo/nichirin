@@ -85,6 +85,7 @@ class Reader:
         self._names_read_at = 0.0
         self._feed_names: dict[int, dict[int, str]] = {}
         self._feeds_lack: dict[int, set[int]] = {}
+        self._members: Optional[dict[int, list[int]]] = None
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
         self._selections: dict[int, str] = {}
@@ -477,6 +478,58 @@ class Reader:
         stored = None if row is None else row[0]
         if isinstance(stored, str) and stored.strip():
             return stored.strip()
+        return None
+
+    def memberships(self, refresh: bool = False) -> dict[int, list[int]]:
+        """Every room's active members, read once and kept until *refresh*.
+
+        Kept because a send must not read the catalog: sending is what makes
+        its snapshot stale, and a stale catalog costs a whole decryption.
+        """
+        if self._members is None or refresh:
+            members: dict[int, list[int]] = {}
+            for chat_id, user_id in self._catalog().execute(
+                "SELECT chatId, userId FROM chatMembers WHERE COALESCE(isActive, 1) = 1"
+            ):
+                members.setdefault(int(chat_id), []).append(int(user_id))
+            self._members = members
+        return self._members
+
+    def search_position(
+        self,
+        room_id: int,
+        query: Optional[str] = None,
+        rooms: Optional[Sequence[Room]] = None,
+    ) -> Optional[int]:
+        """Where the client's room search should list *room_id*, from zero.
+
+        The search matches a room's title and the names of its members, and
+        lists what it matches in the room list's own recency order — so a
+        one-to-one room with somebody sat third, below two open chats that
+        merely had them as a member, and opening the first result opened the
+        wrong room. Checked live against that search: predicted third, shown
+        third. None when the room would not be matched at all.
+        """
+        if rooms is None:
+            rooms = self.rooms()
+        target = next((room for room in rooms if room.id == room_id), None)
+        if target is None:
+            return None
+        needle = (query if query is not None else target.title).casefold()
+        if not needle:
+            return None
+        names = self.names()
+        members = self.memberships()
+        position = 0
+        for room in rooms:
+            matched = needle in room.title.casefold() or any(
+                needle in names.get(user_id, "").casefold()
+                for user_id in members.get(room.id, ())
+            )
+            if room.id == room_id:
+                return position if matched else None
+            if matched:
+                position += 1
         return None
 
     def room(self, room_id: int) -> Optional[Room]:

@@ -414,7 +414,9 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _window_target(reader: Reader, room: Room) -> tuple[list[str], Optional[int]]:
+def _window_target(
+    reader: Reader, room: Room
+) -> tuple[list[str], Optional[int], Optional[int]]:
     """The titles a room's window may carry and where the list likely shows it.
 
     Refuses a title two catalogued rooms share: a window can only be told
@@ -437,7 +439,7 @@ def _window_target(reader: Reader, room: Room) -> tuple[list[str], Optional[int]
     # The client lists rooms by recency too, so this is close before it is
     # right — close enough that opening one usually costs a single click.
     hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
-    return aliases, hint
+    return aliases, hint, reader.search_position(room.id)
 
 
 def _open_for_reading(reader: Reader, room: Room) -> None:
@@ -448,8 +450,10 @@ def _open_for_reading(reader: Reader, room: Room) -> None:
     """
     from .winauto import make_sender
 
-    aliases, hint = _window_target(reader, room)
-    make_sender().resolve(room.title, open_if_needed=True, aliases=aliases, hint=hint)
+    aliases, hint, search_row = _window_target(reader, room)
+    make_sender().resolve(
+        room.title, open_if_needed=True, aliases=aliases, hint=hint, search_row=search_row
+    )
     if not reader.unlock(room.id):
         raise KanaoError(
             ErrorCode.KEY_UNAVAILABLE,
@@ -464,7 +468,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
     room = _selected_room(reader, arguments)
-    aliases, hint = _window_target(reader, room)
+    aliases, hint, search_row = _window_target(reader, room)
     try:
         result = make_sender().send(
             room.title,
@@ -473,6 +477,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             open_if_needed=arguments.open_room,
             aliases=aliases,
             hint=hint,
+            search_row=search_row,
         )
     except OSError as error:
         raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error

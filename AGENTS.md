@@ -765,6 +765,16 @@ on a live client, newest 4,000 rows of each readable room.
   rows opened every one of them from the interface whenever its order
   disagreed with the screen's, which it does for every pinned room. The
   sweep survives only for a caller that has no hint at all.
+- **The search lists members' rooms too, so the room is not always first.**
+  KakaoTalk's room search matches a title *or* the name of anyone in the
+  room, in the list's recency order. A one-to-one room sat third below two
+  open chats that merely had that person as a member, so opening the first
+  result opened a stranger's room and the send failed. `Reader.search_position`
+  predicts the row from the catalog — titles, `chatMembers` and the name map —
+  and only that row is opened: predicted third, shown third, and the room
+  then opened with no other window appearing. The interface passes its own
+  room list and the memberships it read with it, because a send must not read
+  the catalog.
 - **A room past the searched rows is searched for, not swept for.** With a
   catalog hint beyond `SEARCHED_ROWS`, every hint guess fell out of range and
   what remained was a sweep of the top rows — each a wrong room opened and
@@ -803,14 +813,21 @@ on a live client, newest 4,000 rows of each readable room.
 - No SetForegroundWindow, SetFocus, SendInput, clipboard writes or mouse moves.
   The one exception gives focus *back*: opening a room lets the client
   activate its window, so `RoomOpener.open` notes the foreground window first
-  and asks once for it again at the end. Windows usually refuses that request
-  from a background process — accepted and ignored, measured — so what really
-  keeps the keyboard where it was is not taking it: the main window is shown
-  with `SW_SHOWNOACTIVATE` (`SW_SHOW` and `SW_RESTORE` activated it, and it
-  was left holding focus), and a room window that did take focus is minimised
-  with `SW_MINIMIZE`, which hands activation to the window behind it, where
-  `SW_SHOWMINNOACTIVE` left a minimised window holding the keyboard. Checked
-  live with the self-chat: focus before and after was the same window.
+  and asks once for it again at the end. Windows refuses that request from a
+  background process — accepted and ignored, measured — so what really keeps
+  the keyboard where it was is how the room is put away. **A room is
+  minimised by posting `WM_SYSCOMMAND`/`SC_MINIMIZE`**, the minimise button:
+  the client handles it on its own thread after it has shown and activated
+  the room, and activation goes back to the window behind. Minimising from
+  here raced the client — done first, the client then activated a window
+  already minimised, which held the keyboard with nothing on screen; done
+  synchronously, it waited 0.98 s on a client busy showing that window. The
+  main window taken from the tray is shown with `SW_SHOWNOACTIVATE` and put at
+  the bottom of the Z order, or it was the window behind the room and took
+  the keyboard. Measured live from a terminal, self-chat, main window up and
+  in the tray: focus returned to the terminal both times, and opening the
+  room fell from 3.3 s to 1.15–1.30 s (the search's settle 0.3 → 0.1 s, the
+  parking watch 1.5 → 0.5 s, and no synchronous minimise).
   Native message calls have a timeout; a hung client must not hang the CLI.
 - **`submitted` means the input box emptied, never confirmed network
   delivery.** Posting Enter only queues a keystroke, so `PostMessage`

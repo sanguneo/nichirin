@@ -40,6 +40,7 @@ class StubSender:
         open_if_needed: bool = False,
         aliases=(),
         hint=None,
+        search_row=None,
     ):
         if room == "Ambiguous room":
             raise KanaoError(

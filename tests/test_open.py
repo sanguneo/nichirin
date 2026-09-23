@@ -434,6 +434,25 @@ class ParkingTests(unittest.TestCase):
         window = opener(desktop).open("받는 방")
         self.assertEqual(desktop.minimized, [window.handle] * 3)
 
+    def test_a_window_raised_after_parking_is_put_down_by_repark(self) -> None:
+        # A room the client never opened is shown late, after parking ended.
+        desktop = FakeDesktop(["받는 방"])
+        state = {"down": True}
+        desktop.is_minimized = lambda handle: state["down"]  # type: ignore[attr-defined]
+        sender = Sender(desktop, running=lambda: True, opener=opener(desktop))
+        window = sender.resolve("받는 방", open_if_needed=True)
+        state["down"] = False
+        sender.repark(window)
+        self.assertEqual(desktop.minimized, [window.handle, window.handle])
+
+    def test_repark_leaves_a_window_that_stayed_down(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.is_minimized = lambda handle: True  # type: ignore[attr-defined]
+        sender = Sender(desktop, running=lambda: True, opener=opener(desktop))
+        window = sender.resolve("받는 방", open_if_needed=True)
+        sender.repark(window)
+        self.assertEqual(desktop.minimized, [window.handle])
+
     def test_a_window_that_stays_down_is_minimised_once(self) -> None:
         desktop = FakeDesktop(["받는 방"])
         desktop.is_minimized = lambda handle: True  # type: ignore[attr-defined]

@@ -49,6 +49,7 @@ class OverlappingSender(StubSender):
         open_if_needed: bool = False,
         aliases=(),
         hint=None,
+        search_row=None,
     ):
         with self._lock:
             self.inside += 1

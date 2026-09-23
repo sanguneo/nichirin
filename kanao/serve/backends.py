@@ -118,6 +118,10 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
                     open_if_needed=open_if_needed,
                     aliases=window_aliases,
                     hint=position,
+                    # The client's search lists rooms that merely have a
+                    # member by that name above the room itself, so the row
+                    # to open is predicted from the catalog just read.
+                    search_row=reader.search_position(resolved.id, rooms=catalogued),
                 )
             except OSError as error:
                 raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
