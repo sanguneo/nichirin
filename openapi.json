@@ -849,6 +849,36 @@
           }
         }
       },
+      "Video": {
+        "type": "object",
+        "description": "Where a video lives and what the client stored about it. Present only on a video message. There is no thumbnail: across 3,814 videos on the two builds not one attachment carried a thumbnail address, so a viewer that wants a first frame asks the video for it. The address is on the client's CDN and the cores fetch nothing for it. A number the client did not store is 0.",
+        "required": ["url", "width", "height", "duration", "size"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "duration": {
+            "type": "integer",
+            "description": "Seconds."
+          },
+          "size": {
+            "type": "integer",
+            "description": "Bytes."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present only when the client stored one: after it the address may no longer answer. Measured at 14 days after the message was sent."
+          }
+        }
+      },
       "PhotoImage": {
         "type": "object",
         "description": "One picture of a message: its address on the client's CDN and the size stored beside it.",
@@ -921,6 +951,9 @@
           },
           "photo": {
             "$ref": "#/components/schemas/Photo"
+          },
+          "video": {
+            "$ref": "#/components/schemas/Video"
           }
         }
       },
