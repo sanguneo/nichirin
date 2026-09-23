@@ -765,6 +765,7 @@ class Reader:
             reply=reply,
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
             photo=model.photo_in(kind, extra),
+            video=model.video_in(kind, extra),
         )
 
     def _threaded_quote(
