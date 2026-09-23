@@ -173,7 +173,13 @@ class RoomTests(unittest.TestCase):
         )
         messages = [(7002, DIRECT_ROOM, PEER_ID, 0, joining, None, 1_700_000_001, 0)]
         with build_reader(messages=messages) as reader:
-            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "4 합성 닉"})
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "입장 합성 닉"})
+
+    def test_a_leave_is_said_in_words(self) -> None:
+        leaving = json.dumps({"feedType": 2, "member": {"nickName": "떠난 이름"}})
+        messages = [(7002, DIRECT_ROOM, PEER_ID, 0, leaving, None, 1_700_000_001, 0)]
+        with build_reader(messages=messages) as reader:
+            self.assertEqual(reader.feed_details(DIRECT_ROOM, [7002]), {7002: "퇴장 떠난 이름"})
 
     def test_a_feed_with_nothing_to_add_adds_nothing(self) -> None:
         hiding = json.dumps({"feedType": 21, "logId": 7001, "hidden": True})
@@ -472,6 +478,95 @@ class MembershipFeedTests(unittest.TestCase):
     def test_a_feed_cannot_be_found_by_searching_for_its_json(self) -> None:
         with build_reader(messages=self.rows()) as reader:
             self.assertEqual(list(reader.search("feedType")), [])
+
+
+class NewcomerNameTests(unittest.TestCase):
+    """Somebody who joins after the room was read is not left as a number.
+
+    The name map is read once per reader and the interface keeps its reader
+    for as long as it runs, so a newcomer stayed ``User <id>`` until the room
+    was opened again — when a fresh read found them.
+    """
+
+    NEWCOMER = 555000111
+
+    def rows(self, feed_name=None):
+        rows = [(7100, DIRECT_ROOM, self.NEWCOMER, 1, "안녕하세요", None, 1_700_001_000, 0)]
+        if feed_name is not None:
+            feed = {"feedType": 4, "members": [{"userId": self.NEWCOMER, "nickName": feed_name}]}
+            rows.insert(0, (7099, DIRECT_ROOM, self.NEWCOMER, 0, json.dumps(feed), None, 1_700_000_990, 0))
+        return rows
+
+    def newest(self, reader) -> str:
+        return reader.messages(DIRECT_ROOM, limit=50)[-1].sender
+
+    def test_a_name_that_arrives_later_is_found_on_the_next_read(self) -> None:
+        from kamado import reader as reader_module
+
+        with build_reader(messages=self.rows()) as reader:
+            self.assertEqual(self.newest(reader), f"User {self.NEWCOMER}")
+            connection = reader.connection()
+            connection.execute(
+                "INSERT INTO NTUser (userId, type, nickName) VALUES (?, 1000, ?)",
+                (self.NEWCOMER, "새로 온 사람"),
+            )
+            connection.commit()
+            reader._names_read_at -= reader_module.NAME_RETRY_SECONDS
+            self.assertEqual(self.newest(reader), "새로 온 사람")
+
+    def test_the_join_feed_names_somebody_the_profile_does_not(self) -> None:
+        with build_reader(messages=self.rows(feed_name="입장한 닉")) as reader:
+            self.assertEqual(self.newest(reader), "입장한 닉")
+
+    def test_the_map_is_not_reread_for_every_line(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            reader.names()
+            before = reader._names
+            self.newest(reader)
+            self.assertIs(reader._names, before, "the map was read again inside the retry window")
+
+
+class ErasedMessageTests(unittest.TestCase):
+    """A message deleted for everyone keeps its text; the type says it is gone.
+
+    ``deleted`` stays 0 and 0x4000 is added to the type, and the client writes
+    a ``feedType`` 14 row pointing at it. Both used to reach the screen: the
+    deleted line as if it still stood, and a bare ``[feed 14]`` beside it.
+    """
+
+    def rows(self):
+        erased = json.dumps({"feedType": 14, "logId": 7101, "hidden": True})
+        return [
+            (7100, DIRECT_ROOM, PEER_ID, 1, "남은 말", None, 1_700_001_000, 0),
+            (7101, DIRECT_ROOM, OWN_ID, 0x4000 | 1, "지운 말", None, 1_700_001_010, 0),
+            (7102, DIRECT_ROOM, OWN_ID, 0, erased, None, 1_700_001_020, 0),
+        ]
+
+    def test_an_erased_message_is_not_part_of_the_conversation(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            found = reader.messages(DIRECT_ROOM, limit=50)
+        self.assertEqual([message.id for message in found], [7100])
+
+    def test_a_follower_is_never_pointed_at_what_was_hidden(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            self.assertEqual(reader.newest_log_id(DIRECT_ROOM), 7100)
+
+    def test_an_erased_message_is_not_found_by_search(self) -> None:
+        with build_reader(messages=self.rows()) as reader:
+            self.assertEqual(list(reader.search("지운")), [])
+
+    def test_other_feeds_are_still_shown(self) -> None:
+        joining = json.dumps({"feedType": 4, "members": [{"userId": PEER_ID, "nickName": "합성 닉"}]})
+        rows = self.rows() + [(7103, DIRECT_ROOM, PEER_ID, 0, joining, None, 1_700_001_030, 0)]
+        with build_reader(messages=rows) as reader:
+            found = reader.messages(DIRECT_ROOM, limit=50)
+        self.assertEqual([message.id for message in found], [7100, 7103])
+
+    def test_a_feed_body_that_is_not_json_does_not_fail_the_read(self) -> None:
+        rows = self.rows() + [(7104, DIRECT_ROOM, PEER_ID, 0, "not json", None, 1_700_001_040, 0)]
+        with build_reader(messages=rows) as reader:
+            found = reader.messages(DIRECT_ROOM, limit=50)
+        self.assertEqual([message.id for message in found], [7100, 7104])
 
 
 if __name__ == "__main__":

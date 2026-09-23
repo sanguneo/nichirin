@@ -83,12 +83,23 @@ _MESSAGE_KINDS: Final = {
 }
 
 
+FEED_KINDS: Final = {4: "입장", 2: "퇴장"}
+"""The feed types whose meaning has been checked against a live screen.
+
+Read off an open chat beside the client's own view on the Windows build, where
+every ``4`` named somebody who had just come in and every ``2`` somebody who
+had left. The same codes carry names here in the same proportions — 309 and
+183 of the newest 20,000 rows, every one naming a member — because the feed
+is the server's, not the platform's. Other codes stay numbers.
+"""
+
+
 def feed_detail(raw: object) -> str:
     """Describe a feed row from what it carries, naming nothing it does not.
 
-    A feed's JSON is the client's own bookkeeping, and the meaning of its
-    ``feedType`` is not confirmed against a live client — so the number is
-    passed through as a number. What the row states plainly is quoted: the
+    A feed's JSON is the client's own bookkeeping, and the meaning of most
+    ``feedType`` codes is not confirmed against a live client — so those are
+    passed through as numbers; the few in :data:`FEED_KINDS` are said in words. What the row states plainly is quoted: the
     ``coverType`` an open chat writes when its SafeBot covers a message
     (``openchat_blind``, seen 8 times in one live room), and the nicknames a
     membership row records. The rest, 6,300 rows of ``{"feedType": 21,
@@ -106,7 +117,7 @@ def feed_detail(raw: object) -> str:
     parts: list[str] = []
     code = payload.get("feedType")
     if isinstance(code, int):
-        parts.append(str(code))
+        parts.append(FEED_KINDS.get(code, str(code)))
     cover = payload.get("coverType")
     if isinstance(cover, str) and cover.strip():
         parts.append(cover.strip())

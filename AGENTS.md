@@ -134,6 +134,26 @@ code that depends on them without re-checking will quietly break.
   in both. They drifted apart once already, and only the incremental path was
   fixed.
 
+- **A message deleted for everyone keeps its text.** `deleted` stays 0 and
+  0x4000 is added to the type (16385 for text, 16386 for a photo), and the
+  client writes a `feedType` 14 row — `{"logId": …, "hidden": true}`, with
+  `byHost` when a host did it — pointing at it. A line typed and deleted went
+  on showing as that line, beside a bare `[feed 14]`. Over the newest 20,000
+  rows all 255 messages a type-14 feed points at carried the bit. The
+  deleted predicate from `_message_query` now excludes both, so a window, a
+  search, a count and a follower's cursor all agree; the feed test goes
+  through `CASE … json_valid` because `json_extract` on a body that is not
+  JSON fails the statement rather than the row. The Windows build leaves the
+  text encrypted instead and marks it with a column this schema lacks — the
+  bit is what the two share.
+- **Feed types 4 and 2 are said in words** (`model.FEED_KINDS`): a join and a
+  leave, checked on the Windows build against the client's own screen; here
+  309 and 183 of the newest 20,000 feeds, every one naming a member.
+- **A newcomer is looked for again.** `names()` is read once per reader and
+  the interface keeps its reader, so somebody who joined after a room was
+  opened stayed `User <id>`. `Reader._sender_name` re-reads the map at most
+  every `NAME_RETRY_SECONDS`, then takes the room's join-feed nickname.
+
 ### Sending
 
 Sending into an **already open** room window costs 0.07 s of accessibility

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import plistlib
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
@@ -46,6 +47,8 @@ _GROUP_TITLE_MEMBERS = 3
 
 ROOM_TABLE = "NTChatRoom"
 MESSAGE_TABLE = "NTChatMessage"
+NAME_RETRY_SECONDS = 5.0
+"""How long an unknown sender waits before the name map is read again."""
 USER_TABLE = "NTUser"
 LINK_TABLE = "NTOpenLink"
 CONTEXT_TABLE = "NTChatContext"
@@ -69,6 +72,22 @@ the quote has to be read back out of the conversation.
 """
 
 _DELETED_COLUMNS = ("deleted", "isDeleted")
+_ERASED_TYPE_BIT = 0x4000
+"""Added to a message's type when it is deleted for everyone.
+
+The row keeps its text — a line typed and deleted went on showing as that
+line — and ``deleted`` stays 0. Measured over the newest 20,000 rows: every
+one of the 255 messages a deletion feed points at carried this bit. The
+Windows build found the same bit on the same kind of row, alongside a flag
+column this schema does not have.
+"""
+_ERASED_FEED = 14
+"""The feed a deletion writes: ``{"feedType": 14, "logId": …, "hidden": true}``.
+
+It is the client recording that it hid a message — ``byHost`` when a host did
+it — so it is bookkeeping about a row that is no longer shown, and showing it
+put a bare ``[feed 14]`` where the message had been.
+"""
 _MESSAGE_TEXT_COLUMNS = ("message", "text")
 _SENT_AT_COLUMNS = ("sentAt", "sendAt", "createdAt")
 
@@ -130,6 +149,9 @@ class Reader:
         self._ledger = ledger
         self._connection = connection
         self._names: Optional[dict[int, str]] = None
+        self._names_read_at = 0.0
+        self._feed_names: dict[int, dict[int, str]] = {}
+        self._feeds_lack: dict[int, set[int]] = {}
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
         self._columns: dict[str, set[str]] = {}
@@ -326,6 +348,7 @@ class Reader:
                     if name:
                         found[int(user_id)] = name
         self._names = found
+        self._names_read_at = time.monotonic()
         if self._ledger is not None:
             # Once per process: the map is memoised above, and only a name that
             # differs from its last sighting is appended.
@@ -626,7 +649,16 @@ class Reader:
         sent_at = _first_present(columns, _SENT_AT_COLUMNS) or "NULL"
         thread = _first_present(columns, _THREAD_COLUMNS) or "NULL"
         deleted = _first_present(columns, _DELETED_COLUMNS)
-        predicate = f"COALESCE({deleted}, 0) = 0" if deleted else "1 = 1"
+        conditions = [f"COALESCE({deleted}, 0) = 0"] if deleted else []
+        conditions.append(f"(COALESCE(type, 0) & {_ERASED_TYPE_BIT}) = 0")
+        if text != "NULL":
+            # CASE keeps json_extract away from a body that is not JSON, which
+            # would fail the whole statement rather than the one row.
+            conditions.append(
+                f"CASE WHEN type = {model.FEED_MESSAGE} AND json_valid({text}) "
+                f"THEN json_extract({text}, '$.feedType') END IS NOT {_ERASED_FEED}"
+            )
+        predicate = " AND ".join(conditions)
         return (
             f"logId, authorId, type, {text}, {attachment}, {sent_at}, {thread}",
             predicate,
@@ -699,6 +731,40 @@ class Reader:
         ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
+    def _sender_name(self, room_id: int, user_id: int) -> str:
+        """Name *user_id*, looking again before settling for a number.
+
+        The name map is read once per reader, and the interface keeps one
+        reader for as long as it runs — so somebody who joined an open chat
+        after the room was opened stayed ``User <id>`` until the room was
+        opened again, when a fresh read found them. Found on the Windows
+        build. An unknown id now has the map read again, at most every
+        :data:`NAME_RETRY_SECONDS`, and failing that the name the room's own
+        join feed recorded, reading the feeds once per stranger rather than
+        once per line.
+        """
+        found = self.names().get(user_id)
+        if found is not None:
+            return found
+        if time.monotonic() - self._names_read_at >= NAME_RETRY_SECONDS:
+            self._names = None
+            found = self.names().get(user_id)
+            if found is not None:
+                return found
+        feeds = self._feed_names.get(room_id)
+        lacking = self._feeds_lack.setdefault(room_id, set())
+        if feeds is None or (user_id not in feeds and user_id not in lacking):
+            # Newest last, so the name a person carried most recently wins.
+            ordered = sorted(
+                names_module.from_feeds(self.feed_rows(room_id)),
+                key=lambda record: record.at or 0,
+            )
+            feeds = {record.user_id: record.name for record in ordered}
+            self._feed_names[room_id] = feeds
+            if user_id not in feeds:
+                lacking.add(user_id)
+        return feeds.get(user_id) or f"User {user_id}"
+
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
         log_id, author, type_code, text, attachment, sent_at, thread = tuple(row)
         sender_id = int(author or 0)
@@ -718,7 +784,7 @@ class Reader:
             id=int(log_id),
             room_id=room_id,
             sender_id=sender_id,
-            sender=known.get(sender_id, f"User {sender_id}"),
+            sender=self._sender_name(room_id, sender_id),
             # A membership feed's message column is the client's own JSON,
             # not words anybody typed, so it is not passed off as text.
             text=""

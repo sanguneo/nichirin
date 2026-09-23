@@ -27,7 +27,7 @@ from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KamadoError
-from ..model import FEED_MESSAGE, Friend, Message, Room, message_kind
+from ..model import FEED_KINDS, FEED_MESSAGE, Friend, Message, Room, message_kind
 from ..reader import Reader
 from . import digest
 from . import images
@@ -1127,7 +1127,13 @@ class App:
             elif message.text:
                 wrapped = self._wrap_body(message.text, body_width)
             else:
-                label = message_kind(message.type) + self._feed_detail(chat, message)
+                detail = self._feed_detail(chat, message)
+                # A join or a leave says so in words; "feed" in front of that
+                # is the storage talking, not the conversation.
+                if detail.split()[:1] and detail.split()[0] in FEED_KINDS.values():
+                    label = detail.strip()
+                else:
+                    label = message_kind(message.type) + detail
                 wrapped = [self.theme.fg("dim", f"[{label}]")]
 
             head = (
