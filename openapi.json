@@ -822,8 +822,8 @@
       },
       "Photo": {
         "type": "object",
-        "description": "Where a picture lives and how large it was sent. Present only on a message that carries one. The client stores an address on its own CDN rather than the picture, so this is the address — the server fetches nothing; a browser can use `url` directly. An album carries its first picture as `url` and says how many there are in `count`. The size is the one the client stored, which a rotated photo can disagree with.",
-        "required": ["url", "width", "height", "count"],
+        "description": "Where a picture lives and how large it was sent. Present only on a message that carries one. The client stores an address on its own CDN rather than the picture, so this is the address — the server fetches nothing; a browser can use `url` directly. An album carries its first picture as `url`, how many there are in `count`, and every one of them in `images`. The size is the one the client stored, which a rotated photo can disagree with.",
+        "required": ["url", "width", "height", "count", "images"],
         "properties": {
           "url": {
             "type": "string",
@@ -838,6 +838,31 @@
           "count": {
             "type": "integer",
             "minimum": 1
+          },
+          "images": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Every picture the message carried, in order: one for a single photo, one per picture for an album. `url`, `width` and `height` above repeat the first. A size the client did not store is 0.",
+            "items": {
+              "$ref": "#/components/schemas/PhotoImage"
+            }
+          }
+        }
+      },
+      "PhotoImage": {
+        "type": "object",
+        "description": "One picture of a message: its address on the client's CDN and the size stored beside it.",
+        "required": ["url", "width", "height"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
           }
         }
       },
