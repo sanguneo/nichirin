@@ -12,11 +12,15 @@ import unittest
 
 from kamado.tui.layout import (
     ELLIPSIS,
+    MAX_TAB_COLUMNS,
+    MIN_TAB_COLUMNS,
+    TAB_SEPARATOR,
     Segment,
     display_width,
     elide_head,
     pad_to_width,
     plan_footer,
+    plan_tabs,
     strip_ansi,
     truncate_to_width,
     wrap_to_width,
@@ -269,6 +273,105 @@ class SpeakerPaletteTests(unittest.TestCase):
             channels = self._channels(col)
             self.assertGreaterEqual(self._spread(col), 70, "should have rich distinct tint")
             self.assertLessEqual(max(channels), 225, "should not be washed out to near-white")
+
+
+class TabStripTests(unittest.TestCase):
+    """The strip has to fit its columns, and keep the focused tab readable.
+
+    The tab you are on is the one title that may not be reduced to an
+    ellipsis: the strip exists so a reader can tell where they are, and a
+    strip that hides its own answer has failed at the only job it has.
+    """
+
+    TITLES = ["가족", "회사 동료들", "문명 같이 하는 사람들 모임", "엄마"]
+    MANY = [f"방{index}" for index in range(14)]
+
+    def strip(self, titles, active, width, unseen=None):
+        tabs = [(title, (unseen or {}).get(index, 0)) for index, title in enumerate(titles)]
+        return plan_tabs(tabs, active, width)
+
+    def row(self, strip) -> str:
+        """The strip as the interface draws it, so the whole thing can be measured."""
+        parts = [
+            entry.label + (f" +{entry.unseen}" if entry.unseen else "")
+            for entry in strip.entries
+        ]
+        row = TAB_SEPARATOR.join(parts)
+        if strip.hidden_left:
+            row = f"{ELLIPSIS}{strip.hidden_left} " + row
+        if strip.hidden_right:
+            row = row + f" {ELLIPSIS}{strip.hidden_right}"
+        return row
+
+    def test_every_tab_is_drawn_when_they_fit(self) -> None:
+        strip = self.strip(self.TITLES, 0, 150)
+        self.assertEqual([entry.index for entry in strip.entries], [0, 1, 2, 3])
+        self.assertEqual((strip.hidden_left, strip.hidden_right), (0, 0))
+
+    def test_a_title_longer_than_the_cap_is_cut(self) -> None:
+        strip = self.strip(self.TITLES, 0, 150)
+        longest = strip.entries[2]
+        self.assertLessEqual(longest.columns, MAX_TAB_COLUMNS)
+        self.assertTrue(longest.label.endswith(ELLIPSIS))
+
+    def test_the_focused_tab_keeps_its_width_while_the_others_shrink(self) -> None:
+        strip = self.strip(self.TITLES, 1, 60)
+        focused = next(entry for entry in strip.entries if entry.index == 1)
+        self.assertEqual(focused.label, "회사 동료들", "the focused tab was cut anyway")
+        self.assertEqual((strip.hidden_left, strip.hidden_right), (0, 0))
+
+    def test_nothing_is_crushed_past_the_floor_while_tabs_could_be_hidden(self) -> None:
+        for width in (100, 80, 60, 40, 30):
+            with self.subTest(width=width):
+                strip = self.strip(self.MANY, 7, width)
+                for entry in strip.entries:
+                    if entry.index == 7:
+                        continue
+                    natural = min(display_width(self.MANY[entry.index]), MIN_TAB_COLUMNS)
+                    self.assertGreaterEqual(entry.columns, natural)
+
+    def test_the_strip_never_overflows_its_width(self) -> None:
+        for width in (150, 100, 80, 60, 40, 30, 24):
+            for active in (0, 7, 13):
+                with self.subTest(width=width, active=active):
+                    strip = self.strip(self.MANY, active, width)
+                    self.assertLessEqual(display_width(self.row(strip)), width)
+
+    def test_the_focused_tab_is_always_shown_whole(self) -> None:
+        for width in (150, 80, 60, 40, 30):
+            with self.subTest(width=width):
+                strip = self.strip(self.TITLES, 2, width)
+                shown = [entry.index for entry in strip.entries]
+                self.assertIn(2, shown, "the focused tab was hidden")
+                focused = next(entry for entry in strip.entries if entry.index == 2)
+                self.assertTrue(focused.label.endswith(ELLIPSIS) or focused.label == self.TITLES[2])
+                self.assertGreaterEqual(focused.columns, MIN_TAB_COLUMNS)
+
+    def test_tabs_hidden_on_each_side_are_counted_where_they_are(self) -> None:
+        strip = self.strip(self.MANY, 7, 60)
+        self.assertGreater(strip.hidden_left, 0)
+        self.assertGreater(strip.hidden_right, 0)
+        self.assertEqual(
+            strip.hidden_left + len(strip.entries) + strip.hidden_right, len(self.MANY)
+        )
+        self.assertEqual(strip.entries[0].index, strip.hidden_left)
+
+    def test_arrivals_in_a_hidden_tab_reach_the_marker(self) -> None:
+        strip = self.strip(self.MANY, 0, 40, unseen={13: 4})
+        self.assertGreater(strip.hidden_right, 0)
+        self.assertEqual(strip.hidden_unseen, 4)
+
+    def test_a_badge_is_counted_inside_the_tab_it_belongs_to(self) -> None:
+        strip = self.strip(["가족", "회사", "친구"], 0, 60, unseen={0: 3, 2: 12})
+        first, third = strip.entries[0], strip.entries[2]
+        self.assertEqual(first.columns, display_width("가족 +3"))
+        self.assertEqual(third.columns, display_width("친구 +12"))
+
+    def test_a_badge_is_never_cut_off_by_the_title_beside_it(self) -> None:
+        strip = self.strip(["문명 같이 하는 사람들 모임"], 0, 40, unseen={0: 12})
+        entry = strip.entries[0]
+        self.assertEqual(entry.columns, display_width(entry.label) + display_width(" +12"))
+        self.assertLessEqual(entry.columns, MAX_TAB_COLUMNS)
 
 
 if __name__ == "__main__":

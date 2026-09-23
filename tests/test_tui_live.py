@@ -42,7 +42,7 @@ class LiveTests(unittest.TestCase):
     def chat(self):
         """The open conversation, failing the test rather than the attribute.
 
-        `App.chat` is a property over the pane list and is None when nothing
+        `App.chat` is a property over the tab list and is None when nothing
         is open, which is a state these tests never mean to be in — saying so
         here turns "no conversation is open" into the failure it is, instead
         of an AttributeError several lines later.
@@ -206,10 +206,10 @@ class DigestTests(LiveTests):
         self.assertIn("AFTER_DIGEST", [m.text for m in self.chat().messages])
 
 
-class PaneArrivalTests(LiveTests):
+class TabArrivalTests(LiveTests):
     """One poll answers for every open conversation.
 
-    The messages come back mixed, so the risk a second pane introduces is not
+    The messages come back mixed, so the risk a second tab introduces is not
     missing an arrival but filing it under the wrong room — which would show a
     line in a conversation nobody wrote it in.
     """
@@ -234,7 +234,7 @@ class PaneArrivalTests(LiveTests):
         self.assertNotIn("FOR_THE_DIRECT_ROOM", self.texts(self.group))
 
     def test_a_room_without_the_keyboard_still_receives(self) -> None:
-        """The unfocused pane is watched, not merely displayed."""
+        """The unfocused tab is watched, not merely displayed."""
         self.assertIs(self.app.chat, self.group)
         self.arrive(5401, "WHILE_LOOKING_ELSEWHERE", room_id=DIRECT_ROOM)
         self.assertTrue(self.app.refresh(WIDTH))

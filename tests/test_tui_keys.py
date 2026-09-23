@@ -94,6 +94,25 @@ class DecodingTests(unittest.TestCase):
         self.assertEqual(self.read(down(VK_ESCAPE, "\x1b")), (Key.ESCAPE, ""))
         self.assertEqual(self.read(down(0, "\t")), (Key.TAB, ""))
 
+    def sequence(self, typed: bytes) -> tuple[str, str]:
+        """Feed raw terminal bytes, the way the loop hands them over."""
+        console = Console()
+        console._input_fd = 0
+        console._input = bytearray(typed)
+        return console.read_key(0.0)
+
+    def test_shift_tab_is_a_key_of_its_own(self) -> None:
+        """CBT is what a terminal sends for Shift+Tab, with no modifier to read."""
+        self.assertEqual(self.sequence(b"\x1b[Z"), (Key.BACKTAB, ""))
+
+    def test_a_shifted_tab_from_a_modified_key_protocol_is_shift_tab_too(self) -> None:
+        self.assertEqual(self.sequence(b"\x1b[9;2u"), (Key.BACKTAB, ""))
+
+    def test_a_tab_without_the_shift_stays_tab(self) -> None:
+        self.assertEqual(self.sequence(b"\t"), (Key.TAB, ""))
+        self.assertEqual(self.sequence(b"\x1b[9;1u"), (Key.TAB, ""))
+        self.assertEqual(self.read(down(0x09, "")), (Key.TAB, ""))
+
     def test_arrows_and_paging(self) -> None:
         for virtual_key, expected in (
             (VK_UP, Key.UP), (VK_DOWN, Key.DOWN), (VK_LEFT, Key.LEFT),

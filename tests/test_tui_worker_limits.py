@@ -62,7 +62,7 @@ class SaturatedInterfaceTests(AppCase):
         self.app.open_room(room)
         self.app._pump(WIDTH, timeout=WAIT)
 
-        self.assertEqual(self.pane.room.id, DIRECT_ROOM)
+        self.assertEqual(self.tab.room.id, DIRECT_ROOM)
 
     def test_friend_list_retries_a_request_rejected_by_full_queue(self) -> None:
         gate = self.fill_queue()
@@ -77,8 +77,8 @@ class SaturatedInterfaceTests(AppCase):
 
     def test_cached_transcript_retries_feeds_rejected_by_full_queue(self) -> None:
         self.open(DIRECT_ROOM)
-        feed = replace(self.pane.messages[0], id=5511, type=FEED_MESSAGE)
-        self.pane.messages.append(feed)
+        feed = replace(self.tab.messages[0], id=5511, type=FEED_MESSAGE)
+        self.tab.messages.append(feed)
         gate = self.fill_queue()
         self.body()
         self.empty_queue(gate)
@@ -86,9 +86,9 @@ class SaturatedInterfaceTests(AppCase):
         self.body()
         self.app._pump(WIDTH, timeout=WAIT)
 
-        self.assertIn(feed.id, self.pane.feeds)
+        self.assertIn(feed.id, self.tab.feeds)
 
-    def test_closing_last_pane_eventually_releases_a_saturated_worker(self) -> None:
+    def test_closing_last_tab_eventually_releases_a_saturated_worker(self) -> None:
         self.open(DIRECT_ROOM)
         gate = self.fill_queue()
         self.app.handle(Key.ESCAPE, "")
@@ -119,7 +119,7 @@ class SaturatedInterfaceTests(AppCase):
         self.write(9998, "AFTER_REOPEN")
         self.app.refresh(WIDTH)
         self.app._pump(WIDTH, timeout=WAIT)
-        self.assertIn("AFTER_REOPEN", self.texts(self.pane))
+        self.assertIn("AFTER_REOPEN", self.texts(self.tab))
 
     def test_repeated_cancel_and_reopen_keeps_the_latest_room_watched(self) -> None:
         self.app.selected = next(
@@ -141,7 +141,7 @@ class SaturatedInterfaceTests(AppCase):
 
     def test_deferred_release_does_not_cancel_a_new_open_in_flight(self) -> None:
         self.open(DIRECT_ROOM)
-        room = self.pane.room
+        room = self.tab.room
         gate = self.fill_queue()
         self.app.handle(Key.ESCAPE, "")
         self.empty_queue(gate)
