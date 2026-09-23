@@ -35,7 +35,7 @@ from kamado.tui.app import App  # noqa: E402
 from kamado.tui.layout import display_width, strip_ansi  # noqa: E402
 from kamado.tui.theme import Theme  # noqa: E402
 
-SCENES = ("rooms", "chat", "digest", "friends", "filter", "sent", "unseen", "real")
+SCENES = ("rooms", "chat", "tabs", "digest", "friends", "filter", "sent", "unseen", "real")
 
 WIDTH, HEIGHT = 110, 30
 
@@ -101,6 +101,14 @@ class SceneTests(unittest.TestCase):
 
         self.assertIn("주말 러닝크루", body)
         self.assertIn("서연", body)
+
+    def test_the_tab_scene_shows_the_strip_and_what_is_waiting_in_it(self) -> None:
+        frame = [strip_ansi(line) for line in render("tabs")]
+
+        self.assertIn("주말 러닝크루", frame[0])
+        self.assertIn("프로덕트", frame[0])
+        self.assertIn("+2", frame[0], "the waiting room is not counted")
+        self.assertNotIn("주말 러닝크루", frame[-1], "the footer names a room the strip already did")
 
     def test_the_agent_scene_answers_with_both_accounts(self) -> None:
         import io
