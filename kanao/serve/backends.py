@@ -114,7 +114,18 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
             # cli._selected_room is this line plus an argparse namespace built
             # to carry two values; importing cli from here is a cycle, and the
             # cycle is the only thing that namespace was for.
-            resolved = _resolve(reader, room)
+            #
+            # openapi.json calls `room` "the room's title, or its id as a
+            # string", and a JSON body carries both as a string, while
+            # `_resolve` takes the id path for an int alone. A client sending
+            # back the id `/rooms` gave it was answered CHAT_NOT_FOUND. The id
+            # is tried first and only when it names a room, so a room whose
+            # title is a number still resolves by title.
+            resolved = None
+            if room.strip().isdigit():
+                resolved = reader.room(int(room.strip()))
+            if resolved is None:
+                resolved = _resolve(reader, room)
             catalogued = reader.rooms()
             duplicates = [
                 r for r in catalogued if r.title.casefold() == resolved.title.casefold()
