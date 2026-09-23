@@ -67,6 +67,7 @@ def run(
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     max_streams: int = MAX_STREAMS,
+    room_opener: Optional[Callable[[int], None]] = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -81,6 +82,7 @@ def run(
         poll_interval=poll_interval,
         request_timeout=request_timeout,
         max_streams=max_streams,
+        room_opener=room_opener,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kanao serve listening on {host}:{server.server_port}", flush=True)

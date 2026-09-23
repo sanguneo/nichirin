@@ -137,6 +137,9 @@
             "$ref": "#/components/parameters/RoomId"
           },
           {
+            "$ref": "#/components/parameters/OpenRoom"
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -189,6 +192,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/RoomId"
+          },
+          {
+            "$ref": "#/components/parameters/OpenRoom"
           },
           {
             "name": "span",
@@ -495,6 +501,16 @@
           "pattern": "^-?[0-9]+$"
         },
         "example": "18491246151592761"
+      },
+      "OpenRoom": {
+        "name": "open",
+        "in": "query",
+        "required": false,
+        "description": "Open the room in the client first if its key is not in memory, then answer. Opening a room marks it read in the client, so it happens only when asked; without it such a room answers 503 `KEY_UNAVAILABLE`. `true` or `false` — anything else is a 400, so a typo cannot open a room. Opening is done one at a time, under the same lock as sending. On a host where every room is always readable it changes nothing.",
+        "schema": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "responses": {
@@ -614,7 +630,7 @@
         }
       },
       "NotReady": {
-        "description": "The machine is not in a state to answer: the client is closed (`KAKAO_NOT_RUNNING`), it has not opened that room this session so its key is not in memory (`KEY_UNAVAILABLE`), there is no signed-in profile (`NO_USER_DATA`), the server is shutting down or already holds as many streams as it will (`BUSY`), or — macOS only — the permissions it needs have not been granted (`PERMISSION_REQUIRED`).",
+        "description": "The machine is not in a state to answer: the client is closed (`KAKAO_NOT_RUNNING`), it has not opened that room this session so its key is not in memory (`KEY_UNAVAILABLE`; ask again with `open=true`), there is no signed-in profile (`NO_USER_DATA`), the server is shutting down or already holds as many streams as it will (`BUSY`), or — macOS only — the permissions it needs have not been granted (`PERMISSION_REQUIRED`).",
         "content": {
           "application/json": {
             "schema": {

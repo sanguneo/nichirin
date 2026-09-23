@@ -35,6 +35,28 @@ def make_live_context_provider(reader_factory) -> Callable[[int, int], dict[str,
     return provider
 
 
+def make_live_room_opener(reader_factory) -> Callable[[int], None]:
+    """Return what ``open=true`` calls: have the client open a room, wait for its key.
+
+    The same path as ``messages --open``. Nothing is kept between calls: the
+    rescan that finds the new key records its addresses, and the next reader
+    the read routes build picks them up from there.
+    """
+
+    def opener(room_id: int) -> None:
+        from ..opening import open_for_reading
+
+        with reader_factory() as reader:
+            room = reader.room(room_id)
+            if room is None:
+                raise KanaoError(ErrorCode.CHAT_NOT_FOUND, f"no room {room_id} in the catalog")
+            if room.readable:
+                return
+            open_for_reading(reader, room)
+
+    return opener
+
+
 def make_live_send() -> Callable[..., dict[str, Any]]:
     """Build the send callable the server uses on a Windows host.
 

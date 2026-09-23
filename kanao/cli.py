@@ -26,6 +26,7 @@ from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
 from .model import Room
 from .names import NameLedger
+from .opening import open_for_reading, window_target
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 
@@ -248,7 +249,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
     if arguments.command == "messages":
         room = _selected_room(reader, arguments)
         if arguments.open_room and not room.readable:
-            _open_for_reading(reader, room)
+            open_for_reading(reader, room)
         found = reader.messages(room.id, limit=arguments.limit, before_id=arguments.before_id)
         _emit(
             success(
@@ -283,6 +284,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         from .serve import (
             make_live_context_provider,
             make_live_digest_provider,
+            make_live_room_opener,
             make_live_rooms_provider,
             make_live_send,
             make_live_watcher_factory,
@@ -312,6 +314,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
                 lambda: Reader(), interval=arguments.poll_interval
             ),
             poll_interval=arguments.poll_interval,
+            room_opener=make_live_room_opener(lambda: Reader()),
         )
 
     if arguments.command == "search":
@@ -414,53 +417,6 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _window_target(
-    reader: Reader, room: Room
-) -> tuple[list[str], Optional[int], Optional[int]]:
-    """The titles a room's window may carry and where the list likely shows it.
-
-    Refuses a title two catalogued rooms share: a window can only be told
-    apart by its title, so neither of them can be opened or written to.
-    """
-    catalogued = reader.rooms()
-    # A window title cannot distinguish two catalog rooms with the same name,
-    # even if the caller supplied an id and only one window is currently open.
-    duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
-    if len(duplicates) != 1:
-        raise KanaoError(
-            ErrorCode.AMBIGUOUS_CHAT,
-            "multiple catalog rooms share this window title; give the target a unique title",
-            candidates=[r.as_json() for r in duplicates],
-        )
-    # The window carries the catalog's own title, which differs from the one
-    # resolved here for the self-chat and for groups with no custom name.
-    stored = reader.stored_title(room.id)
-    aliases = [stored] if stored and stored != room.title else []
-    # The client lists rooms by recency too, so this is close before it is
-    # right — close enough that opening one usually costs a single click.
-    hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
-    return aliases, hint, reader.search_position(room.id)
-
-
-def _open_for_reading(reader: Reader, room: Room) -> None:
-    """Have the client open *room* so its key is loaded, then wait for the key.
-
-    The window is left minimised rather than closed: the key belongs to the
-    open log, and nothing says the client keeps it once the room is closed.
-    """
-    from .winauto import make_sender
-
-    aliases, hint, search_row = _window_target(reader, room)
-    make_sender().resolve(
-        room.title, open_if_needed=True, aliases=aliases, hint=hint, search_row=search_row
-    )
-    if not reader.unlock(room.id):
-        raise KanaoError(
-            ErrorCode.KEY_UNAVAILABLE,
-            f"opened {room.title!r} in KakaoTalk but its key did not appear; try again",
-        )
-
-
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     """Resolve the catalog before targeting an exact client window."""
     from .winauto import make_sender
@@ -468,7 +424,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
     room = _selected_room(reader, arguments)
-    aliases, hint, search_row = _window_target(reader, room)
+    aliases, hint, search_row = window_target(reader, room)
     try:
         result = make_sender().send(
             room.title,

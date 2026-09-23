@@ -28,6 +28,7 @@ from .config import (
     MAX_STREAMS,
     _status_for,
     validate_count,
+    validate_flag,
     validate_cursor,
     validate_max_streams,
     validate_min_interval,
@@ -159,6 +160,7 @@ def build_handler(
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     max_streams: int = MAX_STREAMS,
     max_queued_sends: int = MAX_QUEUED_SENDS,
+    room_opener: Optional[Callable[[int], None]] = None,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -167,6 +169,10 @@ def build_handler(
     *rooms* is a static list of serialized rooms (tests); *rooms_provider*
     returns model rooms; *context_provider* takes ``(room_id, limit)`` and
     returns the ``context.read_context`` payload minus its envelope; and
+    *room_opener* takes a room id and has the client open that room so its
+    key is loaded, raising :class:`KanaoError` if it cannot; it is what
+    ``open=true`` on ``/context`` and ``/digest`` calls, one at a time under
+    the lock sends take, because both drive the one client.
     *watcher_factory* returns an object with ``prime()`` and ``poll()``
     (the two halves of ``watch.Watcher`` kept separate precisely so streaming
     can be tested here without ever sleeping).
@@ -340,6 +346,27 @@ def build_handler(
                 return
             self._reply(200, {"ok": True, "rooms": entries})
 
+        def _read_opening(self, room_id: int, wanted: bool, read: Callable[[], Any]) -> Any:
+            """Read; if the room's key is missing and *wanted*, open it and read again.
+
+            A room the client never opened has no key in memory, so the read
+            is refused with ``KEY_UNAVAILABLE``. The TUI and ``messages --open``
+            already had the client open it; a remote caller had no way to ask.
+            Opening marks the room read in the client, so it happens only when
+            the caller says ``open=true`` — never as a side effect of reading.
+            """
+            try:
+                return read()
+            except KanaoError as error:
+                if not wanted or room_opener is None or error.code != ErrorCode.KEY_UNAVAILABLE:
+                    raise
+            # The same lock sends take: opening a room drives the one client,
+            # and two things driving it at once is how the wrong window gets
+            # the words or the click.
+            with send_lock:
+                room_opener(room_id)
+            return read()
+
         def _handle_context(self, parsed) -> None:
             if context_provider is None:
                 self._reply(
@@ -358,13 +385,16 @@ def build_handler(
                 limit = validate_count(
                     query.get("limit", ["40"])[0], name="limit", maximum=MAX_LIMIT
                 )
+                wanted = validate_flag(query.get("open", ["false"])[0], name="open")
             except KanaoError as error:
                 # Refused before the reader is opened: a bad number should cost
                 # the caller a round trip, not a decryption.
                 self._reply(_status_for(error), as_envelope(error))
                 return
             try:
-                payload = context_provider(room_id, limit)
+                payload = self._read_opening(
+                    room_id, wanted, lambda: context_provider(room_id, limit)
+                )
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return
@@ -405,11 +435,14 @@ def build_handler(
                     name="highlights",
                     maximum=MAX_HIGHLIGHTS,
                 )
+                wanted = validate_flag(query.get("open", ["false"])[0], name="open")
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return
             try:
-                payload = digest_provider(room_id, span, limit, highlights)
+                payload = self._read_opening(
+                    room_id, wanted, lambda: digest_provider(room_id, span, limit, highlights)
+                )
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return

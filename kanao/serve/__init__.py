@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from .backends import (
     make_live_context_provider,
+    make_live_room_opener,
     make_live_digest_provider,
     make_live_rooms_provider,
     make_live_send,
@@ -82,6 +83,7 @@ __all__ = [
     "ServeHTTPServer",
     "build_handler",
     "make_live_context_provider",
+    "make_live_room_opener",
     "make_live_digest_provider",
     "make_live_rooms_provider",
     "make_live_send",

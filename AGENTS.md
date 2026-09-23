@@ -420,6 +420,19 @@ on a live client, newest 4,000 rows of each readable room.
   the next write, so `QuietDisconnects` swallows exactly the four ordinary
   disconnect errors and escalates everything else. The suite went from printing
   tracebacks on every stream test to none.
+- **A remote read can ask for a room to be opened; it never does so by
+  itself.** A room's key is in memory only once the client has opened it, so
+  `/context` and `/digest` answered 503 `KEY_UNAVAILABLE` for every other
+  room, and a remote caller had no way to ask what the interface and
+  `messages --open` already could. `open=true` has the handler call
+  `room_opener` — `backends.make_live_room_opener`, the same
+  `opening.open_for_reading` the command uses — under `send_lock`, because it
+  drives the one client, and then read once more. Without the flag the 503
+  stands: opening marks the room read in the client, and a read must not do
+  that as a side effect. A value that is neither true nor false is a 400,
+  so a typo cannot open a room. Live, a locked room: 503 in 0.46 s, then
+  200 in 3.27 s with `open=true`, then 200 in 0.55 s without it.
+  `opening.py` exists because `serve` must not import `cli`.
 - **The digest is `digest.py`, not `cli._digest`.** The server wanted what the
   command does, and reaching into `cli` for it meant assembling an
   `argparse.Namespace` to satisfy a function that never wanted one — and

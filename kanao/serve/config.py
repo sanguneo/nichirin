@@ -174,6 +174,21 @@ def validate_count(raw: object, *, name: str, maximum: int) -> int:
     return count
 
 
+def validate_flag(raw: object, *, name: str) -> bool:
+    """Accept ``true``/``false`` (and ``1``/``0``), else raise.
+
+    Spelled out rather than read as "present means yes", because the flag it
+    carries today opens a room in the client and marks it read: a typo must be
+    a 400, not a room opened by accident.
+    """
+    text = str(raw).strip().lower()
+    if text in ("true", "1"):
+        return True
+    if text in ("false", "0", ""):
+        return False
+    raise KanaoError(ErrorCode.INVALID_REQUEST, f"{name} must be true or false")
+
+
 def validate_token(token: object) -> str:
     """Accept an ASCII bearer secret and return it, else raise INVALID_REQUEST."""
     if not isinstance(token, str) or len(token) < MIN_TOKEN_LENGTH:
