@@ -969,9 +969,16 @@ answerable, and the third was a decision the owner made rather than a fact:
   found (see the note below). The README, the badge and the one-line
   description now say *reads are local* and name the photo fetch as the single
   exception: one address, on a two-host whitelist, only when `Ctrl+P` is
-  pressed. The commands' JSON is unchanged byte for byte — `Photo` is
-  deliberately absent from `Message.as_json`, because a picture is drawn in the
-  interface and nowhere else.
+  pressed.
+- **A photo's address is in the JSON now; the picture is not.** It was kept
+  out of `Message.as_json` while a picture could only be drawn in the
+  interface. A remote viewer wanted one too, and the macOS build had been
+  answering with `photo: {url, width, height, count}` without the shared
+  `openapi.json` saying so. The key is now here in that shape, present only on
+  a message that carries one, and `Photo` is documented in the contract. It is
+  an address: nothing on this side fetches for it. Live: 34 of 1,025 recent
+  messages carried one, one of them an album, every address on
+  `talk.kakaocdn.net`.
 - **The interaction is a key, not a click.** macOS opens a photo by clicking
   its row, which means asking the terminal for mouse reporting — and a terminal
   doing that stops doing its own text selection and link handling. The composer

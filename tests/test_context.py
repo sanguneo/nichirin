@@ -157,9 +157,14 @@ class GroupTests(unittest.TestCase):
         self.assertEqual(answer["room"]["kind"], "group")
         # Five texts, plus the photo and the video the fixture carries.
         self.assertEqual(len(answer["messages"]), 7)
-        # A picture is drawn in the interface and nowhere else: the JSON a
-        # command answers with is exactly what it was before photos existed.
-        self.assertNotIn("photo", set().union(*(m.keys() for m in answer["messages"])))
+        # The picture's address and size reach the JSON on the photo alone —
+        # the same shape the macOS build answers with — and never on the video.
+        carrying = [m for m in answer["messages"] if "photo" in m]
+        self.assertEqual([m["kind"] for m in carrying], ["photo"])
+        self.assertEqual(
+            carrying[0]["photo"],
+            {"url": "https://talk.kakaocdn.net/synthetic/full.jpg", "width": 400, "height": 300, "count": 1},
+        )
 
 
 class AttentionTests(unittest.TestCase):

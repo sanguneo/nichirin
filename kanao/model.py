@@ -285,14 +285,20 @@ class Photo:
     against before anything has been fetched — it is the *stored* size, which
     a rotated photo can disagree with, so whatever is fetched is measured again.
 
-    Deliberately absent from :meth:`Message.as_json`: a picture is drawn in the
-    interface and nowhere else, and the commands' JSON stays exactly what it
-    was before photos existed.
+    It reaches :meth:`Message.as_json` as ``photo``, only on a message that
+    carries one, in the shape the macOS build already answered with — the
+    address and the size, not the picture. Nothing here fetches anything: a
+    browser given the address fetches it from the client's CDN itself.
     """
 
     url: str
     width: int
     height: int
+    count: int = 1
+    """How many pictures the message carried; an album's cover is ``url``."""
+
+    def as_json(self) -> dict[str, Any]:
+        return {"url": self.url, "width": self.width, "height": self.height, "count": self.count}
 
 
 def photo_in(type_code: int, attachment: dict[str, Any]) -> Optional[Photo]:
@@ -313,7 +319,18 @@ def photo_in(type_code: int, attachment: dict[str, Any]) -> Optional[Photo]:
         return None
     if width <= 0 or height <= 0:
         return None
-    return Photo(url=url, width=width, height=height)
+    return Photo(url=url, width=width, height=height, count=_picture_count(attachment))
+
+
+def _picture_count(attachment: dict[str, Any]) -> int:
+    """How many pictures an album lists; a single photo is one."""
+    for key in PHOTO_LIST_KEYS:
+        values = attachment.get(key)
+        if isinstance(values, list):
+            usable = [one for one in values if isinstance(one, str) and one.startswith("http")]
+            if usable:
+                return len(usable)
+    return 1
 
 
 def _first_number(values: object) -> Optional[int]:
@@ -385,6 +402,8 @@ class Message:
             payload["replyTo"] = self.reply.as_json()
         if self.replies_to_me:
             payload["repliesToMe"] = True
+        if self.photo is not None:
+            payload["photo"] = self.photo.as_json()
         return payload
 
 

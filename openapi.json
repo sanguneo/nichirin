@@ -820,6 +820,27 @@
           }
         }
       },
+      "Photo": {
+        "type": "object",
+        "description": "Where a picture lives and how large it was sent. Present only on a message that carries one. The client stores an address on its own CDN rather than the picture, so this is the address — the server fetches nothing; a browser can use `url` directly. An album carries its first picture as `url` and says how many there are in `count`. The size is the one the client stored, which a rotated photo can disagree with.",
+        "required": ["url", "width", "height", "count"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
       "Message": {
         "type": "object",
         "description": "One message, already attributed to a named sender.\n\n**The name is the one that account carries now.** The client overwrites its profile tables in place, so a message sent under an old nickname is shown under the new one; `senderId` never changes and is the only safe way to say \"same person\".\n\nThe keys that report being addressed appear **only when they apply**. A window is forty of these, and denying five things per line would triple the answer.",
@@ -872,6 +893,9 @@
           },
           "repliesToMe": {
             "const": true
+          },
+          "photo": {
+            "$ref": "#/components/schemas/Photo"
           }
         }
       },
