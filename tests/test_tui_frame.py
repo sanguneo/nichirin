@@ -320,12 +320,41 @@ class FeedLabelTests(unittest.TestCase):
     def test_the_json_itself_never_reaches_the_transcript(self) -> None:
         body = self.transcript({"feedType": 4, "members": [{"nickName": "합성 닉"}]})
         self.assertNotIn("feedType", body)
-        self.assertIn("[입장 합성 닉]", body)
+        self.assertIn("합성 닉님이 입장하셨습니다.", body)
+        self.assertNotIn("[", body.split("합성 닉님이")[0][-3:], "a sentence was shown as a tag")
 
     def test_a_leave_reads_as_a_leave(self) -> None:
         body = self.transcript({"feedType": 2, "members": [{"nickName": "합성 닉"}]})
-        self.assertIn("[퇴장 합성 닉]", body)
+        self.assertIn("합성 닉님이 퇴장하셨습니다.", body)
         self.assertNotIn("feed", body)
+
+
+class ErasedPlaceholderTests(unittest.TestCase):
+    """Where a message was deleted for everyone the client says so, and so do we."""
+
+    def test_the_placeholder_stands_where_the_message_was(self) -> None:
+        from kanao import paths
+        from kanao.reader import Reader
+        from tests.fixtures import build_profile
+
+        cache, ring = build_profile()
+        reader = Reader(keyring=ring, cache=cache)
+        reader._owns_cache = True
+        self.addCleanup(reader.close)
+        connection = cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        connection.execute("ALTER TABLE chatLogs ADD COLUMN is_encrypt_delete_msg INTEGER")
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, "
+            "deleted, is_encrypt_delete_msg) VALUES (5004, ?, 16385, ?, NULL, 1800005004, 0, 1)",
+            (PEER_ID, "c3ludGhldGljIGVyYXNlZCByZW1haW5kZXI="),
+        )
+        connection.commit()
+        app = App(reader, theme=Theme(truecolor=True, enabled=False))
+        app.load_rooms()
+        app.open_room(next(room for room in app.rooms if room.id == DIRECT_ROOM))
+        body = "\n".join(strip_ansi(line) for line in app._transcript_lines(60))
+        self.assertIn("삭제된 메시지입니다", body)
+        self.assertNotIn("c3ludGhldGlj", body)
 
 
 class EveryViewFitsTests(unittest.TestCase):

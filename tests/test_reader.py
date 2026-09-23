@@ -358,6 +358,46 @@ class ErasedMessageTests(unittest.TestCase):
             before = plain.count_messages(DIRECT_ROOM)
         self.assertEqual(self.reader.count_messages(DIRECT_ROOM), before)
 
+    def test_the_interface_is_given_the_gap_but_never_the_text(self) -> None:
+        found = self.reader.messages(DIRECT_ROOM, limit=50, include_erased=True)
+        erased = [message for message in found if message.id == 5004]
+        self.assertEqual(len(erased), 1)
+        self.assertTrue(erased[0].erased)
+        self.assertEqual(erased[0].text, "")
+        self.assertNotIn(self.ERASED_TEXT, [message.text for message in found])
+
+    def test_the_gap_never_reaches_the_json(self) -> None:
+        found = self.reader.messages(DIRECT_ROOM, limit=50, include_erased=True)
+        rendered = [message.as_json() for message in found]
+        self.assertTrue(all("erased" not in one for one in rendered))
+
+    def test_the_type_bit_alone_marks_a_deletion_too(self) -> None:
+        from kanao import paths
+
+        connection = self.reader._cache.databases[paths.chat_log_name(DIRECT_ROOM)]  # type: ignore[attr-defined]
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, "
+            "deleted, is_encrypt_delete_msg) VALUES (5005, ?, 16385, 'x', NULL, 1800005005, 0, 0)",
+            (PEER_ID,),
+        )
+        connection.commit()
+        ids = [message.id for message in self.reader.messages(DIRECT_ROOM, limit=50)]
+        self.assertNotIn(5005, ids)
+
+    def test_the_feed_a_deletion_writes_is_never_shown(self) -> None:
+        from kanao import paths
+
+        connection = self.reader._cache.databases[paths.chat_log_name(DIRECT_ROOM)]  # type: ignore[attr-defined]
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (5006, ?, 0, ?, NULL, 1800005006, 0)",
+            (PEER_ID, json.dumps({"feedType": 14, "logId": 5004, "hidden": True})),
+        )
+        connection.commit()
+        for include in (False, True):
+            ids = [m.id for m in self.reader.messages(DIRECT_ROOM, limit=50, include_erased=include)]
+            self.assertNotIn(5006, ids)
+
     def test_an_erased_message_is_not_found_by_search(self) -> None:
         found = list(self.reader.search("c3ludGhldGlj"))
         self.assertEqual(found, [])
@@ -485,11 +525,23 @@ class FeedDetailTests(unittest.TestCase):
         said = self.feeds(
             {"feedType": 4, "members": [{"userId": PEER_ID, "nickName": "합성 닉"}]}
         )
-        self.assertEqual(said, {5100: "입장 합성 닉"})
+        self.assertEqual(said, {5100: "합성 닉님이 입장하셨습니다."})
+
+    def test_several_who_join_together_are_named_together(self) -> None:
+        said = self.feeds(
+            {"feedType": 4, "members": [{"nickName": "하나"}, {"nickName": "둘"}]}
+        )
+        self.assertEqual(said, {5100: "하나님, 둘님이 입장하셨습니다."})
+
+    def test_a_crowd_is_cut_short_and_counted(self) -> None:
+        said = self.feeds(
+            {"feedType": 4, "members": [{"nickName": n} for n in ("가", "나", "다", "라", "마")]}
+        )
+        self.assertEqual(said, {5100: "가님, 나님, 다님 외 2명이 입장하셨습니다."})
 
     def test_a_leave_is_said_in_words(self) -> None:
         said = self.feeds({"feedType": 2, "member": {"nickName": "떠난 이름"}})
-        self.assertEqual(said, {5100: "퇴장 떠난 이름"})
+        self.assertEqual(said, {5100: "떠난 이름님이 퇴장하셨습니다."})
 
     def test_a_single_member_is_read_like_a_list_of_one(self) -> None:
         """The client writes `member` as often as `members` — 1,209 rows of it."""

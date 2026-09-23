@@ -24,7 +24,15 @@ from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
 from ..errors import ErrorCode, KanaoError
-from ..model import FEED_KINDS, FEED_MESSAGE, Friend, Message, Room, message_kind
+from ..model import (
+    ERASED_PLACEHOLDER,
+    FEED_MESSAGE,
+    Friend,
+    Message,
+    Room,
+    is_feed_sentence,
+    message_kind,
+)
 from ..reader import UNLOCK_SECONDS, Reader
 from . import digest, images
 from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
@@ -419,12 +427,14 @@ class App:
             self.focus = already
             return
 
-        messages = self.reader.messages(room.id, limit=HISTORY_WINDOW)
+        messages = self.reader.messages(room.id, limit=HISTORY_WINDOW, include_erased=True)
         if not beside:
             self.palette = SpeakerPalette(dark=self.theme.dark)
         for message in messages:
             self.palette.hue(message.sender)
-        watcher = Watcher(self.reader, room_ids=[room.id], interval=REFRESH_SECONDS)
+        watcher = Watcher(
+            self.reader, room_ids=[room.id], interval=REFRESH_SECONDS, include_erased=True
+        )
         watcher.prime()
         stored = self.reader.stored_title(room.id)
         kept = self.drafts.get(room.id, "")
@@ -930,9 +940,12 @@ class App:
             stamp = instant.strftime("%H:%M") if instant else "--:--"
             name = truncate_to_width(speaker, name_width, ELLIPSIS)
             detail = self._feed_detail(chat, message)
-            # A join or a leave says so in words; "feed" in front of that is
-            # the storage talking, not the conversation.
-            if detail.split()[:1] and detail.split()[0] in FEED_KINDS.values():
+            # A join or a leave is a sentence already, the one the client
+            # shows; "feed" in front of it is the storage talking.
+            sentence = is_feed_sentence(detail)
+            if message.erased:
+                label = ERASED_PLACEHOLDER
+            elif sentence:
                 label = detail.strip()
             else:
                 label = message_kind(message.type) + detail
@@ -945,8 +958,10 @@ class App:
             # The client writes its own word — "사진" — into the text column of
             # a photo row. Passed through it reads as if somebody typed it, and
             # says nothing about there being a picture to open.
+            # A sentence the client itself shows is shown as one, not as a tag.
+            bare = message.erased or sentence
             text = (
-                self.theme.fg("dim", f"[{label}]")
+                self.theme.fg("dim", label if bare else f"[{label}]")
                 if has_picture or not message.text
                 else message.text
             )

@@ -40,6 +40,18 @@ UNLOCK_SECONDS = 0.25
 """How long :meth:`Reader.unlock` waits between scans for a newly opened room."""
 NAME_RETRY_SECONDS = 5.0
 """How long an unknown sender waits before the name map is read again."""
+_ERASED_TYPE_BIT = 0x4000
+"""Added to a message's type when it is deleted for everyone (16385, 16386).
+
+The flag column below marks the same rows and a few this bit does not; the
+bit is what the macOS schema, which has no such column, carries as well.
+"""
+_ERASED_FEED = 14
+"""The feed a deletion writes, ``{"feedType": 14, "logId": …, "hidden": true}``.
+
+Measured on the macOS build, where all 255 messages such feeds pointed at
+carried the bit above; shown, it put a bare ``[feed 14]`` beside the gap.
+"""
 _ERASED_COLUMN = "is_encrypt_delete_msg"
 """Set on a message deleted for everyone, whose text the client then encrypts.
 
@@ -90,6 +102,7 @@ class Reader:
         self._own_id_resolved = False
         self._selections: dict[int, str] = {}
         self._live_conditions: dict[int, str] = {}
+        self._kept_conditions: dict[int, str] = {}
 
     @property
     def user_directory(self) -> Path:
@@ -582,14 +595,32 @@ class Reader:
             known = self._live_conditions[room_id]
         return known
 
+    def _kept(self, room_id: int, connection: sqlite3.Connection) -> str:
+        """Like :meth:`_live`, but keeping messages deleted for everyone."""
+        known = self._kept_conditions.get(room_id)
+        if known is None:
+            self._read_schema(room_id, connection)
+            known = self._kept_conditions[room_id]
+        return known
+
     def _read_schema(self, room_id: int, connection: sqlite3.Connection) -> None:
         columns = {column[1] for column in connection.execute("PRAGMA table_info(chatLogs)")}
         thread = _THREAD_COLUMN if _THREAD_COLUMN in columns else "NULL"
-        self._selections[room_id] = f"logId, authorId, type, message, attachement, sendAt, {thread}"
-        live = "COALESCE(deleted, 0) = 0"
+        erased = f"(COALESCE(type, 0) & {_ERASED_TYPE_BIT}) != 0"
         if _ERASED_COLUMN in columns:
-            live += f" AND COALESCE({_ERASED_COLUMN}, 0) = 0"
-        self._live_conditions[room_id] = live
+            erased = f"(COALESCE({_ERASED_COLUMN}, 0) != 0 OR {erased})"
+        self._selections[room_id] = (
+            f"logId, authorId, type, message, attachement, sendAt, {thread}, {erased}"
+        )
+        # A deletion writes a type-14 feed pointing at what it hid; the
+        # placeholder stands where the message was, so the feed never shows.
+        kept = (
+            "COALESCE(deleted, 0) = 0 AND "
+            f"CASE WHEN type = {model.FEED_MESSAGE} AND json_valid(message) "
+            f"THEN json_extract(message, '$.feedType') END IS NOT {_ERASED_FEED}"
+        )
+        self._kept_conditions[room_id] = kept
+        self._live_conditions[room_id] = f"{kept} AND NOT {erased}"
 
     def messages(
         self,
@@ -597,8 +628,13 @@ class Reader:
         limit: int = 40,
         before_id: Optional[int] = None,
         after_id: Optional[int] = None,
+        include_erased: bool = False,
     ) -> list[Message]:
         """Return up to *limit* messages, oldest first.
+
+        *include_erased* keeps messages deleted for everyone, text withheld,
+        so the interface can say "삭제된 메시지입니다" where the client does.
+        Every other caller leaves them out, as it leaves out deleted rows.
 
         *before_id* pages backwards through history; *after_id* collects what
         has arrived since a known message, which is how following works.
@@ -614,7 +650,9 @@ class Reader:
         connection = self._logs(room_id)
         sql = f"SELECT {self._selection(room_id, connection)} FROM chatLogs"
         parameters: list[object] = []
-        conditions = [self._live(room_id, connection)]
+        conditions = [
+            self._kept(room_id, connection) if include_erased else self._live(room_id, connection)
+        ]
         if before_id is not None:
             conditions.append("logId < ?")
             parameters.append(before_id)
@@ -679,9 +717,23 @@ class Reader:
         return None if row is None or row[0] is None else int(row[0])
 
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
-        log_id, author, type_code, text, attachment, sent_at, thread = tuple(row)
+        log_id, author, type_code, text, attachment, sent_at, thread, erased = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
+        if erased:
+            # What is left of it is encrypted, or on another client the very
+            # words that were taken back; neither is shown, only the gap.
+            return Message(
+                id=int(log_id),
+                room_id=room_id,
+                sender_id=sender_id,
+                sender=self._sender_name(room_id, sender_id),
+                text="",
+                type=kind,
+                sent_at=None if sent_at is None else int(sent_at),
+                from_me=self.own_user_id() is not None and sender_id == self.own_user_id(),
+                erased=True,
+            )
         known = self.names()
         own = self.own_user_id()
         # The attachment is read for what it records about *other* messages —
@@ -747,7 +799,7 @@ class Reader:
         ).fetchone()
         if row is None:
             return None
-        _log_id, author, type_code, text, _attachment, _sent_at, _thread = tuple(row)
+        _log_id, author, type_code, text, _attachment, _sent_at, _thread, _erased = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
         return model.Quote(

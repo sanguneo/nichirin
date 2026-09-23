@@ -225,10 +225,21 @@ Taken from a live client, not guessed.
   map for an unknown id at most every `NAME_RETRY_SECONDS`, then falls back to
   the nickname the room's join feed recorded, reading the feeds once per
   stranger rather than once per line.
+- **The interface shows where a deleted message was; the commands do not.**
+  `Reader.messages(include_erased=True)` keeps a deleted row with its text
+  withheld and `Message.erased` set, and only the interface's reads and its
+  watchers ask for that, so the screen says "삭제된 메시지입니다" where the
+  client does. Every command, `serve` and the shared `openapi.json` still
+  leave the row out, and `as_json` never mentions the field. The type-14 feed
+  a deletion writes is hidden in both, because the placeholder already stands
+  where the message was. A row is erased when `is_encrypt_delete_msg` is set
+  *or* the type carries `0x4000`, the bit the macOS schema shares.
 - **Two feed types are said in words.** `4` is a join and `2` a leave —
   read off a live open chat beside the client's own screen, 736 and 161 rows,
   every one naming a member. `model.FEED_KINDS` holds only those; every other
   code stays a number until it is checked the same way.
+  They are shown as the client's own sentence, "이름님이 입장하셨습니다." —
+  three names at most, then "외 N명" — and not as a bracketed tag.
 
 ### Being addressed: mentions and replies
 
