@@ -16,6 +16,37 @@ python install.py --target <dir> --force     # install the skill
 Discovery needs `-t .` so `tests` stays an importable package. `python -m
 unittest discover tests` breaks the fixture imports.
 
+## Review and contribution discipline
+
+See `CONTRIBUTING.md` for the contribution workflow and `improvement.md` for
+the dated review and proposed fixes. A planned invariant is not a claim that
+the current implementation already satisfies it.
+
+- A review-only request produces findings and plans, not product changes.
+  Respect the requested verification budget; prefer source/caller/test evidence
+  and small deterministic counterexamples over a full suite or live automation.
+  Label executed evidence, source deductions, and platform-dependent hypotheses
+  separately. Do not invent incident rates or speedups.
+- Bind a cached image to the source state it actually read. A later stat is
+  not evidence that an earlier image includes a later commit. Stat equality is
+  not byte equality, and a WAL checksum is not page authentication.
+- Preserve per-room log-ID order and monotone resume cursors. Publish a cursor
+  only after its covered output. Do not mark a failed read or identity lookup
+  as completed.
+- State cache ownership, borrowed-connection lifetime, metadata invalidation,
+  and what a memory budget counts. A limit per page is not a limit on the
+  accumulated result or process memory.
+- Keep external message/name/title/URL text separate from renderer-generated
+  terminal controls. Content changes at the same message ID must participate
+  in any transcript-cache invalidation design.
+- A sibling port carries its assumptions, callers, contract, and regressions,
+  not just its function body. Record both source revisions. Windows has
+  per-room databases, heap keys and Win32 input; macOS has one account database,
+  derived keys and AX input. Verify local files instead of assuming an upstream
+  feature or shared specification is already present.
+- Keep review artifacts synthetic and secret-free. Existing user work is not
+  part of a contribution. Commit and push only when requested.
+
 ## Layout
 
 | Module | Responsibility |
