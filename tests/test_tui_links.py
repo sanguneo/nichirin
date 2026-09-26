@@ -71,7 +71,7 @@ class LinkClickCase(unittest.TestCase):
     def link_position(self) -> tuple[int, int]:
         """Return the screen cell the app itself maps to the link."""
         self.app.render(WIDTH, HEIGHT)
-        geometry = self.app._pane_geometry
+        geometry = self.app._body_geometry
         assert geometry is not None
         cell = geometry[2]
         chat = self.app.chat
@@ -81,7 +81,7 @@ class LinkClickCase(unittest.TestCase):
         column = strip_ansi(body[row]).index("https://")
         screen = next(
             s for s in range(HEIGHT)
-            if (found := self.app._pane_at(s, column)) is not None and found[1] == row
+            if (found := self.app._cell_at(s, column)) is not None and found[1] == row
         )
         return screen, column
 

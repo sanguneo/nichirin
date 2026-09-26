@@ -98,6 +98,8 @@ class Key:
     BACKSPACE: Final = "backspace"
     DELETE: Final = "delete"
     TAB: Final = "tab"
+    BACKTAB: Final = "backtab"
+    """Shift+Tab, which walks a list the other way."""
     INTERRUPT: Final = "interrupt"
     CLICK: Final = "click"
     """A left-button press, carrying ``"row,column"`` as its text."""
@@ -472,6 +474,10 @@ class Console:
             return ignored
         modifier = numbers[1] if len(numbers) > 1 else 1
         control = _SHIFT_PRESSED if (modifier - 1) & 1 else 0
+        if final == "Z":
+            # CBT is what a terminal sends for Shift+Tab, and the shift is
+            # the sequence itself: it carries no modifier field to read.
+            control |= _SHIFT_PRESSED
         if final in _BY_ESCAPE_FINAL:
             return KeyEvent(True, _BY_ESCAPE_FINAL[final], "", control)
         if final == "~" and numbers:
@@ -628,7 +634,7 @@ class Console:
                 self._pending_surrogate = ""
                 if named == Key.ENTER and self._is_newline(event):
                     return "char", "\n"
-                return named, ""
+                return self._modified(named, event)
             # Retained for KeyEvent callers; terminal UTF-8 has whole codepoints.
             if ord(character) in _HIGH_SURROGATE:
                 self._pending_surrogate = character
@@ -646,7 +652,20 @@ class Console:
         named = _BY_VIRTUAL_KEY.get(event.virtual_key)
         if named == Key.ENTER and self._is_newline(event):
             return "char", "\n"
-        return (named, "") if named is not None else None
+        return self._modified(named, event) if named is not None else None
+
+    @staticmethod
+    def _modified(named: str, event: KeyEvent) -> tuple[str, str]:
+        """Name the key a modifier turns a plain one into.
+
+        Shift+Tab is a key of its own rather than Tab wearing a flag: a
+        terminal reports the backward walk as CBT, or as a shifted Tab where
+        a modified-key protocol is on, and either way the interface has two
+        directions to walk. Reading it as Tab would make one of them dead.
+        """
+        if named == Key.TAB and event.control_state & _SHIFT_PRESSED:
+            return Key.BACKTAB, ""
+        return named, ""
 
     def _is_newline(self, event: KeyEvent) -> bool:
         """Shift+Enter or an Enter with already-queued input inserts a newline."""

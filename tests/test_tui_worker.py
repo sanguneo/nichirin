@@ -310,21 +310,21 @@ class OwnershipTests(WorkerCase):
         self.assertTrue(self.worker.submit(Job(ROOMS)))
         second.release()
 
-    def test_a_different_pane_is_never_refused_the_predecessors_read(self) -> None:
+    def test_a_different_tab_is_never_refused_the_predecessors_read(self) -> None:
         """A reopened room asks the same question and must still be heard."""
         gate = self.gate("messages")
         first = Job(OLDER, room_id=DIRECT_ROOM, token=1, payload=(9_999, 10))
         self.assertTrue(self.worker.submit(first))
         self.assertTrue(gate.arrived())
 
-        self.assertFalse(self.worker.submit(first), "the same pane asked twice")
+        self.assertFalse(self.worker.submit(first), "the same tab asked twice")
         self.assertTrue(
             self.worker.submit(Job(OLDER, room_id=DIRECT_ROOM, token=2, payload=(9_999, 10))),
-            "the reopened pane was refused its own read",
+            "the reopened tab was refused its own read",
         )
         gate.release()
 
-    def test_two_names_asked_of_one_pane_are_two_questions(self) -> None:
+    def test_two_names_asked_of_one_tab_are_two_questions(self) -> None:
         gate = self.gate("messages")
         self.worker.submit(Job(OLDER, room_id=DIRECT_ROOM, token=1, payload=(9_999, 10)))
         self.assertTrue(gate.arrived())
@@ -395,7 +395,7 @@ class AppCase(WorkerCase):
         self.assertTrue(self.app._pump(WIDTH, timeout=WAIT))
 
     @property
-    def pane(self) -> ChatState:
+    def tab(self) -> ChatState:
         """The conversation holding the keyboard, which there must be one of."""
         chat = self.app.chat
         assert chat is not None
@@ -423,14 +423,14 @@ class BlockedRefreshTests(AppCase):
             self.app.handle("char", character)
         drawn = self.body()
 
-        self.assertEqual(self.pane.draft, "안녕하세요")
+        self.assertEqual(self.tab.draft, "안녕하세요")
         self.assertIn("안녕하세요", drawn)
         self.assertNotIn("BLOCKED_ARRIVAL", drawn, "the blocked read returned early")
 
         gate.release()
         self.assertTrue(self.app._pump(WIDTH, timeout=WAIT))
-        self.assertIn("BLOCKED_ARRIVAL", self.texts(self.pane))
-        self.assertEqual(self.pane.draft, "안녕하세요", "the arrival ate the draft")
+        self.assertIn("BLOCKED_ARRIVAL", self.texts(self.tab))
+        self.assertEqual(self.tab.draft, "안녕하세요", "the arrival ate the draft")
 
     def test_nothing_is_sent_by_a_refresh_landing_under_a_draft(self) -> None:
         self.open(DIRECT_ROOM)
@@ -442,7 +442,7 @@ class BlockedRefreshTests(AppCase):
 
         self.assertEqual(self.sender.sent, [], "an arrival sent what was being typed")
         self.assertIsNone(self.app.pending_send)
-        self.assertEqual(self.pane.draft, "보낼 말")
+        self.assertEqual(self.tab.draft, "보낼 말")
 
     def test_a_second_poll_is_not_queued_behind_the_one_in_flight(self) -> None:
         self.open(DIRECT_ROOM)
@@ -457,7 +457,7 @@ class BlockedRefreshTests(AppCase):
 
 
 class StaleResultTests(AppCase):
-    """A pane that is gone must not be written to by the read it asked for."""
+    """A tab that is gone must not be written to by the read it asked for."""
 
     def older_rows(self) -> None:
         """History older than the window, the way a backfill writes it.
@@ -469,7 +469,7 @@ class StaleResultTests(AppCase):
         for index in range(4):
             self.write(4000 + index, f"OLD{index}")
 
-    def test_a_result_for_a_closed_pane_is_dropped(self) -> None:
+    def test_a_result_for_a_closed_tab_is_dropped(self) -> None:
         self.open(DIRECT_ROOM)
         self.older_rows()
         gate = self.gate("messages")
@@ -481,9 +481,9 @@ class StaleResultTests(AppCase):
 
         gate.release()
         self.app._pump(WIDTH, timeout=WAIT)
-        self.assertEqual(self.app.chats, [], "a closed pane came back")
+        self.assertEqual(self.app.chats, [], "a closed tab came back")
 
-    def test_a_reopened_room_does_not_inherit_the_old_panes_answer(self) -> None:
+    def test_a_reopened_room_does_not_inherit_the_old_tabs_answer(self) -> None:
         self.open(DIRECT_ROOM)
         self.older_rows()
         gate = self.gate("messages")
@@ -494,15 +494,15 @@ class StaleResultTests(AppCase):
         self.app._pump(WIDTH, timeout=WAIT)
 
         self.open(DIRECT_ROOM)
-        loaded = len(self.pane.messages)
+        loaded = len(self.tab.messages)
         self.app._pump(WIDTH)
 
-        self.assertEqual(len(self.pane.messages), loaded)
-        self.assertEqual(self.pane.notice, "", "a stale answer spoke for a new pane")
+        self.assertEqual(len(self.tab.messages), loaded)
+        self.assertEqual(self.tab.notice, "", "a stale answer spoke for a new tab")
 
 
 class OpeningTests(AppCase):
-    """A room is read before its pane exists, and minds change in that time."""
+    """A room is read before its tab exists, and minds change in that time."""
 
     def select(self, room_id: int) -> None:
         self.app.selected = next(
@@ -520,7 +520,7 @@ class OpeningTests(AppCase):
         gate.release()
         self.app._pump(WIDTH, timeout=WAIT)
 
-        self.assertEqual(self.app.chats, [], "a pane opened over the list they went to")
+        self.assertEqual(self.app.chats, [], "a tab opened over the list they went to")
         self.assertTrue(self.app.show_friends)
 
     def test_a_room_asked_for_twice_before_it_opens_is_read_once(self) -> None:
@@ -555,15 +555,15 @@ class OpeningTests(AppCase):
         gate.release()
         self.app._pump(WIDTH, timeout=WAIT)
 
-        self.assertIn("WHILE_OPENING", self.texts(self.pane))
+        self.assertIn("WHILE_OPENING", self.texts(self.tab))
 
         self.app.refresh(WIDTH)
         self.app._pump(WIDTH, timeout=WAIT)
-        self.assertEqual(self.texts(self.pane).count("WHILE_OPENING"), 1)
+        self.assertEqual(self.texts(self.tab).count("WHILE_OPENING"), 1)
 
 
 class RoomSwitchTests(AppCase):
-    """One owner answers for every pane, and each arrival knows its room."""
+    """One owner answers for every tab, and each arrival knows its room."""
 
     def test_each_arrival_lands_in_the_room_it_was_written_in(self) -> None:
         self.open(DIRECT_ROOM)
@@ -579,7 +579,7 @@ class RoomSwitchTests(AppCase):
         self.assertNotIn("FOR_THE_GROUP", self.texts(direct))
         self.assertIn("FOR_THE_GROUP", self.texts(group))
 
-    def test_switching_panes_while_a_read_is_in_flight_keeps_both(self) -> None:
+    def test_switching_tabs_while_a_read_is_in_flight_keeps_both(self) -> None:
         self.open(DIRECT_ROOM)
         self.open(GROUP_ROOM)
         gate = self.gate("messages")
@@ -588,7 +588,7 @@ class RoomSwitchTests(AppCase):
         self.assertTrue(gate.arrived())
 
         self.app.handle(Key.TAB, "")
-        self.assertEqual(self.pane.room.id, DIRECT_ROOM)
+        self.assertEqual(self.tab.room.id, DIRECT_ROOM)
 
         gate.release()
         self.app._pump(WIDTH, timeout=WAIT)
@@ -610,11 +610,11 @@ class FailureTests(AppCase):
         self.write(5400, "AFTER_THE_FAILURE")
         self.app.refresh(WIDTH)
         self.app._pump(WIDTH, timeout=WAIT)
-        self.assertNotIn("AFTER_THE_FAILURE", self.texts(self.pane))
+        self.assertNotIn("AFTER_THE_FAILURE", self.texts(self.tab))
 
         self.app.refresh(WIDTH)
         self.app._pump(WIDTH, timeout=WAIT)
-        self.assertIn("AFTER_THE_FAILURE", self.texts(self.pane))
+        self.assertIn("AFTER_THE_FAILURE", self.texts(self.tab))
 
     def test_a_room_that_cannot_be_opened_says_so_and_keeps_the_list(self) -> None:
         def refuse(name: str, keywords: dict) -> None:
@@ -639,16 +639,16 @@ class OlderTests(AppCase):
         self.open(DIRECT_ROOM)
         for index in range(4):
             self.write(4000 + index, f"OLD{index}")
-        loaded = len(self.pane.messages)
+        loaded = len(self.tab.messages)
 
         self.app.load_older()
         self.app._pump(WIDTH, timeout=WAIT)
 
-        self.assertGreater(len(self.pane.messages), loaded)
-        self.assertIn("OLD0", self.texts(self.pane))
+        self.assertGreater(len(self.tab.messages), loaded)
+        self.assertIn("OLD0", self.texts(self.tab))
 
-    def test_a_reopened_pane_is_still_answered_after_its_predecessor(self) -> None:
-        """The closed pane must not have spent the new pane's read."""
+    def test_a_reopened_tab_is_still_answered_after_its_predecessor(self) -> None:
+        """The closed tab must not have spent the new tab's read."""
         self.open(DIRECT_ROOM)
         for index in range(4):
             self.write(4000 + index, f"OLD{index}")
@@ -662,9 +662,9 @@ class OlderTests(AppCase):
         self.open(DIRECT_ROOM)
         self.app.load_older()
         # Nothing arriving here is the failure this is about: it would mean
-        # the read was refused as a repeat of the closed pane's.
+        # the read was refused as a repeat of the closed tab's.
         self.app._pump(WIDTH, timeout=WAIT)
-        self.assertNotEqual(self.pane.notice, "")
+        self.assertNotEqual(self.tab.notice, "")
 
 
 if __name__ == "__main__":

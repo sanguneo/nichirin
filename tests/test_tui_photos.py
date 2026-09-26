@@ -143,7 +143,7 @@ class ClickTests(PhotoCase):
         self.app.render(WIDTH, HEIGHT)
         row = self.photo_row(message_id)
         for candidate in range(HEIGHT):
-            found = self.app._pane_at(candidate, 10)
+            found = self.app._cell_at(candidate, 10)
             if found is not None and found[1] == row:
                 return candidate
         raise AssertionError("no screen row maps to the photo label")
@@ -163,7 +163,7 @@ class ClickTests(PhotoCase):
         self.assertNotIn(PHOTO_MESSAGE, chat.opened_photos)
 
     def test_clicking_an_ordinary_line_opens_nothing(self) -> None:
-        geometry = self.app._pane_geometry
+        geometry = self.app._body_geometry
         assert geometry is not None
         self.click(geometry[0])
         chat = self.app.chat
@@ -275,12 +275,12 @@ class ScrollTests(PhotoCase):
 
     def scrollable(self) -> int:
         self.app.render(WIDTH, HEIGHT)
-        geometry = self.app._pane_geometry
+        geometry = self.app._body_geometry
         assert geometry is not None
-        _top, rows, cell, _panes = geometry
+        _top, rows, width = geometry
         chat = self.app.chat
         assert chat is not None
-        return max(0, len(self.app._transcript_of(chat, cell)) - rows)
+        return max(0, len(self.app._transcript_of(chat, width)) - rows)
 
     def test_closing_a_photo_restores_the_scroll_position(self) -> None:
         chat = self.app.chat
@@ -316,10 +316,10 @@ class ScrollTests(PhotoCase):
         assert chat is not None
         self.app.toggle_photo(PHOTO_MESSAGE)
         self.app.render(WIDTH, HEIGHT)
-        geometry = self.app._pane_geometry
+        geometry = self.app._body_geometry
         assert geometry is not None
-        _top, rows, cell, _panes = geometry
-        body = self.app._transcript_of(chat, cell)
+        _top, rows, width = geometry
+        body = self.app._transcript_of(chat, width)
         scrollable = len(body) - rows
         offset = min(chat.offset, scrollable) if scrollable > 0 else chat.offset
         end = max(1, len(body) - max(0, offset))
@@ -455,122 +455,67 @@ class VideoTests(PhotoCase):
         self.assertEqual(self.store.asked, [])
 
 
-class PaneTests(PhotoCase):
-    """A picture belongs to one pane's column, not to the screen."""
+class TabTests(PhotoCase):
+    """A picture belongs to the conversation in front, not to the screen.
 
-    WIDE = 120
-    """Wide enough for two panes; at WIDTH only one fits."""
+    Switching tabs takes the transcript the picture was placed over off the
+    screen, and a placement outlives the frame it was drawn in -- so it has to
+    be withdrawn with the conversation, or it floats over whatever took its
+    place. Coming back places it again: nothing about the picture was given
+    up, only the drawing of it.
+    """
 
-    NARROW = 60
-    """Narrow enough that only the focused pane is painted."""
-
-    def second_pane(self) -> None:
+    def other_tab(self) -> None:
         other = next(r for r in self.app.rooms if r.id != GROUP_ROOM)
         self.app.open_room(other)
-        self.app.render(self.WIDE, HEIGHT)
-
-    def group_pane(self):
-        geometry = self.app._pane_geometry
-        assert geometry is not None
-        return geometry, next(p for p in geometry[3] if p.room.id == GROUP_ROOM)
 
     def scroll_photo_into_view(self) -> None:
-        (_top, _rows, cell, _panes), pane = self.group_pane()
-        body = self.app._transcript_of(pane, cell)
-        owned = sorted(r for r, o in pane.photo_rows.items() if o == PHOTO_MESSAGE)
-        pane.offset = max(0, len(body) - (owned[-1] + 1))
-        self.app.render(self.WIDE, HEIGHT)
+        chat = self.app.chat
+        assert chat is not None
+        body = self.app._transcript_of(chat, WIDTH)
+        owned = sorted(r for r, o in chat.photo_rows.items() if o == PHOTO_MESSAGE)
+        chat.offset = max(0, len(body) - (owned[-1] + 1))
+        self.app.render(WIDTH, HEIGHT)
 
-    def test_two_panes_are_visible_at_this_width(self) -> None:
-        self.second_pane()
-        geometry = self.app._pane_geometry
-        assert geometry is not None
-        self.assertEqual(len(geometry[3]), 2)
-
-    def test_a_photo_stays_inside_its_own_column(self) -> None:
+    def test_the_tab_in_front_keeps_its_picture(self) -> None:
         self.app.toggle_photo(PHOTO_MESSAGE)
-        self.second_pane()
-        self.scroll_photo_into_view()
-        (_top, _rows, cell, _panes), _pane = self.group_pane()
-        self.assertTrue(self.app.placements)
-        for _id, _row, column, _blob, cols, _rows_, _crop in self.app.placements:
-            self.assertLessEqual(column + cols, cell)
-
-    def test_a_photo_keeps_drawing_when_another_pane_takes_focus(self) -> None:
-        self.app.toggle_photo(PHOTO_MESSAGE)
-        self.second_pane()
-        self.scroll_photo_into_view()
-        before = len(self.app.placements)
-        self.assertTrue(before)
-        self.app.focus = 1
-        self.app.render(self.WIDE, HEIGHT)
-        self.assertEqual(len(self.app.placements), before)
-
-    def test_a_click_reaches_a_photo_in_an_unfocused_pane(self) -> None:
-        self.second_pane()
-        (top, _rows, _cell, _panes), pane = self.group_pane()
-        row = min(r for r, o in pane.photo_rows.items() if o == PHOTO_MESSAGE)
-        screen = next(
-            (s for s in range(HEIGHT)
-             if (found := self.app._pane_at(s, 10)) is not None
-             and found[0] is pane and found[1] == row),
-            None,
-        )
-        if screen is None:
-            self.skipTest("the photo's label is not on screen in this layout")
-        self.app.handle(Key.CLICK, f"{screen},10")
-        self.assertIn(PHOTO_MESSAGE, pane.opened_photos)
-
-    def test_a_hidden_pane_has_its_photo_withdrawn(self) -> None:
-        """A pane the window is too narrow to show must not leave an image behind.
-
-        `_visible_panes` slides rather than closing anything, so the conversation
-        is still open when its column stops being painted -- and a placement
-        that outlives its column floats over whichever pane took the space.
-        """
-        self.app.toggle_photo(PHOTO_MESSAGE)
-        self.second_pane()
         self.scroll_photo_into_view()
         self.assertTrue(self.app.placements)
+        self.app.render(WIDTH, HEIGHT)
+        self.assertTrue(self.app.placements, "a repaint of the same tab dropped the picture")
+
+    def test_switching_tabs_withdraws_the_picture_behind(self) -> None:
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        self.scroll_photo_into_view()
         self.app.photo_escapes()
-        self.app.render(self.NARROW, HEIGHT)
-        geometry = self.app._pane_geometry
-        assert geometry is not None
-        self.assertNotIn(GROUP_ROOM, [p.room.id for p in geometry[3]])
+        self.other_tab()
+        self.app.render(WIDTH, HEIGHT)
         self.assertEqual(self.app.placements, [])
         # The frame is painted and the escapes written together, the way the
-        # loop does it, so the withdrawal rides out with the narrowed frame.
+        # loop does it, so the withdrawal rides out with the tab switch.
         self.assertIn("a=d", self.app.photo_escapes())
 
-    def test_moving_between_panes_does_not_redraw_a_photo(self) -> None:
-        """Tab changes which pane the keyboard is in, and nothing about the image."""
+    def test_coming_back_to_the_tab_places_the_picture_again(self) -> None:
         self.app.toggle_photo(PHOTO_MESSAGE)
-        self.second_pane()
         self.scroll_photo_into_view()
+        self.other_tab()
+        self.app.render(WIDTH, HEIGHT)
         self.app.photo_escapes()
-        before = list(self.app.placements)
         self.app.handle(Key.TAB, "")
-        self.app.render(self.WIDE, HEIGHT)
-        self.assertEqual(len(self.app.placements), len(before))
-        self.assertEqual(self.app.photo_escapes(), "")
+        self.app.render(WIDTH, HEIGHT)
+        self.assertTrue(self.app.placements)
 
-    def test_closing_every_pane_leaves_nothing_drawn(self) -> None:
+    def test_closing_every_tab_leaves_nothing_drawn(self) -> None:
         self.app.toggle_photo(PHOTO_MESSAGE)
-        self.second_pane()
         self.scroll_photo_into_view()
         self.app.photo_escapes()
         while self.app.chats:
             self.app.handle(Key.ESCAPE, "")
-            self.app.render(self.WIDE, HEIGHT)
+            self.app.render(WIDTH, HEIGHT)
             self.app.photo_escapes()
         self.assertEqual(self.app.placements, [])
         self.assertEqual(self.app._drawn, {})
         self.assertEqual(self.app._transmitted, set())
-
-    def test_a_click_on_the_rule_between_panes_does_nothing(self) -> None:
-        self.second_pane()
-        (top, _rows, cell, _panes), _pane = self.group_pane()
-        self.assertIsNone(self.app._pane_at(top, cell))
 
 
 def _real_png(width: int = 4, height: int = 4) -> bytes:

@@ -55,8 +55,8 @@ QUEUE_LIMIT = 16
 """How many jobs may wait at once, and so how many answers can be waiting.
 
 Every job the interface asks for is either a duplicate of one in flight — and
-refused as one — or a distinct question about a pane, of which there are as
-many as the screen is wide enough to hold. A queue deeper than this means the
+refused as one — or a distinct question about a tab, of which there are as
+many as the reader has opened. A queue deeper than this means the
 database has stopped answering, and stacking more work on it then is how a
 backlog turns into a screen showing answers to questions nobody still has.
 """
@@ -80,12 +80,12 @@ class Job:
     kind: str
     room_id: Optional[int] = None
     token: int = 0
-    """Which pane asked, so an answer to a closed pane can be dropped."""
+    """Which tab asked, so an answer to a closed tab can be dropped."""
     about: str = ""
-    """What else tells two jobs apart, when the room and the pane do not.
+    """What else tells two jobs apart, when the room and the tab do not.
 
     ``/real 가`` and ``/real 나`` are two questions about one room from one
-    pane, and the second must not be mistaken for a repeat of the first.
+    tab, and the second must not be mistaken for a repeat of the first.
     """
     payload: tuple = ()
 
@@ -93,7 +93,7 @@ class Job:
     def key(self) -> tuple:
         """What makes two jobs the same question, for coalescing.
 
-        The pane is part of the question. A pane that was closed and reopened
+        The tab is part of the question. A tab that was closed and reopened
         is a different one asking, and its answer would be dropped for having
         the wrong token — so without this, a reopened room could be refused a
         read on the strength of the read its predecessor asked for.
@@ -135,7 +135,7 @@ class DatabaseOwner:
         self._open_reader = open_reader
         self._interval = interval
         self.watcher: Optional[Watcher] = None
-        """Built on the first pane, on the owning thread, and never shared."""
+        """Built on the first tab, on the owning thread, and never shared."""
         self.sink: Callable[[Done], None] = _ignore
         """Where a finished job is delivered, on the thread that drains it."""
         self.closed = False
@@ -233,7 +233,7 @@ class DatabaseOwner:
         overlap. Following first puts the watcher's cursor at a message the
         window is then certain to contain or to be newer than, so a message
         written between the two is reported as an arrival *and* already on
-        screen — and the pane drops what it already has. Reading the window
+        screen — and the tab drops what it already has. Reading the window
         first inverts that into a gap: the cursor lands past a message the
         window never held, and nothing ever asks for it again.
         """
@@ -243,14 +243,14 @@ class DatabaseOwner:
             messages = reader.messages(room.id, limit=limit, include_erased=True)
             stored = reader.stored_title(room.id)
         except BaseException:
-            # No pane will exist to read it, so it is not left followed.
+            # No tab will exist to read it, so it is not left followed.
             if self.watcher is not None:
                 self.watcher.unwatch(room.id)
             raise
         return messages, stored
 
     def _follow(self, reader: Reader, room_id: int) -> None:
-        """Add a room to the one watcher, building it on the first pane."""
+        """Add a room to the one watcher, building it on the first tab."""
         if self.watcher is None:
             self.watcher = Watcher(
                 reader, room_ids=[room_id], interval=self._interval, include_erased=True
@@ -368,7 +368,7 @@ class DatabaseWorker(DatabaseOwner):
         """Free the question, then answer it.
 
         In that order: a settler routinely reacts by asking the same thing
-        again — a poll that failed is retried, a pane that took its history
+        again — a poll that failed is retried, a tab that took its history
         asks for more — and a question still marked as in flight while its own
         answer is being applied would refuse exactly that.
         """

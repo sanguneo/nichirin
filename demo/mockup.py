@@ -392,6 +392,13 @@ def arrange(app, scene: str) -> None:
         app.filtering = True
         app._narrow("러닝")
         return
+    if scene == "tabs":
+        # Two rooms open, one of them holding arrivals nobody has looked at:
+        # the strip is the only place that says either room is there.
+        app.open_room(next(one for one in app.rooms if one.id == CREW_ROOM))
+        app.open_room(next(one for one in app.rooms if one.id == WORK_ROOM))
+        app.chats[0].unseen = 2
+        return
     room = next(one for one in app.rooms if one.id == CREW_ROOM)
     app.open_room(room)
     chat = app.chat
@@ -455,7 +462,7 @@ def show_cli(reader) -> None:
 
 
 def main(argv: list[str]) -> int:
-    scenes = ("rooms", "chat", "digest", "friends", "filter", "sent", "unseen", "real")
+    scenes = ("rooms", "chat", "tabs", "digest", "friends", "filter", "sent", "unseen", "real")
     printing = "--print" in argv
     wanted = next((one for one in argv if one in scenes or one == "cli"), "chat")
 

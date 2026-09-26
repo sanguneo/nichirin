@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import mockup  # noqa: E402
 from kamado.tui.layout import char_width  # noqa: E402
 
-SCENES = ("rooms", "chat", "digest", "friends", "filter", "sent", "unseen", "real")
+SCENES = ("rooms", "chat", "tabs", "digest", "friends", "filter", "sent", "unseen", "real")
 
 WIDTH, HEIGHT = 110, 30
 """The grid the interface is meant to be seen in."""
