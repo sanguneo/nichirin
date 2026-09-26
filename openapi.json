@@ -137,6 +137,9 @@
             "$ref": "#/components/parameters/RoomId"
           },
           {
+            "$ref": "#/components/parameters/OpenRoom"
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -189,6 +192,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/RoomId"
+          },
+          {
+            "$ref": "#/components/parameters/OpenRoom"
           },
           {
             "name": "span",
@@ -495,6 +501,16 @@
           "pattern": "^-?[0-9]+$"
         },
         "example": "18491246151592761"
+      },
+      "OpenRoom": {
+        "name": "open",
+        "in": "query",
+        "required": false,
+        "description": "Open the room in the client first if its key is not in memory, then answer. Opening a room marks it read in the client, so it happens only when asked; without it such a room answers 503 `KEY_UNAVAILABLE`. `true` or `false` — anything else is a 400, so a typo cannot open a room. Opening is done one at a time, under the same lock as sending. On a host where every room is always readable it changes nothing.",
+        "schema": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "responses": {
@@ -614,7 +630,7 @@
         }
       },
       "NotReady": {
-        "description": "The machine is not in a state to answer: the client is closed (`KAKAO_NOT_RUNNING`), it has not opened that room this session so its key is not in memory (`KEY_UNAVAILABLE`), there is no signed-in profile (`NO_USER_DATA`), the server is shutting down or already holds as many streams as it will (`BUSY`), or — macOS only — the permissions it needs have not been granted (`PERMISSION_REQUIRED`).",
+        "description": "The machine is not in a state to answer: the client is closed (`KAKAO_NOT_RUNNING`), it has not opened that room this session so its key is not in memory (`KEY_UNAVAILABLE`; ask again with `open=true`), there is no signed-in profile (`NO_USER_DATA`), the server is shutting down or already holds as many streams as it will (`BUSY`), or — macOS only — the permissions it needs have not been granted (`PERMISSION_REQUIRED`).",
         "content": {
           "application/json": {
             "schema": {
@@ -804,6 +820,82 @@
           }
         }
       },
+      "Photo": {
+        "type": "object",
+        "description": "Where a picture lives and how large it was sent. Present only on a message that carries one. The client stores an address on its own CDN rather than the picture, so this is the address — the server fetches nothing; a browser can use `url` directly. An album carries its first picture as `url`, how many there are in `count`, and every one of them in `images`. The size is the one the client stored, which a rotated photo can disagree with.",
+        "required": ["url", "width", "height", "count", "images"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "images": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Every picture the message carried, in order: one for a single photo, one per picture for an album. `url`, `width` and `height` above repeat the first. A size the client did not store is 0.",
+            "items": {
+              "$ref": "#/components/schemas/PhotoImage"
+            }
+          }
+        }
+      },
+      "Video": {
+        "type": "object",
+        "description": "Where a video lives and what the client stored about it. Present only on a video message. There is no thumbnail: across 3,814 videos on the two builds not one attachment carried a thumbnail address, so a viewer that wants a first frame asks the video for it. The address is on the client's CDN and the cores fetch nothing for it. A number the client did not store is 0.",
+        "required": ["url", "width", "height", "duration", "size"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "duration": {
+            "type": "integer",
+            "description": "Seconds."
+          },
+          "size": {
+            "type": "integer",
+            "description": "Bytes."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present only when the client stored one: after it the address may no longer answer. Measured at 14 days after the message was sent."
+          }
+        }
+      },
+      "PhotoImage": {
+        "type": "object",
+        "description": "One picture of a message: its address on the client's CDN and the size stored beside it.",
+        "required": ["url", "width", "height"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        }
+      },
       "Message": {
         "type": "object",
         "description": "One message, already attributed to a named sender.\n\n**The name is the one that account carries now.** The client overwrites its profile tables in place, so a message sent under an old nickname is shown under the new one; `senderId` never changes and is the only safe way to say \"same person\".\n\nThe keys that report being addressed appear **only when they apply**. A window is forty of these, and denying five things per line would triple the answer.",
@@ -856,6 +948,12 @@
           },
           "repliesToMe": {
             "const": true
+          },
+          "photo": {
+            "$ref": "#/components/schemas/Photo"
+          },
+          "video": {
+            "$ref": "#/components/schemas/Video"
           }
         }
       },

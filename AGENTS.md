@@ -20,6 +20,37 @@ python3 demo/capture.py --all                 # re-render the demo screenshots
 
 Discovery needs `-t .` so `tests` stays an importable package.
 
+## Review and contribution discipline
+
+See `CONTRIBUTING.md` for the contribution workflow and `improvement.md` for
+the dated review and proposed fixes. Proposed invariants are requirements for
+future changes, not evidence that this checkout already satisfies them.
+
+- For review-only work, return source-grounded findings and plans rather than
+  changing product code. Respect the user's verification budget. Distinguish
+  executed evidence, source counterexamples, and Mac-only hypotheses; do not
+  present Windows checks as APFS, CommonCrypto or Accessibility verification.
+- Acquiring two files separately does not make their pair atomic. Bind the
+  database, committed WAL generation, resulting image, and cache version at
+  the acquisition boundary. A later live stat cannot certify an older clone.
+- Failed reads and identity lookups must not finalize successful state.
+  Metadata caches need a stated lifetime relative to the account and snapshot.
+  A borrowed cache needs an explicit owner.
+- Preserve room-local log-ID order and monotone, output-covered stream cursors.
+  Define framing and byte bounds for stream sockets; one recv is not a message.
+  A page limit does not bound accumulated rows or process memory.
+- Keep the existing fork guard and single database-owner thread. Worker launch,
+  failure, timeout and cleanup belong to the same change. A thread wrapper
+  alone does not make a fork-based decryptor safe in a threaded server.
+- Treat external message/name/title/URL text as data before adding terminal
+  controls. Same-ID edits and deletions belong in transcript invalidation.
+- A sibling port includes assumptions, callers, contract and regressions.
+  Record both revisions and inspect the local checkout. Do not assume that an
+  upstream PR, shared specification, or Windows feature is already installed.
+  Keep the single account database, derived keys and AX boundaries explicit.
+- Keep artifacts synthetic and secret-free, preserve unrelated user changes,
+  and commit or push only when requested.
+
 ## Pull requests
 
 - **The evidence is the review.** A pull request carries what it ran and what
@@ -365,6 +396,17 @@ keep rather than one to rediscover.
 - **The digest is `digest.py`, not `cli._digest`.** The server wanted what the
   command does, and reaching into `cli` for it meant assembling an
   `argparse.Namespace` and pointing `serve` at the layer above it.
+
+- **`open` is in the shared contract, and does nothing here.** The Windows
+  build needs `open=true` on `/context` and `/digest` to have its client open a
+  room whose key is not in memory. Every room is readable on this side, so the
+  flag is accepted and opens nothing — but a value that is neither true nor
+  false is a 400 on both, or one typo would get two answers.
+
+- **The `photo` key is part of the shared contract.** `Message.as_json` has
+  carried `photo: {url, width, height, count}` on a message with a picture,
+  and `openapi.json` now documents it as `Photo`. kanao-cli answers with the
+  same shape from 0.19.0. It is the address the client stored, not the image.
 
 ## Conventions
 
