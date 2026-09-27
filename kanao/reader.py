@@ -759,16 +759,24 @@ class Reader:
         ).fetchone()
         return int(row[0])
 
-    def newest_log_id(self, room_id: int) -> Optional[int]:
+    def newest_log_id(self, room_id: int, include_erased: bool = False) -> Optional[int]:
         """Return the newest readable message id, without reading bodies.
 
         Deleted rows are excluded like everywhere else: this id is a position
         a follower resumes from, and naming a row no query will ever return
-        is how a cursor comes to point at nothing.
+        is how a cursor comes to point at nothing. *include_erased* answers
+        for the rows :meth:`messages` returns when asked for the same.
+
+        Walked down the primary key rather than taken with ``MAX``: with a
+        condition attached SQLite cannot use its min/max shortcut and scans
+        the whole room, where this stops at the first row that qualifies.
         """
         connection = self._logs(room_id)
+        condition = (
+            self._kept(room_id, connection) if include_erased else self._live(room_id, connection)
+        )
         row = connection.execute(
-            f"SELECT MAX(logId) FROM chatLogs WHERE {self._live(room_id, connection)}"
+            f"SELECT logId FROM chatLogs WHERE {condition} ORDER BY logId DESC LIMIT 1"
         ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 

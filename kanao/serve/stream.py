@@ -140,7 +140,9 @@ def serve_stream(
                     return
                 room = str(payload.get("roomId", ""))
                 identifier = str(payload.get("id", ""))
-                if room and identifier:
+                if room and identifier and _later(identifier, seen.get(room)):
+                    # Compared as numbers: "9" sorts after "10" as text, and
+                    # a cursor that moves backwards hands the caller repeats.
                     seen[room] = identifier
                     advanced = True
             # The cursor is published *after* the messages it covers, so a
@@ -154,6 +156,22 @@ def serve_stream(
             time.sleep(poll_interval)
     finally:
         _release(watcher)
+
+
+def _later(identifier: str, previous: Optional[str]) -> bool:
+    """Whether *identifier* moves a room's cursor forward.
+
+    The cursor only ever advances. A room's messages arrive in id order, so
+    this is the ordinary case restated - but a published cursor is a promise
+    that everything up to it has been delivered, and a batch that ever went
+    backwards would quietly withdraw part of that promise.
+    """
+    if previous is None:
+        return True
+    try:
+        return int(identifier) > int(previous)
+    except ValueError:
+        return identifier != previous
 
 
 def _release(watcher: Any) -> None:

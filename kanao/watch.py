@@ -19,6 +19,7 @@ pass is fully testable without waiting on a clock, and only the loop sleeps.
 
 from __future__ import annotations
 
+import heapq
 import sqlite3
 import time
 from typing import Iterator, Mapping, Optional, Sequence, Union
@@ -112,7 +113,7 @@ class Watcher:
             self.prime()
             return []
 
-        fresh: list[Message] = []
+        per_room: list[list[Message]] = []
         for room_id in self.watched_rooms():
             path = self._log_path(room_id)
             current = Fingerprint.of(path)
@@ -143,11 +144,10 @@ class Watcher:
 
             self._prints[room_id] = current
             if arrived:
-                self._seen[room_id] = max(message.id for message in arrived)
-                fresh.extend(arrived)
+                self._seen[room_id] = max(since, arrived[-1].id)
+                per_room.append(arrived)
 
-        fresh.sort(key=lambda message: (message.sent_at or 0, message.id))
-        return fresh
+        return _interleave(per_room)
 
     def _catch_up(self, room_id: int, since: int) -> list[Message]:
         """Collect every message after *since*, a page at a time.
@@ -156,10 +156,20 @@ class Watcher:
         reconnection, so a room can gain far more than a page between two
         polls, and a single read would report the first page and leave the
         cursor to skip the rest for good.
+
+        It is also bounded. Each page is read from whatever snapshot the cache
+        holds by then, so a room written to faster than it is paged through
+        would keep every page full and never let the loop end. The newest id
+        when the catch-up starts is the ceiling: anything past it is left to
+        the next poll, whose fingerprint will have moved. That bounds the
+        number of pages, not the rows kept - ``M`` arrivals still cost
+        ``M`` messages here, and a caller that cannot hold them has to ask for
+        less history rather than trust the page size.
         """
+        ceiling = self._reader.newest_log_id(room_id, include_erased=self._include_erased)
         collected: list[Message] = []
         cursor = since
-        while True:
+        while ceiling is None or cursor < ceiling:
             page = self._reader.messages(
                 room_id,
                 limit=_CATCH_UP_LIMIT,
@@ -181,3 +191,19 @@ class Watcher:
             for message in self.poll():
                 yield message
             time.sleep(self.interval)
+
+
+def _interleave(per_room: Sequence[Sequence[Message]]) -> list[Message]:
+    """Merge rooms by time without reordering anything inside one room.
+
+    Each room arrives in log-id order, and that order is the contract: it is
+    what a cursor resumes from. Sorting everything by time broke it whenever
+    a room's clock disagreed with its ids - ``(10, 12:01)`` then
+    ``(11, 12:00)`` came out as 11, 10, and a follower storing the last id
+    it saw stored 10 and was handed 11 again on reconnecting. A merge only
+    ever compares the next message of each room, so across rooms the earlier
+    one still goes first, and within a room nothing moves.
+    """
+    return list(
+        heapq.merge(*per_room, key=lambda message: (message.sent_at or 0, message.id))
+    )

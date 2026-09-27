@@ -157,6 +157,104 @@ class CatchUpTests(WatcherTests):
         self.assertEqual(watcher.poll(), [])
 
 
+class OrderTests(WatcherTests):
+    """A room's messages leave in log-id order, whatever their clocks say.
+
+    That order is what a cursor resumes from. Sorting a poll by time put a
+    room's 11 before its 10 whenever 11 carried the earlier timestamp, and a
+    follower that stored the last id it saw stored 10 and got 11 again.
+    """
+
+    def write(self, room_id: int, log_id: int, sent_at: int) -> None:
+        from kanao import paths
+
+        connection = self.cache.databases[paths.chat_log_name(room_id)]
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (?, ?, 1, ?, NULL, ?, 0)",
+            (log_id, PEER_ID, f"at {sent_at}", sent_at),
+        )
+        connection.commit()
+        touch_log(self.root, room_id, b"log" + bytes(log_id % 251))
+
+    def test_a_room_whose_clock_runs_backwards_keeps_its_id_order(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.write(DIRECT_ROOM, 5110, sent_at=1_800_000_061)
+        self.write(DIRECT_ROOM, 5111, sent_at=1_800_000_060)
+        self.assertEqual([message.id for message in watcher.poll()], [5110, 5111])
+
+    def test_equal_and_missing_times_keep_their_id_order(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.write(DIRECT_ROOM, 5120, sent_at=1_800_000_100)
+        self.write(DIRECT_ROOM, 5121, sent_at=1_800_000_100)
+        self.write(GROUP_ROOM, 6120, sent_at=None)
+        self.write(GROUP_ROOM, 6121, sent_at=None)
+        found = [message.id for message in watcher.poll()]
+        self.assertEqual([one for one in found if one < 6000], [5120, 5121])
+        self.assertEqual([one for one in found if one > 6000], [6120, 6121])
+
+    def test_rooms_still_interleave_by_time(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        self.write(DIRECT_ROOM, 5130, sent_at=1_800_000_300)
+        self.write(DIRECT_ROOM, 5131, sent_at=1_800_000_100)
+        self.write(GROUP_ROOM, 6130, sent_at=1_800_000_200)
+        self.assertEqual(
+            [message.id for message in watcher.poll()], [6130, 5130, 5131]
+        )
+
+
+class CatchUpCeilingTests(WatcherTests):
+    """A room written to faster than it is paged through still lets go."""
+
+    def test_the_catch_up_stops_at_the_newest_id_it_started_with(self) -> None:
+        from unittest.mock import patch
+
+        from kanao import paths, watch
+
+        connection = self.cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        for log_id in range(5500, 5504):
+            self.arrive(DIRECT_ROOM, log_id)
+
+        real = self.reader.messages
+        pages = {"count": 0}
+        next_id = [5600]
+
+        def busy(*args, **kwargs):
+            pages["count"] += 1
+            if pages["count"] > 20:
+                raise AssertionError("the catch-up never stopped paging")
+            # Every page, the client writes a full page more.
+            for _ in range(2):
+                connection.execute(
+                    "INSERT INTO chatLogs (logId, authorId, type, message, attachement, "
+                    "sendAt, deleted) VALUES (?, ?, 1, 'more', NULL, ?, 0)",
+                    (next_id[0], PEER_ID, 1_800_000_000 + next_id[0]),
+                )
+                next_id[0] += 1
+            connection.commit()
+            return real(*args, **kwargs)
+
+        with (
+            patch.object(watch, "_CATCH_UP_LIMIT", 2),
+            patch.object(self.reader, "messages", side_effect=busy),
+        ):
+            found = [message.id for message in watcher.poll()]
+        self.assertEqual(found[:4], [5500, 5501, 5502, 5503])
+        self.assertEqual(found, sorted(found))
+        self.assertLessEqual(pages["count"], 3)
+
+        # What was left past the ceiling arrives on the next poll, not never.
+        touch_log(self.root, DIRECT_ROOM, b"moved again")
+        rest = [message.id for message in watcher.poll()]
+        self.assertEqual(sorted(set(found) | set(rest)), found + rest)
+        self.assertEqual((found + rest)[-1], next_id[0] - 1)
+
+
 class ResumeTests(WatcherTests):
     """Starting from what a reader already saw, rather than from now.
 
