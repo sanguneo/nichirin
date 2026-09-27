@@ -356,3 +356,148 @@ def plan_footer(
     return FooterPlan(
         kept_middle=0, show_marker=False, right_plain=truncate_to_width(right.plain, width)
     )
+
+
+TAB_SEPARATOR: Final = " │ "
+"""What goes between two tabs, when the strip holds more than one."""
+
+MIN_TAB_COLUMNS: Final = 8
+"""The narrowest a tab's label may be before the strip shows fewer of them.
+
+Four Hangul characters: as short as a name can be and still name something.
+"""
+
+MAX_TAB_COLUMNS: Final = 24
+"""The widest a tab's label may grow.
+
+A room named after a sentence must not push every other tab off the strip,
+and past this a longer title is no easier to recognise than a cut one.
+"""
+
+
+def _tab_badge(unseen: int) -> str:
+    """What a tab adds to its label while arrivals are waiting in it."""
+    return f" +{unseen}" if unseen else ""
+
+
+def _tab_marker(hidden: int) -> int:
+    """Columns the count of tabs off one edge takes, or none."""
+    return 0 if hidden <= 0 else display_width(f"{ELLIPSIS}{hidden}") + 1
+
+
+def _cut_tab(title: str, unseen: int, budget: int) -> tuple[str, int]:
+    """Cut a title to *budget* columns with room left for its badge.
+
+    The badge is part of the tab: a count pushing the title past its columns
+    would run into the next tab instead of shortening this one.
+    """
+    badge = _tab_badge(unseen)
+    label = truncate_to_width(title, max(0, budget - display_width(badge)), ELLIPSIS)
+    return label, display_width(label) + display_width(badge)
+
+
+@dataclass(frozen=True)
+class TabEntry:
+    """One tab as the strip draws it."""
+
+    index: int
+    """Which conversation, counted in the order they were opened."""
+    label: str
+    """The title, cut to the columns it was given."""
+    columns: int
+    """How many columns the tab takes, badge included."""
+    unseen: int
+    """Arrivals waiting in it, drawn after the label."""
+
+
+@dataclass(frozen=True)
+class TabStrip:
+    """What the strip shows, and what it had to leave out."""
+
+    entries: list[TabEntry]
+    hidden_left: int
+    """Tabs off the left edge, counted in a marker rather than drawn."""
+    hidden_right: int
+    """Tabs off the right edge, likewise."""
+    hidden_unseen: int
+    """Arrivals held by tabs that are not drawn, so the marker can say so."""
+
+
+def plan_tabs(tabs: Sequence[tuple[str, int]], active: int, width: int) -> TabStrip:
+    """Lay out the tab strip: every title as wide as it earns, cut where needed.
+
+    Three rules, in order. Everything that fits at its own width is drawn
+    whole. Failing that, the focused tab keeps its width and the rest share
+    what is left, down to a floor. Failing that, the strip becomes a window
+    around the focused tab and the others are counted at its edges - a strip
+    that cannot show the tab you are on is worse than one admitting it holds
+    more, because the tab you are on is the one title that must stay readable.
+
+    *tabs* is ``(title, unseen)`` per conversation. The titles are expected to
+    be display text already; nothing here cleans them.
+    """
+    count = len(tabs)
+    if count == 0:
+        return TabStrip([], 0, 0, 0)
+    active = max(0, min(active, count - 1))
+    natural = [
+        min(display_width(title) + display_width(_tab_badge(unseen)), MAX_TAB_COLUMNS)
+        for title, unseen in tabs
+    ]
+    separator = display_width(TAB_SEPARATOR)
+
+    def entries(indices: Iterable[int], budgets: dict[int, int]) -> list[TabEntry]:
+        built = []
+        for index in indices:
+            title, unseen = tabs[index]
+            label, columns = _cut_tab(title, unseen, budgets[index])
+            built.append(TabEntry(index=index, label=label, columns=columns, unseen=unseen))
+        return built
+
+    if sum(natural) + separator * (count - 1) <= width:
+        return TabStrip(entries(range(count), dict(enumerate(natural))), 0, 0, 0)
+
+    if count > 1:
+        share = (width - natural[active] - separator * (count - 1)) // (count - 1)
+        if share >= MIN_TAB_COLUMNS:
+            budgets = {
+                index: natural[index] if index == active else min(natural[index], share)
+                for index in range(count)
+            }
+            return TabStrip(entries(range(count), budgets), 0, 0, 0)
+
+    def window(size: int) -> tuple[int, int]:
+        """Where a window of *size* tabs starts, and the columns it costs.
+
+        The others are costed at what they would actually be drawn at, not at
+        the floor they may be cut to: costing a strip of short names at the
+        floor hides tabs there was room to show.
+        """
+        start = max(0, min(active - (size - 1) // 2, count - size))
+        others = sum(
+            min(natural[index], MIN_TAB_COLUMNS)
+            for index in range(start, start + size)
+            if index != active
+        )
+        cost = (
+            natural[active]
+            + others
+            + separator * (size - 1)
+            + _tab_marker(start)
+            + _tab_marker(count - start - size)
+        )
+        return start, cost
+
+    size = count
+    while size > 1 and window(size)[1] > width:
+        size -= 1
+    start, _cost = window(size)
+    shown = range(start, start + size)
+    budgets = {
+        index: natural[active] if index == active else min(natural[index], MIN_TAB_COLUMNS)
+        for index in shown
+    }
+    hidden_unseen = sum(
+        unseen for index, (_title, unseen) in enumerate(tabs) if index not in shown
+    )
+    return TabStrip(entries(shown, budgets), start, count - start - size, hidden_unseen)

@@ -40,12 +40,14 @@ from . import digest, images
 from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
+    TAB_SEPARATOR,
     Segment,
     clean,
     display_width,
     elide_head,
     pad_to_width,
     plan_footer,
+    plan_tabs,
     truncate_to_width,
     window_around,
     wrap_to_width,
@@ -79,11 +81,12 @@ TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
 COMPOSING_GRACE_SECONDS = 1.5
 """How long a half-written message holds a poll off, IME pauses included."""
-MIN_PANE_COLUMNS = 44
-"""The narrowest a conversation can be drawn in and still read as one.
+FOCUS_MARK = "▌"
+"""What marks the tab the keyboard is in, colour or no colour.
 
-Hangul takes two columns a character, so the time and a name already spend a
-third of this before any words arrive.
+A highlight is the whole of it on a coloured terminal and nothing at all on a
+plain one, and a strip that cannot say which room is in front has failed at
+its only job.
 """
 
 
@@ -91,7 +94,7 @@ INLINE_CACHE_ENTRIES = 64
 """How many built picture escapes to keep.
 
 Scrolling asks for a new crop every line, so the keys are unbounded and
-something has to be dropped; 64 covers a picture moving through a pane several
+something has to be dropped; 64 covers a picture moving through a conversation several
 times over without letting one room's photos grow without limit.
 """
 
@@ -229,8 +232,8 @@ class App:
         """Where each picture currently sits, so a still screen redraws nothing."""
         self._images_moved = False
         """Whether a picture moved, so the frame has to be given up whole."""
-        self._pane_rows = 0
-        """How tall a conversation pane last was, so a picture scales with it."""
+        self._body_rows = 0
+        """How tall the conversation last was, so a picture scales with it."""
         self._inline_cache: dict[
             tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
         ] = {}
@@ -242,7 +245,7 @@ class App:
 
         Everything that acts on "the" conversation — sending, scrolling, the
         footer, the commands — means this one, which is why it stays a single
-        attribute rather than every caller learning about panes.
+        attribute rather than every caller learning about tabs.
         """
         if not self.chats:
             return None
@@ -254,27 +257,6 @@ class App:
         """Replace every open conversation with this one, or with none."""
         self.chats = [] if value is None else [value]
         self.focus = 0
-
-    def _pane_width(self, width: int, panes: int) -> int:
-        """How wide one pane is, once the dividers have taken their columns."""
-        return max(1, (width - (panes - 1)) // max(1, panes))
-
-    def _visible_panes(self, width: int) -> list[ChatState]:
-        """The conversations that fit, keeping the focused one among them.
-
-        A pane narrower than `MIN_PANE_COLUMNS` cannot hold a conversation —
-        Hangul is two columns a character, so the name and the time alone eat
-        half of a narrow one. Rooms that do not fit are hidden rather than
-        closed, because the reader opened them and a window that got smaller
-        is not a decision to let one go.
-        """
-        if not self.chats:
-            return []
-        fits = max(1, (width + 1) // (MIN_PANE_COLUMNS + 1))
-        if fits >= len(self.chats):
-            return list(self.chats)
-        start = min(max(0, self.focus - fits + 1), len(self.chats) - fits)
-        return self.chats[start : start + fits]
 
     # -- data ---------------------------------------------------------------
 
@@ -435,11 +417,11 @@ class App:
 
         *beside* is what `/open` asks for: the rooms already on screen stay,
         and this one takes the keyboard. A room that is already open is
-        focused rather than opened twice, because two panes of one
+        focused rather than opened twice, because two tabs of one
         conversation would each hold their own draft of the same message.
         """
         already = next(
-            (index for index, pane in enumerate(self.chats) if pane.room.id == room.id),
+            (index for index, tab in enumerate(self.chats) if tab.room.id == room.id),
             None,
         )
         if already is not None:
@@ -504,10 +486,10 @@ class App:
         chat.notice = ""
         self.request_open(matches[0], beside=True)
 
-    def close_pane(self, chat: ChatState) -> None:
+    def close_tab(self, chat: ChatState) -> None:
         """Close one conversation, keeping whatever else is open.
 
-        The focus moves to the pane on the left, the way closing a tab does,
+        The focus moves to the tab on the left, the way closing a tab does,
         and the draft is kept per room so reopening restores it.
         """
         if chat not in self.chats:
@@ -518,25 +500,23 @@ class App:
             self.focus = max(0, self.focus - 1)
 
     def refresh(self, width: int) -> bool:
-        """Pick up anything new, for every conversation on screen.
+        """Pick up anything new, for every open conversation.
 
-        Each pane keeps its own watcher because a Windows room is its own
+        Each tab keeps its own watcher because a Windows room is its own
         database: the poll that decides whether anything happened is one stat
-        of that room's log, 0.30 ms measured, so panes cost what they read
-        rather than sharing a fingerprint the way the macOS build can.
+        of that room's log, 0.30 ms measured, so tabs cost what they read
+        rather than sharing a fingerprint the way the macOS build can. A tab
+        that is not in front is followed all the same, or its count of
+        arrivals would start from whenever it was brought forward.
         """
         if not self.chats:
             return self._refresh_rooms()
-        panes = self._visible_panes(width)
-        cell = self._pane_width(width, max(1, len(panes)))
         drawn = False
-        for pane in list(self.chats):
-            # An off-screen pane is still followed, or its unseen count would
-            # start from whenever the window happened to get wider.
-            drawn |= self._refresh_pane(pane, cell if pane in panes else width)
+        for chat in list(self.chats):
+            drawn |= self._refresh_tab(chat, width)
         return drawn
 
-    def _refresh_pane(self, chat: ChatState, width: int) -> bool:
+    def _refresh_tab(self, chat: ChatState, width: int) -> bool:
         """Pick up what arrived in one conversation, and what changed in it."""
         if chat.watcher is None:
             return False
@@ -569,6 +549,9 @@ class App:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
             chat.offset += len(self._transcript_of(chat, width)) - before
+        if chat.offset > 0 or chat is not self.chat:
+            # Arrivals nobody has seen: the viewport is up in the history, or
+            # this is a tab the reader is not on, and the strip says so.
             chat.unseen += len(fresh)
         else:
             chat.unseen = 0
@@ -917,97 +900,106 @@ class App:
         return self._compose_footer(anchor, middle, tail, right, width)
 
     def _render_chat(self, width: int, height: int) -> list[str]:
-        """Draw every conversation the screen holds, side by side.
+        """Draw the conversation in front, under a strip of every open tab.
 
-        The composer, the status line and the footer belong to the focused
-        one: a second box would need a second caret and a terminal has one.
-        A single conversation is drawn exactly as it was, header included —
-        naming a room above its own transcript only earns a row once there is
-        another room beside it to tell it apart from.
+        One conversation at a time, across the whole width. Two side by side
+        gave each half of it, and half a width is where Hangul sentences break
+        into fragments; the room that is not in front is one tab away, and
+        the strip is what says so. A single open room draws the screen it
+        always did, with no strip, because there is nothing to switch to.
+
+        The composer, the status line and the footer belong to the tab in
+        front: a second box would need a second caret and a terminal has one.
         """
         chat = self.chat
         assert chat is not None
-        # The room is named in the footer; repeating it here spent a row on
-        # something the reader already knows.
-        lines = [
-            self._hints(
-                [
-                    ("enter", "전송"),
-                    ("↑↓", "scroll"),
-                    ("tab", "방 전환"),
-                    ("^P", "사진"),
-                    ("/open", "방 추가"),
-                    ("/sum 30m", "요약"),
-                    ("/older", "이전"),
-                    ("esc", "back"),
-                ],
-                width,
-            ),
-            "",
-        ]
+        lines: list[str] = []
+        if len(self.chats) > 1:
+            lines.append(self._tab_strip(width))
+        # The room is named in the footer or the strip; repeating it here
+        # spent a row on something the reader already knows.
+        lines.extend(
+            [
+                self._hints(
+                    [
+                        ("enter", "전송"),
+                        ("↑↓", "scroll"),
+                        ("tab/⇧tab", "탭 전환"),
+                        ("^P", "사진"),
+                        ("/open", "탭 추가"),
+                        ("/sum 30m", "요약"),
+                        ("/older", "이전"),
+                        ("esc", "닫기"),
+                    ],
+                    width,
+                ),
+                "",
+            ]
+        )
 
         composer, caret = self._composer_lines(width)
-        body_height = max(1, height - len(lines) - len(composer) - 2)
-        panes = self._visible_panes(width)
-        cell = self._pane_width(width, len(panes))
-        # A header earns its row once it is telling two conversations apart,
-        # and equally when one is open but too far off screen to show: without
-        # it nothing on screen says there is another room to tab to.
-        headed = len(panes) > 1 or len(self.chats) > len(panes)
-        rows = max(1, body_height - (1 if headed else 0))
-
-        self._pane_rows = rows
-        body_top = len(lines) + (1 if headed else 0)
+        rows = max(1, height - len(lines) - len(composer) - 2)
+        self._body_rows = rows
+        body_top = len(lines)
         self.placements = []
-        columns: list[list[str]] = []
-        focused_body = 0
-        for index, pane in enumerate(panes):
-            body = (
-                self._digest_of(pane, cell)
-                if pane.slices
-                else self._transcript_of(pane, cell)
-            )
-            if pane is chat:
-                focused_body = len(body)
-            if pane.anchor_top:
-                # Resolved here because the top is a distance from the bottom,
-                # and neither the body nor the screen height is known earlier.
-                pane.offset = max(0, len(body) - rows)
-                pane.anchor_top = False
-            column = [
-                pad_to_width(truncate_to_width(line, cell), cell)
-                for line in _window(body, pane.offset, rows)
-            ]
-            column.extend([" " * cell] * (rows - len(column)))
-            self._place_photos(pane, body, index, cell, rows, body_top)
-            if headed:
-                column.insert(0, self._pane_header(pane, cell, pane is chat))
-            columns.append(column)
-
-        rule = self.theme.fg("borderMuted", "│")
-        for row in range(body_height):
-            # Panes are equal, so an odd screen leaves a column over; it is
-            # padding at the edge rather than one pane a character wider than
-            # its neighbour.
-            lines.append(pad_to_width(rule.join(column[row] for column in columns), width))
+        body = self._digest_of(chat, width) if chat.slices else self._transcript_of(chat, width)
+        if chat.anchor_top:
+            # Resolved here because the top is a distance from the bottom,
+            # and neither the body nor the screen height is known earlier.
+            chat.offset = max(0, len(body) - rows)
+            chat.anchor_top = False
+        self._place_photos(chat, body, width, rows, body_top)
+        for line in _window(body, chat.offset, rows):
+            lines.append(pad_to_width(truncate_to_width(line, width), width))
+        while len(lines) < body_top + rows:
+            # Rows the transcript does not reach are still painted: a tab
+            # brought forward over a longer one would otherwise show it
+            # through the gaps.
+            lines.append(" " * width)
         while len(lines) < height - len(composer) - 2:
             lines.append("")
 
         self.cursor = (len(lines) + 1, caret)
         lines.extend(composer)
         lines.append(self._status_line(width))
-        lines.append(self._footer_chat(width, focused_body))
+        lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
 
-    def _pane_header(self, chat: ChatState, width: int, focused: bool) -> str:
-        """Name one pane, which is only worth a row when there are several."""
-        label = f"{'▌' if focused else ' '}{clean(chat.room.title)}"
-        if chat.unseen:
-            label += f" +{chat.unseen}"
-        return self.theme.fg(
-            "accent" if focused else "muted",
-            pad_to_width(truncate_to_width(label, width), width),
+    def _tab_strip(self, width: int) -> str:
+        """Draw every open conversation as a tab, the one in front marked.
+
+        Once more than one room is open this is the only place a title is
+        drawn; the footer keeps what the strip cannot say. Tabs that do not
+        fit are counted at the edge they went off, and the count is tinted
+        when arrivals are waiting in one of them.
+        """
+        strip = plan_tabs(
+            [
+                ((FOCUS_MARK if index == self.focus else "") + clean(chat.room.title), chat.unseen)
+                for index, chat in enumerate(self.chats)
+            ],
+            self.focus,
+            width,
         )
+        tint = "warning" if strip.hidden_unseen else "dim"
+        pieces: list[str] = []
+        if strip.hidden_left:
+            pieces.append(self.theme.fg(tint, f"{ELLIPSIS}{strip.hidden_left} "))
+        for position, entry in enumerate(strip.entries):
+            if entry.index == self.focus:
+                label = self.theme.bg(
+                    "selectedBg", self.theme.bold(self.theme.fg("accent", entry.label))
+                )
+            else:
+                label = self.theme.fg("muted", entry.label)
+            if entry.unseen:
+                label += self.theme.fg("warning", f" +{entry.unseen}")
+            pieces.append(label)
+            if position < len(strip.entries) - 1:
+                pieces.append(self.theme.fg("borderMuted", TAB_SEPARATOR))
+        if strip.hidden_right:
+            pieces.append(self.theme.fg(tint, f" {ELLIPSIS}{strip.hidden_right}"))
+        return pad_to_width(truncate_to_width("".join(pieces), width), width)
 
     def _transcript_lines(self, width: int) -> list[str]:
         """Return the transcript, rebuilding it only when it could have changed.
@@ -1174,37 +1166,38 @@ class App:
 
     def _place_photos(
         self,
-        pane: ChatState,
+        chat: ChatState,
         body: list[str],
-        index: int,
-        cell: int,
+        width: int,
         rows: int,
         body_top: int,
     ) -> None:
-        """Work out where this pane's opened pictures land on the screen.
+        """Work out where the conversation's opened pictures land on the screen.
 
         The transcript knows which of *its* rows a picture starts on; only here
-        is it known which of those rows are on screen, how far down the frame
-        the pane's body begins, and which column the pane occupies. A picture
-        scrolled out of the window is simply not placed.
+        is it known which of those rows are on screen and how far down the
+        frame the body begins. A picture scrolled out of the window is simply
+        not placed, and only the tab in front is placed at all: a picture
+        belongs to its conversation, so a tab brought forward shows it again,
+        and the one sent back takes its picture with it.
         """
-        if not pane.photo_rows or not self._photos_drawable():
+        if not chat.photo_rows or not self._photos_drawable():
             return
         scrollable = len(body) - rows
-        offset = min(pane.offset, scrollable) if scrollable > 0 else pane.offset
+        offset = min(chat.offset, scrollable) if scrollable > 0 else chat.offset
         end = max(1, len(body) - max(0, offset))
         start = max(0, end - rows)
         stamp_width = 5
-        name_width = min(14, max(8, cell // 6))
+        name_width = min(14, max(8, width // 6))
         indent = stamp_width + 2 + name_width + 1
-        for row, message_id in pane.photo_rows.items():
-            message = next((one for one in pane.messages if one.id == message_id), None)
+        for row, message_id in chat.photo_rows.items():
+            message = next((one for one in chat.messages if one.id == message_id), None)
             if message is None or message.photo is None:
                 continue
             blob = self._photo_bytes.get(message_id)
             if blob is None:
                 continue
-            columns, height = self._photo_cells(message, cell, indent)
+            columns, height = self._photo_cells(message, width, indent)
             # Only the part of the picture inside the window is asked for; a
             # placement is not clipped by anything the frame does, so one that
             # ran past the bottom would be drawn over the composer.
@@ -1220,7 +1213,7 @@ class App:
                 (
                     message_id,
                     body_top + max(row, start) - start,
-                    index * (cell + 1) + indent,
+                    indent,
                     blob,
                     columns,
                     shown,
@@ -1290,7 +1283,7 @@ class App:
 
     def _photo_ceiling(self) -> Optional[int]:
         """How tall the conversation is, so a picture scales with the window."""
-        return self._pane_rows if self._pane_rows else None
+        return self._body_rows if self._body_rows else None
 
     def _photo_blob(self, message: Message) -> Optional[bytes]:
         """Fetch a picture once and keep it, measuring what really came back.
@@ -1339,7 +1332,7 @@ class App:
         return True
 
     def newest_photo(self) -> Optional[int]:
-        """The id of the newest message in the focused pane carrying a picture."""
+        """The id of the newest message in this conversation carrying a picture."""
         chat = self.chat
         if chat is None:
             return None
@@ -1503,13 +1496,21 @@ class App:
         room = chat.room
         loaded = f"{len(chat.messages)} loaded"
         people = f"{room.kind} · {room.member_count}명"
-        title = clean(room.title)
-        anchor = [Segment(title, self.theme.fg("accent", title))]
-        middle = [
-            Segment(people, self.theme.fg("muted", people)),
-            Segment(loaded, self.theme.fg("muted", loaded)),
-            Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
-        ]
+        lines = Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines"))
+        if len(self.chats) > 1:
+            # The strip already names this room; a footer saying it again is
+            # a second title on one screen. What is left is what the strip
+            # cannot say: how big the room is and how much of it is loaded.
+            anchor = [Segment(people, self.theme.fg("muted", people))]
+            middle = [Segment(loaded, self.theme.fg("muted", loaded)), lines]
+        else:
+            title = clean(room.title)
+            anchor = [Segment(title, self.theme.fg("accent", title))]
+            middle = [
+                Segment(people, self.theme.fg("muted", people)),
+                Segment(loaded, self.theme.fg("muted", loaded)),
+                lines,
+            ]
         mode = "digest" if chat.slices else "transcript"
         tail = Segment(mode, self.theme.fg("dim", mode))
         right = Segment(f"v{__version__}", self.theme.fg("muted", f"v{__version__}"))
@@ -1629,9 +1630,11 @@ class App:
         if kind == Key.INTERRUPT:
             self.running = False
         elif kind == Key.TAB and len(self.chats) > 1:
-            # The composer is the only box on screen, so which room it is
-            # typing into has to be something the reader can move.
-            self.focus = (self.focus + 1) % len(self.chats)
+            # One conversation is in front at a time, so which room the
+            # composer types into has to be something the reader can move.
+            self._focus_tab(self.focus + 1)
+        elif kind == Key.BACKTAB and len(self.chats) > 1:
+            self._focus_tab(self.focus - 1)
         elif kind == "char":
             if text == CLEAR_BOX:
                 chat.draft = ""
@@ -1685,17 +1688,29 @@ class App:
         if chat.offset == 0:
             chat.unseen = 0
 
+    def _focus_tab(self, index: int) -> None:
+        """Bring one tab to the front; the tabs walk in a ring.
+
+        Arrivals a tab was counting have been seen the moment it stands in
+        front of the reader at its newest line, so the count goes with the
+        move rather than waiting for the next keystroke.
+        """
+        self.focus = index % len(self.chats)
+        chat = self.chat
+        if chat is not None and chat.offset == 0:
+            chat.unseen = 0
+
     def _leave_room(self, chat: ChatState) -> None:
         """Close this conversation, keeping whatever was half-written in it.
 
-        Only this one: with several open, escape closes the pane the keyboard
+        Only this one: with several open, escape closes the tab the keyboard
         is in and leaves the rest where they are.
         """
         if chat.draft:
             self.drafts[chat.room.id] = chat.draft
         else:
             self.drafts.pop(chat.room.id, None)
-        self.close_pane(chat)
+        self.close_tab(chat)
 
     def _submit(self, chat: ChatState) -> None:
         """Send what is written, or run it when it starts with a slash."""

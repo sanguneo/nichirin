@@ -109,6 +109,8 @@ class Key:
     BACKSPACE: Final = "backspace"
     DELETE: Final = "delete"
     TAB: Final = "tab"
+    BACKTAB: Final = "backtab"
+    """Shift+Tab, which walks the tabs the other way."""
     INTERRUPT: Final = "interrupt"
 
 
@@ -558,7 +560,7 @@ class Console:
                 self._pending_surrogate = ""
                 if named == Key.ENTER and self._is_newline(event):
                     return "char", "\n"
-                return named, ""
+                return _modified(named, event), ""
             if ord(character) in _HIGH_SURROGATE:
                 self._pending_surrogate = character
                 return None
@@ -579,7 +581,7 @@ class Console:
         named = _BY_VIRTUAL_KEY.get(event.virtual_key)
         if named == Key.ENTER and self._is_newline(event):
             return "char", "\n"
-        return (named, "") if named is not None else None
+        return (_modified(named, event), "") if named is not None else None
 
     def _is_newline(self, event: KeyEvent) -> bool:
         """Whether an enter means a line break rather than "send this".
@@ -591,6 +593,18 @@ class Console:
         on its own.
         """
         return bool(event.control_state & _SHIFT_PRESSED) or self._pending()
+
+
+def _modified(named: str, event: KeyEvent) -> str:
+    """Name the key a modifier turns a plain one into.
+
+    A console reports Shift+Tab as the same ``VK_TAB`` record as Tab, with
+    ``SHIFT_PRESSED`` in its control state and the same ``\\t`` for its
+    character, so without reading the flag one of the two directions is dead.
+    """
+    if named == Key.TAB and event.control_state & _SHIFT_PRESSED:
+        return Key.BACKTAB
+    return named
 
 
 def supports_tui() -> bool:

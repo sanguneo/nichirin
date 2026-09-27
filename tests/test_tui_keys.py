@@ -23,6 +23,7 @@ require_windows_console()
 from kanao.tui.console import Console, Key, KeyEvent
 
 VK_BACK = 0x08
+VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
 VK_LEFT = 0x25
@@ -90,6 +91,12 @@ class DecodingTests(unittest.TestCase):
         self.assertEqual(self.read(down(VK_RETURN, "\r")), (Key.ENTER, ""))
         self.assertEqual(self.read(down(VK_ESCAPE, "\x1b")), (Key.ESCAPE, ""))
         self.assertEqual(self.read(down(0, "\t")), (Key.TAB, ""))
+
+    def test_shift_tab_is_a_key_of_its_own(self) -> None:
+        """A console reports it as the Tab record with SHIFT_PRESSED set."""
+        self.assertEqual(self.read(down(VK_TAB, "\t", control=SHIFT)), (Key.BACKTAB, ""))
+        self.assertEqual(self.read(down(VK_TAB, "", control=SHIFT)), (Key.BACKTAB, ""))
+        self.assertEqual(self.read(down(VK_TAB, "\t")), (Key.TAB, ""))
 
     def test_arrows_and_paging(self) -> None:
         for virtual_key, expected in (
