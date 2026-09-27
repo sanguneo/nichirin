@@ -281,7 +281,7 @@ def update_image_with_wal(
 
     log = _read_log(database)
     if log[: wal_format.WAL_HEADER_SIZE] != base.generation:
-        raise ConsistencyError(f"the {database.name} log restarted since it was read")
+        raise LogRestarted(f"the {database.name} log restarted since it was read")
 
     base_pages = len(base.image) // page_size
     committed = wal_format.parse(log, page_size, base_pages)
@@ -302,6 +302,16 @@ def update_image_with_wal(
 
 class ConsistencyError(RuntimeError):
     """The source moved mid-read; the partial result was discarded."""
+
+
+class LogRestarted(ConsistencyError):
+    """The log began a new generation, so the cached base pages no longer apply.
+
+    Separate from its parent because retrying cannot help: backing off does
+    not put the stranded pages back into a log that has moved past them, so
+    this one goes straight to a full decryption instead of waiting 0.60 s in
+    ``_BACKOFF_SECONDS`` first. The name and the rule are the macOS build's.
+    """
 
 
 def _connect(image: bytes) -> sqlite3.Connection:
@@ -539,6 +549,12 @@ class SnapshotCache:
         pages already decrypted; or the database file itself changed, which is
         the only case that pays for a whole decryption.
         """
+        # Sampled once, before anything is read, and that is the fingerprint
+        # the result is stored under. Sampled again afterwards, a commit that
+        # landed during the read would be stored beside an image that does
+        # not hold it, and the next call would find the files matching and
+        # hand the older image back for as long as the room stayed quiet. A
+        # commit that did make it into the read costs one extra read instead.
         current = Fingerprint.of(database)
         cached = self._entries.get(database)
         if cached is not None and cached.fingerprint == current:
@@ -551,7 +567,7 @@ class SnapshotCache:
             and cached.fingerprint.database == current.database
         ):
             connection = self._reuse_base_pages(
-                database, key, cached.base, page_size, reserve
+                database, key, cached.base, page_size, reserve, current
             )
             if connection is not None:
                 return connection
@@ -560,7 +576,7 @@ class SnapshotCache:
         connection = open_image(image, database.name)
         self._store(
             database,
-            Fingerprint.of(database),
+            current,
             connection,
             len(image),
             getattr(image, "base", None),
@@ -594,8 +610,12 @@ class SnapshotCache:
         base: BasePages,
         page_size: int,
         reserve: int,
+        sampled: Fingerprint,
     ) -> Optional[sqlite3.Connection]:
         """Try the log-only path, returning ``None`` when it must be given up on.
+
+        *sampled* is the fingerprint taken before the log was read, and the
+        only one the result may be stored under; see :meth:`connect`.
 
         The result is deliberately not put through :func:`open_image`.  Those
         base pages were checked when they were decrypted and every log frame
@@ -622,7 +642,7 @@ class SnapshotCache:
             sqlite3.DatabaseError,
         ):
             return None
-        self._store(database, Fingerprint.of(database), connection, len(image), base)
+        self._store(database, sampled, connection, len(image), base)
         return connection
 
     def _update_log_with_retry(
@@ -637,6 +657,10 @@ class SnapshotCache:
         for attempt in range(_READ_ATTEMPTS):
             try:
                 return update_image_with_wal(base, database, key, page_size, reserve)
+            except LogRestarted:
+                # Waiting cannot put the stranded pages back into a log that
+                # has moved past them, so this goes straight to a full read.
+                raise
             except ConsistencyError as error:
                 last = error
                 if attempt < len(_BACKOFF_SECONDS):

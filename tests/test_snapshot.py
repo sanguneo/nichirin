@@ -18,6 +18,7 @@ from kanao.snapshot import (
     _adaptive_budget,
     _physical_memory,
     ConsistencyError,
+    LogRestarted,
     Fingerprint,
     SnapshotCache,
     build_image,
@@ -240,7 +241,7 @@ class OverlayTests(_Fixture):
             make_wal([(2, 2, self.encrypted(self.pages_b, 2))], salt=(99, 98))
         )
 
-        with self.assertRaises(ConsistencyError):
+        with self.assertRaises(LogRestarted):
             update_image_with_wal(base, self.database, KEY)
 
     def test_refuses_to_reuse_pages_once_a_log_appears_where_there_was_none(self) -> None:
@@ -328,6 +329,110 @@ class CacheTests(_Fixture):
             [row[0] for row in second.execute("SELECT body FROM note ORDER BY id LIMIT 1")],
             ["bravo 1"],
         )
+
+    def first_body(self, connection: sqlite3.Connection) -> str:
+        return connection.execute("SELECT body FROM note ORDER BY id LIMIT 1").fetchone()[0]
+
+    def test_a_commit_during_a_full_read_is_picked_up_by_the_next_call(self) -> None:
+        """The image is filed under the files as they were *before* the read.
+
+        Filed under a fingerprint sampled afterwards, a commit that landed
+        while SQLite was checking the image sat beside an image that does not
+        hold it — and the next call, finding the files unchanged since, handed
+        the older image back for as long as the room stayed quiet.
+        """
+        self.log.write_bytes(make_wal([self.settled()]))
+        real = open_image
+
+        def commit_while_checking(image, label):
+            self.log.write_bytes(
+                make_wal(
+                    [
+                        self.settled(),
+                        (1, 0, self.encrypted(self.pages_b, 1)),
+                        (2, 2, self.encrypted(self.pages_b, 2)),
+                    ]
+                )
+            )
+            return real(image, label)
+
+        with patch("kanao.snapshot.open_image", side_effect=commit_while_checking):
+            first = self.cache.connect(self.database, KEY)
+        self.assertEqual(self.first_body(first), "alpha 1")
+        self.assertEqual(self.first_body(self.cache.connect(self.database, KEY)), "bravo 1")
+
+    def test_a_commit_during_an_overlay_is_picked_up_by_the_next_call(self) -> None:
+        self.log.write_bytes(make_wal([self.settled()]))
+        self.cache.connect(self.database, KEY)
+        to_bravo = [
+            self.settled(),
+            (1, 0, self.encrypted(self.pages_b, 1)),
+            (2, 2, self.encrypted(self.pages_b, 2)),
+        ]
+        self.log.write_bytes(make_wal(to_bravo))
+        back_to_alpha = to_bravo + [
+            (1, 0, self.encrypted(self.pages_a, 1)),
+            (2, 2, self.encrypted(self.pages_a, 2)),
+        ]
+        from kanao import snapshot
+
+        real = snapshot._connect
+
+        def commit_while_opening(image):
+            self.log.write_bytes(make_wal(back_to_alpha))
+            return real(image)
+
+        with patch("kanao.snapshot._connect", side_effect=commit_while_opening):
+            second = self.cache.connect(self.database, KEY)
+        self.assertEqual(self.first_body(second), "bravo 1")
+        self.assertEqual(self.first_body(self.cache.connect(self.database, KEY)), "alpha 1")
+
+    def test_a_restarted_log_goes_straight_to_a_full_read(self) -> None:
+        """Waiting cannot bring back pages a restarted log no longer carries."""
+        self.log.write_bytes(make_wal([self.settled()]))
+        self.cache.connect(self.database, KEY)
+        # The file stood still, so the overlay is tried; the log's salt says
+        # it has been restarted since the pages were decrypted.
+        self.log.write_bytes(
+            make_wal(
+                [
+                    (1, 0, self.encrypted(self.pages_b, 1)),
+                    (2, 2, self.encrypted(self.pages_b, 2)),
+                ],
+                salt=(99, 98),
+            )
+        )
+        naps: list[float] = []
+        overlays = {"count": 0}
+        real = update_image_with_wal
+
+        def counted(*args, **kwargs):
+            overlays["count"] += 1
+            return real(*args, **kwargs)
+
+        with (
+            patch("kanao.snapshot.update_image_with_wal", side_effect=counted),
+            patch("kanao.snapshot.time.sleep", naps.append),
+        ):
+            recovered = self.cache.connect(self.database, KEY)
+        self.assertEqual(overlays["count"], 1)
+        self.assertEqual(naps, [], "a restart is not something to wait out")
+        self.assertEqual(self.first_body(recovered), "bravo 1")
+
+    def test_a_log_that_keeps_moving_is_still_retried_before_the_overlay_gives_up(self) -> None:
+        self.log.write_bytes(make_wal([self.settled()]))
+        self.cache.connect(self.database, KEY)
+        self.log.write_bytes(make_wal([self.settled(), self.settled()]))
+        naps: list[float] = []
+        with (
+            patch(
+                "kanao.snapshot.update_image_with_wal",
+                side_effect=ConsistencyError("still moving"),
+            ),
+            patch("kanao.snapshot.time.sleep", naps.append),
+        ):
+            self.cache.connect(self.database, KEY)
+        self.assertEqual(naps, [0.05, 0.15, 0.4])
 
     def test_an_overlay_sqlite_refuses_falls_back_to_a_full_decryption(self) -> None:
         """A torn overlay costs a decryption, never an error the caller sees."""
