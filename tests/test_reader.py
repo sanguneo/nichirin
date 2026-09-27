@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
+from collections import OrderedDict
 from dataclasses import replace
+from pathlib import Path
 
-from kanao import reader as reader_module
+from kanao import paths, reader as reader_module
 from kanao.errors import ErrorCode, KanaoError
 from kanao.keyring import Keyring
 from kanao.reader import Reader
@@ -610,6 +613,173 @@ class CacheOwnershipTests(unittest.TestCase):
             reader_module.SnapshotCache = original
         reader.close()
         self.assertTrue(built[0].closed)
+
+
+def _new_snapshot(connection: sqlite3.Connection) -> sqlite3.Connection:
+    """A second connection holding the same database, as a re-read would be.
+
+    The real cache hands back a new connection exactly when the file changed,
+    so a swapped-in copy is what "this database moved" looks like to a reader.
+    """
+    copy = sqlite3.connect(":memory:")
+    connection.backup(copy)
+    return copy
+
+
+class IdentityRetryTests(unittest.TestCase):
+    """A failure to look for the account is not proof that there is none."""
+
+    def test_a_failed_first_look_is_asked_again(self) -> None:
+        reader = build_reader()
+        self.addCleanup(reader.close)
+        databases = reader._cache.databases
+        catalog = databases.pop(paths.CATALOG_DATABASE)
+        with self.assertRaises(KanaoError):
+            reader.own_user_id()
+        databases[paths.CATALOG_DATABASE] = catalog
+
+        self.assertEqual(reader.own_user_id(), OWN_ID)
+        by_id = {message.id: message for message in reader.messages(DIRECT_ROOM)}
+        self.assertTrue(by_id[5001].from_me)
+
+    def test_an_answer_is_kept_once_the_catalog_has_given_one(self) -> None:
+        with build_reader() as reader:
+            reader.own_user_id()
+            opened = len(reader._cache.opened)
+            reader.own_user_id()
+            self.assertEqual(len(reader._cache.opened), opened)
+
+
+class NameLifetimeTests(unittest.TestCase):
+    """The name shown is the one the user carries now, not at startup."""
+
+    def rename(self, reader: Reader, user_id: int, name: str) -> None:
+        databases = reader._cache.databases
+        users = _new_snapshot(databases[paths.USER_DATABASE])
+        users.execute(
+            "UPDATE talkUser SET friendNickName = ? WHERE userId = ?", (name, user_id)
+        )
+        users.commit()
+        databases[paths.USER_DATABASE].close()
+        databases[paths.USER_DATABASE] = users
+
+    def senders(self, reader: Reader) -> dict[int, str]:
+        return {message.id: message.sender for message in reader.messages(DIRECT_ROOM)}
+
+    def test_a_known_user_who_renamed_is_shown_under_the_new_name(self) -> None:
+        with build_reader() as reader:
+            self.assertEqual(self.senders(reader)[5000], "Peer Renamed")
+            self.rename(reader, PEER_ID, "Peer Again")
+            self.assertEqual(self.senders(reader)[5000], "Peer Again")
+            self.assertEqual(reader.names()[PEER_ID], "Peer Again")
+
+    def test_an_unchanged_user_database_is_not_read_again(self) -> None:
+        with build_reader() as reader:
+            first = reader.names()
+            reader.messages(DIRECT_ROOM)
+            reader.rooms()
+            self.assertIs(reader.names(), first)
+
+    def test_a_failed_look_keeps_the_names_it_had_and_asks_again(self) -> None:
+        with build_reader() as reader:
+            self.senders(reader)
+            databases = reader._cache.databases
+            users = databases.pop(paths.USER_DATABASE)
+            self.assertEqual(self.senders(reader)[5000], "Peer Renamed")
+            databases[paths.USER_DATABASE] = users
+            self.rename(reader, PEER_ID, "Peer Again")
+            self.assertEqual(self.senders(reader)[5000], "Peer Again")
+
+
+class SchemaLifetimeTests(unittest.TestCase):
+    def test_a_column_the_log_gains_is_read_on_the_next_snapshot(self) -> None:
+        """A room's columns are asked for again once its file has changed."""
+        from tests.fixtures import LOG_SCHEMA, _connect
+
+        old_schema = LOG_SCHEMA.replace(", threadId INTEGER", "")
+        rows = [
+            (5000, PEER_ID, 1, "first", None, 1_700_000_000, 0),
+            (5001, OWN_ID, 1, "answer", None, 1_700_000_100, 0),
+        ]
+        with build_reader() as reader:
+            databases = reader._cache.databases
+            name = paths.chat_log_name(DIRECT_ROOM)
+            databases[name].close()
+            databases[name] = _connect(old_schema, {"chatLogs": rows})
+            self.assertIsNone(reader.messages(DIRECT_ROOM)[-1].reply)
+
+            databases[name].close()
+            databases[name] = _connect(
+                LOG_SCHEMA, {"chatLogs": [row + (5000,) for row in rows[1:]] + rows[:1]}
+            )
+            reply = reader.messages(DIRECT_ROOM)[-1].reply
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply.message_id, 5000)
+
+
+class _EvictingCache:
+    """A cache that holds one snapshot and closes the rest, like a tight budget.
+
+    Each connect of a database that is not already open hands out a fresh
+    copy and closes whatever falls out, exactly as ``SnapshotCache`` closes an
+    evicted entry - so a caller still iterating a closed one fails the way it
+    would in production.
+    """
+
+    def __init__(self, sources: dict[str, sqlite3.Connection], capacity: int = 1) -> None:
+        self.sources = sources
+        self.capacity = capacity
+        self.open: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
+
+    def connect(self, database, key, page_size=4096, reserve=80):
+        name = Path(database).as_posix()
+        source = next(
+            (candidate for candidate in self.sources if name.endswith(candidate)), None
+        )
+        if source is None:
+            raise KanaoError(ErrorCode.KEY_UNAVAILABLE, f"no key for {name}")
+        if source in self.open:
+            self.open.move_to_end(source)
+            return self.open[source]
+        self.open[source] = _new_snapshot(self.sources[source])
+        while len(self.open) > self.capacity:
+            _name, evicted = self.open.popitem(last=False)
+            evicted.close()
+        return self.open[source]
+
+    def close(self) -> None:
+        for connection in self.open.values():
+            connection.close()
+        for connection in self.sources.values():
+            connection.close()
+
+
+class NestedReadTests(unittest.TestCase):
+    """A read that opens another database must not lose the one it is reading."""
+
+    def reader(self) -> Reader:
+        stub, keyring = build_profile()
+        cache = _EvictingCache(stub.databases)
+        reader = Reader(user_directory=PROFILE, cache=cache, keyring=keyring)
+        reader._owns_cache = True
+        self.addCleanup(reader.close)
+        return reader
+
+    def test_rooms_are_all_listed_when_the_cache_holds_one_database(self) -> None:
+        reader = self.reader()
+        rooms = reader.rooms()
+        self.assertEqual(
+            {room.id for room in rooms},
+            {DIRECT_ROOM, GROUP_ROOM, UNREADABLE_ROOM, HUGE_ROOM, SELF_ROOM},
+        )
+        titles = {room.id: room.title for room in rooms}
+        self.assertEqual(titles[DIRECT_ROOM], "Peer Renamed")
+
+    def test_messages_are_all_read_when_the_cache_holds_one_database(self) -> None:
+        reader = self.reader()
+        found = reader.messages(GROUP_ROOM)
+        self.assertEqual([message.id for message in found][:2], [6001, 6002])
+        self.assertTrue(any(message.reply is not None for message in found))
 
 
 if __name__ == "__main__":

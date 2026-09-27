@@ -95,12 +95,20 @@ class Reader:
         self._ledger = ledger
         self._names: Optional[dict[int, str]] = None
         self._names_read_at = 0.0
+        self._names_source: Optional[sqlite3.Connection] = None
+        """The user database snapshot the name map was read from.
+
+        The cache hands back the same connection until that database changes,
+        so a different one is the signal that a rename may have landed.
+        """
         self._feed_names: dict[int, dict[int, str]] = {}
         self._feeds_lack: dict[int, set[int]] = {}
         self._members: Optional[dict[int, list[int]]] = None
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
         self._selections: dict[int, str] = {}
+        self._schema_sources: dict[int, sqlite3.Connection] = {}
+        """Which snapshot of each room's log its schema was read from."""
         self._live_conditions: dict[int, str] = {}
         self._kept_conditions: dict[int, str] = {}
 
@@ -198,8 +206,37 @@ class Reader:
         """Map every known user id to the best available display name.
 
         A name the signed-in user assigned wins over the name the contact
-        chose for themselves, matching what the client shows.
+        chose for themselves, matching what the client shows. The map follows
+        the user database: read again when that database has changed since,
+        and kept otherwise, so the name is the one that user carries now.
         """
+        self._revalidate_names()
+        return self._known_names()
+
+    def _revalidate_names(self) -> None:
+        """Forget the name map if the user database moved since it was read.
+
+        Asked once per read rather than once per message: a check is a
+        fingerprint of the file, and a window is hundreds of messages. A
+        rename writes ``talkUser`` and nothing else, so a map kept for the
+        reader's whole life showed someone who renamed under the name they
+        had when the interface opened.
+
+        A failure to look is not a refresh. The map that was read stays in
+        use and stays marked as read from the older snapshot, so the next
+        read asks again; without any map, the failure is the caller's.
+        """
+        if self._names is None:
+            return
+        try:
+            users = self._users()
+        except KanaoError:
+            return
+        if users is not self._names_source:
+            self._names = None
+
+    def _known_names(self) -> dict[int, str]:
+        """The name map as last read, reading it only when there is none."""
         if self._names is None:
             users = self._users()
             # talkUser holds contacts and never the signed-in account itself,
@@ -221,10 +258,12 @@ class Reader:
                 }
             )
             self._names = found
+            self._names_source = users
             self._names_read_at = time.monotonic()
             if self._ledger is not None:
-                # Once per process: the map is memoised above, and only a name
-                # that differs from its last sighting is appended.
+                # Once per snapshot of the user database: the map is kept
+                # until that changes, and only a name that differs from its
+                # last sighting is appended.
                 self._ledger.observe(found)
         return self._names
 
@@ -261,12 +300,12 @@ class Reader:
         the map read again, at most every :data:`NAME_RETRY_SECONDS`, and
         failing that the name the room's own join feed recorded for them.
         """
-        found = self.names().get(user_id)
+        found = self._known_names().get(user_id)
         if found is not None:
             return found
         if time.monotonic() - self._names_read_at >= NAME_RETRY_SECONDS:
             self._names = None
-            found = self.names().get(user_id)
+            found = self._known_names().get(user_id)
             if found is not None:
                 return found
         feeds = self._feed_names.get(room_id)
@@ -373,7 +412,10 @@ class Reader:
         """Identify the signed-in account, or None when it cannot be proven."""
         if self._own_id_resolved:
             return self._own_id
-        self._own_id_resolved = True
+        # Settled only once the catalog has actually answered. Marking it
+        # first let one BUSY read stand for "there is no account" for the
+        # rest of the reader's life, and fromMe, mentionsMe and repliesToMe
+        # all quietly went false with it.
         catalog = self._catalog()
 
         self_rooms = [
@@ -391,6 +433,7 @@ class Reader:
             ]
             if len(members) == 1:
                 self._own_id = members[0]
+                self._own_id_resolved = True
                 return self._own_id
 
         # Without a self-chat, the account is whoever is in a direct room
@@ -409,7 +452,10 @@ class Reader:
             remainder = members - {int(peer)}
             if len(remainder) == 1:
                 self._own_id = remainder.pop()
+                self._own_id_resolved = True
                 return self._own_id
+        # The catalog answered and nothing in it proves who the account is.
+        self._own_id_resolved = True
         return None
 
     def _title(
@@ -426,7 +472,7 @@ class Reader:
         if room_type == model.SELF_CHAT:
             return _SELF_CHAT_TITLE
         if room_type in (model.DIRECT_CHAT, model.OPEN_DIRECT_CHAT) and peer_id:
-            return self.names().get(int(peer_id), title or f"User {peer_id}")
+            return self._known_names().get(int(peer_id), title or f"User {peer_id}")
         if title:
             return title
 
@@ -439,7 +485,7 @@ class Reader:
             if int(row[0]) != own
         ]
         if members:
-            names = self.names()
+            names = self._known_names()
             shown = [names.get(member, f"User {member}") for member in members[:_GROUP_TITLE_MEMBERS]]
             if len(members) > _GROUP_TITLE_MEMBERS:
                 shown.append(f"외 {len(members) - _GROUP_TITLE_MEMBERS}명")
@@ -459,8 +505,14 @@ class Reader:
             parameters = (limit,)
 
         readable = set(self.keyring.chat_ids())
+        # Every row is fetched before any title is composed. Composing one
+        # can open the user database, and a cache whose budget cannot hold
+        # both evicts the catalog - closing the connection this loop would
+        # still be reading from. Least recently used is not "no longer used".
+        rows = self._catalog().execute(sql, parameters).fetchall()
+        self._revalidate_names()
         found: list[Room] = []
-        for row in self._catalog().execute(sql, parameters):
+        for row in rows:
             room_id, room_type, title, custom, members, unread, last_log, updated, peer = row
             room_id = int(room_id)
             found.append(
@@ -577,11 +629,8 @@ class Reader:
         a client that gains the column mid-session is a client that has been
         reinstalled underneath a reader that is already running.
         """
-        known = self._selections.get(room_id)
-        if known is None:
-            self._read_schema(room_id, connection)
-            known = self._selections[room_id]
-        return known
+        self._schema_for(room_id, connection)
+        return self._selections[room_id]
 
     def _live(self, room_id: int, connection: sqlite3.Connection) -> str:
         """The condition a row must meet to be a message nobody took back.
@@ -589,19 +638,25 @@ class Reader:
         Two columns say a message was deleted, and the newer one is absent
         from an older log, so it is asked for the way ``threadId`` is.
         """
-        known = self._live_conditions.get(room_id)
-        if known is None:
-            self._read_schema(room_id, connection)
-            known = self._live_conditions[room_id]
-        return known
+        self._schema_for(room_id, connection)
+        return self._live_conditions[room_id]
 
     def _kept(self, room_id: int, connection: sqlite3.Connection) -> str:
         """Like :meth:`_live`, but keeping messages deleted for everyone."""
-        known = self._kept_conditions.get(room_id)
-        if known is None:
+        self._schema_for(room_id, connection)
+        return self._kept_conditions[room_id]
+
+    def _schema_for(self, room_id: int, connection: sqlite3.Connection) -> None:
+        """Read a room's columns again whenever its snapshot is a new one.
+
+        The schema is a property of the file, and the cache hands back a new
+        connection exactly when the file changed, so that is the lifetime the
+        answer is kept for. Asking costs one ``PRAGMA``; what it prevents is a
+        column the client added mid-session being named as ``NULL`` forever.
+        """
+        if self._schema_sources.get(room_id) is not connection:
             self._read_schema(room_id, connection)
-            known = self._kept_conditions[room_id]
-        return known
+            self._schema_sources[room_id] = connection
 
     def _read_schema(self, room_id: int, connection: sqlite3.Connection) -> None:
         columns = {column[1] for column in connection.execute("PRAGMA table_info(chatLogs)")}
@@ -667,6 +722,7 @@ class Reader:
         rows = connection.execute(sql, parameters).fetchall()
         if not forwards:
             rows = list(reversed(rows))
+        self._revalidate_names()
         return [self._message(room_id, row) for row in rows]
 
     def feed_details(self, room_id: int, log_ids: Sequence[int]) -> dict[int, str]:
@@ -734,7 +790,7 @@ class Reader:
                 from_me=self.own_user_id() is not None and sender_id == self.own_user_id(),
                 erased=True,
             )
-        known = self.names()
+        known = self._known_names()
         own = self.own_user_id()
         # The attachment is read for what it records about *other* messages —
         # who this one named, and which one it answered. It is never turned
@@ -806,7 +862,7 @@ class Reader:
         return model.Quote(
             message_id=source,
             sender_id=sender_id,
-            sender=self.names().get(sender_id),
+            sender=self._known_names().get(sender_id),
             # A feed's text is the client's own JSON, which is not something
             # anybody said; it is dropped here exactly as it is for a message.
             text="" if kind == model.FEED_MESSAGE or not isinstance(text, str) else text,
@@ -824,6 +880,8 @@ class Reader:
             return
         pattern = f"%{keyword}%"
         remaining = limit
+        # rooms() has just looked at the user database, so the map it left is
+        # the current one for every row below.
         for room in self.rooms():
             if not room.readable or remaining <= 0:
                 continue
