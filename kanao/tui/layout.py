@@ -22,8 +22,53 @@ ELLIPSIS: Final = "…"
 # Both are zero-width, and a measurement that counts them shifts every column
 # after a link by the length of its target.
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;;[^\x1b\x07]*(?:\x1b\\|\x07)")
-_URL: Final = re.compile(r"https?://[^\s<>\"'()\[\]]+")
+# A control character, or the picture :func:`clean` leaves in its place,
+# ends an address: neither belongs in a target handed to the terminal.
+_URL: Final = re.compile(r"https?://[^\s<>\"'()\[\]\x00-\x1f\x7f-\x9f␀-␿]+")
 _WIDE: Final = frozenset({"W", "F"})
+
+_CONTROL_PICTURE_BASE: Final = 0x2400
+"""U+2400 onwards stand for C0 in order, so ESC is shown as U+241B."""
+_DELETE_PICTURE: Final = "␡"
+_REPLACEMENT: Final = "�"
+
+
+def clean(text: str, keep_newlines: bool = False) -> str:
+    """Make text somebody else wrote safe to put on the terminal.
+
+    A message, a nickname or a room title is data, and every escape on the
+    screen has to be one the renderer wrote. Measuring past an escape is not
+    disarming it: ``truncate_to_width`` carries escapes through so colour
+    survives a cut, which is exactly how a message holding ``ESC[2J`` would
+    reach the terminal whole. So control characters are replaced before any
+    styling is applied, with something that can be seen - C0 by its control
+    picture, DEL by its own, C1 by the replacement character - rather than
+    dropped, because a message that quietly lost characters would read as if
+    it had said something else.
+
+    One character in, one character out, so an index into the original is an
+    index into the result. Tab and carriage return become spaces: they are
+    zero columns to the ruler and a jump to the terminal. A newline is kept
+    only where the caller lays out paragraphs itself.
+    """
+    if text.isprintable():
+        return text
+    cleaned: list[str] = []
+    for character in text:
+        code = ord(character)
+        if character == "\n":
+            cleaned.append("\n" if keep_newlines else " ")
+        elif character in "\t\r":
+            cleaned.append(" ")
+        elif code < 0x20:
+            cleaned.append(chr(_CONTROL_PICTURE_BASE + code))
+        elif code == 0x7F:
+            cleaned.append(_DELETE_PICTURE)
+        elif 0x80 <= code <= 0x9F:
+            cleaned.append(_REPLACEMENT)
+        else:
+            cleaned.append(character)
+    return "".join(cleaned)
 
 
 def strip_ansi(text: str) -> str:
@@ -170,7 +215,15 @@ def _chunks(paragraph: str, width: int) -> Iterable[str]:
 
 
 def _hyperlink(url: str, text: str) -> str:
-    """Underlined *text* that a terminal will open *url* for when clicked."""
+    """Underlined *text* that a terminal will open *url* for when clicked.
+
+    The target sits inside an OSC sequence, where one ESC or BEL would end it
+    early and hand the rest to the terminal as instructions. The pattern that
+    finds addresses already refuses them; a target that got here anyway is
+    shown unlinked rather than trusted.
+    """
+    if not url.isprintable():
+        return text
     return f"\x1b]8;;{url}\x1b\\\x1b[4m{text}\x1b[24m\x1b]8;;\x1b\\"
 
 

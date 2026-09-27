@@ -16,6 +16,7 @@ from kanao.tui import theme as theme_module
 from kanao.tui.layout import (
     ELLIPSIS,
     Segment,
+    clean,
     display_width,
     elide_head,
     pad_to_width,
@@ -173,6 +174,51 @@ class LinkTests(unittest.TestCase):
 
     def test_strip_ansi_removes_the_link_escapes(self) -> None:
         self.assertEqual(strip_ansi(wrap_with_links(self.URL, 200)[0]), self.URL)
+
+    def test_a_control_character_ends_an_address(self) -> None:
+        """A target sits inside an OSC sequence, where ESC or BEL would end it."""
+        for tail in ("\x1b]0;title", "\x07", "\x9b2J", "␛[2J"):
+            with self.subTest(tail=ascii(tail)):
+                lines = wrap_with_links(f"{self.URL}{tail}", 200)
+                self.assertEqual(self.targets(lines), [self.URL])
+
+    def test_a_target_that_is_not_printable_is_not_linked(self) -> None:
+        from kanao.tui.layout import _hyperlink
+
+        self.assertEqual(_hyperlink("https://a.example/\x07", "text"), "text")
+
+
+class CleanTests(unittest.TestCase):
+    """Text somebody else wrote reaches the terminal as text, never as a command."""
+
+    def test_printable_text_is_returned_unchanged(self) -> None:
+        text = "안녕하세요 hello ✓ ↳ 😀"
+        self.assertIs(clean(text), text)
+
+    def test_every_control_is_replaced_by_something_visible(self) -> None:
+        hostile = "a\x1b[2Jb\x07c\x7fd\x9be\x00f"
+        cleaned = clean(hostile)
+        self.assertTrue(cleaned.isprintable())
+        self.assertEqual(cleaned, "a␛[2Jb␇c␡d�e␀f")
+
+    def test_one_character_in_is_one_character_out(self) -> None:
+        text = "x\x1b\t\r\ny\x85"
+        self.assertEqual(len(clean(text)), len(text))
+        self.assertEqual(len(clean(text, keep_newlines=True)), len(text))
+
+    def test_newlines_are_kept_only_when_asked_for(self) -> None:
+        self.assertEqual(clean("a\nb"), "a b")
+        self.assertEqual(clean("a\nb", keep_newlines=True), "a\nb")
+
+    def test_tab_and_carriage_return_become_spaces(self) -> None:
+        self.assertEqual(clean("a\tb\rc"), "a b c")
+
+    def test_the_replacements_occupy_the_columns_they_are_measured_at(self) -> None:
+        for text in ("\x1b[2J", "\x07", "\x7f", "\x9b"):
+            with self.subTest(text=ascii(text)):
+                cleaned = clean(text)
+                self.assertEqual(display_width(cleaned), len(cleaned))
+                self.assertEqual(strip_ansi(cleaned), cleaned)
 
 
 class FooterTests(unittest.TestCase):

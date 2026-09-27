@@ -39,6 +39,7 @@ from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
     Segment,
+    clean,
     display_width,
     elide_head,
     pad_to_width,
@@ -679,7 +680,7 @@ class App:
             right_part = f"{meta}  {stamp}"
 
             room_width = max(10, width - 2 - display_width(right_part) - 2)
-            title = truncate_to_width(room.title, room_width, ELLIPSIS)
+            title = truncate_to_width(clean(room.title), room_width, ELLIPSIS)
             styled = self.theme.bold(title) if selected else title
             if not room.readable:
                 # Openable, not readable yet: enter has the client load it.
@@ -737,10 +738,10 @@ class App:
             cursor = self.theme.fg("accent", "› ") if selected else "  "
             star = self.theme.fg("warning", "★ ") if friend.favorite else ""
             chat_mark = "" if friend.direct_chat_id else "  (방 없음)"
-            right_part = (friend.status_message or "").replace("\n", " ")
+            right_part = clean(friend.status_message or "")
 
             name_width = max(8, width // 3)
-            name = truncate_to_width(star + friend.name, name_width, ELLIPSIS)
+            name = truncate_to_width(star + clean(friend.name), name_width, ELLIPSIS)
             styled = self.theme.bold(name) if selected else name
 
             left = cursor + styled + self.theme.fg("dim", chat_mark)
@@ -859,7 +860,7 @@ class App:
 
     def _pane_header(self, chat: ChatState, width: int, focused: bool) -> str:
         """Name one pane, which is only worth a row when there are several."""
-        label = f"{'▌' if focused else ' '}{chat.room.title}"
+        label = f"{'▌' if focused else ' '}{clean(chat.room.title)}"
         if chat.unseen:
             label += f" +{chat.unseen}"
         return self.theme.fg(
@@ -938,8 +939,11 @@ class App:
 
             speaker = "나" if message.from_me else message.sender
             stamp = instant.strftime("%H:%M") if instant else "--:--"
-            name = truncate_to_width(speaker, name_width, ELLIPSIS)
-            detail = self._feed_detail(chat, message)
+            # Everything below that somebody else wrote is cleaned before it
+            # is styled; the tint still follows the name as it was stored.
+            name = truncate_to_width(clean(speaker), name_width, ELLIPSIS)
+            detail = clean(self._feed_detail(chat, message))
+            said = clean(message.text.replace("\r\n", "\n"), keep_newlines=True)
             # A join or a leave is a sentence already, the one the client
             # shows; "feed" in front of it is the storage talking.
             sentence = is_feed_sentence(detail)
@@ -962,15 +966,15 @@ class App:
             bare = message.erased or sentence
             text = (
                 self.theme.fg("dim", label if bare else f"[{label}]")
-                if has_picture or not message.text
-                else message.text
+                if has_picture or not said
+                else said
             )
-            if has_picture or not message.text:
+            if has_picture or not said:
                 wrapped = [text]
             elif self.theme.enabled:
-                wrapped = wrap_with_links(message.text, body_width)
+                wrapped = wrap_with_links(said, body_width)
             else:
-                wrapped = wrap_to_width(message.text, body_width)
+                wrapped = wrap_to_width(said, body_width)
 
             head = (
                 self.theme.fg("dim", stamp)
@@ -1210,8 +1214,8 @@ class App:
         """
         quote = message.reply
         assert quote is not None
-        who = "나" if message.replies_to_me else (quote.sender or f"User {quote.sender_id}")
-        said = " ".join(quote.text.split())
+        who = "나" if message.replies_to_me else clean(quote.sender or f"User {quote.sender_id}")
+        said = " ".join(clean(quote.text).split())
         if not said:
             said = f"[{message_kind(quote.type)}]" if quote.type is not None else "[원문 없음]"
         return self.theme.fg("dim", truncate_to_width(f"{who}: {said}", body_width, ELLIPSIS))
@@ -1245,7 +1249,7 @@ class App:
 
         rows.append(boxed(""))
         label = self.theme.fg("customMessageLabel", self.theme.bold("[digest]"))
-        rows.append(boxed(label + self.theme.fg("muted", f" {chat.slice_label}")))
+        rows.append(boxed(label + self.theme.fg("muted", f" {clean(chat.slice_label)}")))
         rows.append(boxed(""))
 
         for piece in chat.slices:
@@ -1260,19 +1264,19 @@ class App:
             )
 
             speakers = ", ".join(
-                f"{name} {count}" for name, count in piece.speakers[:4]
+                f"{clean(name)} {count}" for name, count in piece.speakers[:4]
             )
             if speakers:
                 rows.append(boxed(self.theme.fg("muted", "  who   ") + speakers))
-            keywords = ", ".join(word for word, _count in piece.keywords[:6])
+            keywords = ", ".join(clean(word) for word, _count in piece.keywords[:6])
             if keywords:
                 rows.append(boxed(self.theme.fg("muted", "  about ") + keywords))
 
             for highlight in piece.highlights():
                 speaker = "나" if highlight.from_me else highlight.sender
-                text = (highlight.text or "").replace("\n", " ")
+                text = clean(highlight.text or "")
                 for index, piece_line in enumerate(
-                    wrap_to_width(f"{speaker}: {text}", inner - 8)
+                    wrap_to_width(f"{clean(speaker)}: {text}", inner - 8)
                 ):
                     prefix = "  ┃ " if index == 0 else "    "
                     rows.append(
@@ -1333,7 +1337,9 @@ class App:
             arrivals = self.theme.fg("accent", f"↓ 새 메시지 {chat.unseen}개")
             hint = self.theme.fg("muted", "  (end 키로 맨 아래)")
             return truncate_to_width(arrivals + hint, width)
-        message = (chat.notice if chat else "") or self.status
+        # A notice quotes titles, names and error text, all of it somebody
+        # else's, so it is cleaned like any line of the conversation.
+        message = clean((chat.notice if chat else "") or self.status)
         return truncate_to_width(self.theme.fg("muted", message), width) if message else ""
 
     def _footer_rooms(self, width: int) -> str:
@@ -1353,7 +1359,8 @@ class App:
         room = chat.room
         loaded = f"{len(chat.messages)} loaded"
         people = f"{room.kind} · {room.member_count}명"
-        anchor = [Segment(room.title, self.theme.fg("accent", room.title))]
+        title = clean(room.title)
+        anchor = [Segment(title, self.theme.fg("accent", title))]
         middle = [
             Segment(people, self.theme.fg("muted", people)),
             Segment(loaded, self.theme.fg("muted", loaded)),
