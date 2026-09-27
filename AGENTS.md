@@ -184,7 +184,17 @@ Every command pays discovery before it answers, and both halves were slow:
   moved mid-read, a page the log grew the database to but never wrote, or an
   image SQLite will not read `sqlite_master` from all fall back to a full
   decryption rather than surfacing an error, because the caller asked a
-  question the data can still answer.
+  question the data can still answer. A new generation raises `LogRestarted`
+  and is **not retried**: backing off (0.60 s in all) cannot put stranded
+  pages back, so it goes straight to the full read. Only a log still moving
+  is retried.
+- **An image is filed under the fingerprint taken before it was read.**
+  `connect` used to sample again afterwards, so a commit that landed while the
+  image was being checked sat beside an image that did not hold it, and the
+  next call handed the older image back for as long as the room stayed quiet.
+  Both paths now store the first sample; a commit that did make it into the
+  read costs one extra read. That is all it claims: equal stats still say
+  nothing about equal bytes.
 - **`ReadDirectoryChangesW` does not work here**, and neither does C#'s
   `FileSystemWatcher` which wraps it: zero events across 30 seconds of live
   observation, because NTFS defers directory-entry updates while SQLite holds
@@ -217,7 +227,16 @@ Taken from a live client, not guessed.
   *ascending* when `after_id` is given without `before_id`, and
   `Watcher._catch_up` pages until a short page arrives. This is not a
   theoretical burst: the client backfills from the server after a
-  reconnection, writing far more than the 500-row page in one go.
+  reconnection, writing far more than the 500-row page in one go. It pages
+  only **up to the newest id it started with**: each page is read from
+  whatever snapshot the cache holds by then, so a room written faster than it
+  is paged would keep every page full forever. What lies past the ceiling is
+  the next poll's. That bounds pages, not rows held.
+- **A room's messages leave a poll in log-id order, whatever their clocks
+  say.** Sorting a poll by `(sentAt, id)` put a room's 11 before its 10
+  whenever 11 carried the earlier time, and the stream published 10 as that
+  room's cursor. Rooms are merged by time comparing only each room's next
+  message, and the stream's cursor is compared as a number and only advances.
 - **A failed read must not update the follow fingerprint.** `Watcher.poll`
   decides whether to open a room by stat'ing its log, so recording the
   fingerprint before the read lets a failure stand in for a success: the next
@@ -249,13 +268,25 @@ Taken from a live client, not guessed.
   exactly: 60 rows each way, none of 12,033 others. `Reader._live` adds the
   flag to every "not deleted" condition, asking the schema for it the way
   `threadId` is asked for.
-- **A newcomer is looked for again, not left as a number.** `names()` is read
-  once per reader and the interface keeps one reader for its whole life, so
-  somebody who joined an open chat after the room was opened showed as
-  `User <id>` until the room was reopened. `Reader._sender_name` re-reads the
-  map for an unknown id at most every `NAME_RETRY_SECONDS`, then falls back to
-  the nickname the room's join feed recorded, reading the feeds once per
-  stranger rather than once per line.
+- **A newcomer is looked for again, not left as a number.** The interface
+  keeps one reader for its whole life, so somebody who joined an open chat
+  after the room was opened showed as `User <id>` until the room was
+  reopened. `Reader._sender_name` re-reads the map for an unknown id at most
+  every `NAME_RETRY_SECONDS`, then falls back to the nickname the room's join
+  feed recorded, reading the feeds once per stranger rather than once per line.
+- **The name map follows the user database, and the columns follow the log.**
+  A map read once per reader kept a known user's old name after they renamed.
+  `names()` is now checked once per read against the user database snapshot
+  it was read from — the cache hands back a new connection exactly when that
+  file changed — and a failure to check keeps the old map without marking it
+  refreshed. A room's columns are re-asked the same way per log snapshot.
+  Memberships keep their explicit refresh, because a send must not read the
+  catalog. `own_user_id` is settled only once the catalog has answered: one
+  `BUSY` used to stand for "no account" for the reader's whole life.
+- **Fetch before composing.** `rooms()` iterated the catalog cursor while
+  titles were composed, and composing one can open the user database; a cache
+  too small for both evicted the catalog under the loop. Least recently used
+  is not the same as no longer used.
 - **The interface shows where a deleted message was; the commands do not.**
   `Reader.messages(include_erased=True)` keeps a deleted row with its text
   withheld and `Message.erased` set, and only the interface's reads and its
@@ -508,6 +539,15 @@ on a live client, newest 4,000 rows of each readable room.
 - **Never measure text with `len()`.** Hangul is double-width and every line
   carries escape sequences; `layout.display_width` is the only correct ruler,
   and a mistake here silently shifts every column rather than raising.
+- **Somebody else's text is cleaned before it is styled.** Measuring past an
+  escape is not disarming it: `truncate_to_width` carries escapes through on
+  purpose, so a message or nickname holding `ESC[2J` reached the terminal
+  whole. `layout.clean` replaces C0 with its control picture, DEL with its own
+  and C1 with U+FFFD, one character for one, at every site that draws
+  messages, names, titles, quotes, digests or notices. Stripping a finished
+  frame instead would take the renderer's own colour and links with it. A URL
+  ends at a control or its picture, and a target that is not printable is
+  not linked. JSON is untouched; this is display policy.
 - The console must be switched to code page 65001 before drawing or Hangul is
   replaced, and virtual terminal processing must be enabled or escapes print
   literally. Both are restored on exit along with the alternate screen.
@@ -598,25 +638,29 @@ on a live client, newest 4,000 rows of each readable room.
 - The composer keeps focus for the whole time a room is open, so no letter is
   a shortcut there; `/older`, `/export` and `/quit` carry what `o`, `e` and `q`
   used to do. `test_tui_send.py` pins that a typed `q` does not quit.
-- **Several conversations can be open, and only one has the keyboard.**
-  `App.chats` is the list and `App.chat` is a property over it, which is why
-  everything acting on "the" conversation still says `self.chat` and never had
-  to learn about panes. A pane needs `MIN_PANE_COLUMNS` (44) to read as a
-  conversation at all — Hangul is two columns a character — so the window
-  decides how many are drawn: two from 89 columns, three from 134. A room that
-  stops fitting is **hidden, not closed**, because the reader opened it and a
-  window getting smaller is not a decision to let one go; the header row then
-  appears even over a single pane, or nothing on screen would say there is
-  another room to `tab` to. `esc` closes the focused pane, not the screen.
-- **Each pane keeps its own watcher, unlike the macOS build.** There one
+- **Several conversations can be open as tabs, and the one in front has the
+  whole width.** `App.chats` is the list and `App.chat` is a property over it,
+  which is why everything acting on "the" conversation still says `self.chat`.
+  Side-by-side panes gave each conversation half the screen from 89 columns,
+  and half a width is where Hangul sentences break into fragments, so from
+  `kamado-cli#43` the conversation in front is drawn across the screen and a
+  strip of tabs (`layout.plan_tabs`) sits above it once more than one is
+  open. The tab in front carries `FOCUS_MARK` as well as the highlight,
+  because a plain terminal has no highlight; the others carry `+N` for what
+  arrived behind them, and tabs that do not fit are counted at their edge.
+  `tab` and `shift+tab` walk the ring — the console reports Shift+Tab as the
+  `VK_TAB` record with `SHIFT_PRESSED`, decoded as `Key.BACKTAB` — and `esc`
+  closes the tab in front, not the screen. Only the tab in front places
+  pictures, so switching withdraws one and gives the frame up.
+- **Each tab keeps its own watcher, unlike the macOS build.** There one
   fingerprint covers the whole account, so sharing a watcher is what stops
-  panes multiplying the most expensive thing that build does. Here a room *is*
-  its own database and a poll is one stat of its log, so panes cost exactly
-  what they read — and an off-screen pane is still followed, or its unseen
-  count would start from whenever the window happened to get wider.
+  tabs multiplying the most expensive thing that build does. Here a room *is*
+  its own database and a poll is one stat of its log, so tabs cost exactly
+  what they read — and a tab behind is still followed, or its count of
+  arrivals would start from whenever it was brought forward.
 - **A message belongs to the room it arrived in.** `_confirm_delivery` takes
   the conversation as an argument rather than reading the focused one, or a
-  tick would land in whichever pane the keyboard was in when the client wrote
+  tick would land in whichever tab the keyboard was in when the client wrote
   the message back.
 - **Console input comes from `ReadConsoleInputW`, never `msvcrt`.**
   `kbhit()` is true for key-up, focus, mouse and buffer-resize records while
@@ -629,10 +673,20 @@ on a live client, newest 4,000 rows of each readable room.
   and neither the body nor the screen height is known when the key is handled.
   A digest opens at its own first line; a conversation opens at its newest.
 - **Typing must not redraw the conversation.** `_transcript_lines` is cached
-  per (width, message count). Rebuilding it on every keystroke measured 71 ms
-  per key at the default 400-message window and 142 ms at 800, which is what
-  made input stutter; cached, a keystroke costs 0.17 ms. Anything that changes
-  a loaded message must change that key or the screen will lie.
+  per (width, message count, `ChatState.revision`, open photos). Rebuilding it
+  on every keystroke measured 71 ms per key at the default 400-message window
+  and 142 ms at 800, which is what made input stutter; cached, a keystroke
+  costs 0.17 ms. Anything that changes a loaded message must change that key
+  or the screen will lie — which is what the revision is for.
+- **A message on screen can change without a new one arriving.** Deleted for
+  everyone, it keeps its id and has its text replaced, and the watcher asks
+  only for ids above the newest — so the text stayed on screen, in the digest
+  and in the export. `Watcher.moved` names rooms whose log moved; for those
+  the interface compares the held rows' versions (`Reader.row_versions`, one
+  primary-key range read, no names or quotes) and rebuilds only a row whose
+  version changed (`Reader.messages_at`). A version and the message built from
+  it always come from the same read. A digest is cut again without the
+  deleted line, and erased messages are not counted in a digest at all.
 - **A reply is stacked the way the client stacks it, and neither mark costs a
   column.** The replier is named once, on the row that carries the quotation:
   time, name, then the one line they were answering, cut because the message
@@ -947,7 +1001,7 @@ on a live client, newest 4,000 rows of each readable room.
   itself, and `patch` refuses an attribute that is not there. It does **not**
   model POSIX path comparison, which is the other half of what differs and is
   why the profile walk folds case itself. On Windows nothing is skipped:
-  the suite is 767 tests with a skip count of zero, and that is the check that
+  the suite is 998 tests with a skip count of zero, and that is the check that
   a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not
@@ -959,6 +1013,15 @@ noticed again.
 
 Taken:
 
+- **Tabs instead of side-by-side panes** (`kamado-cli#43`), from kamado-cli
+  `5a99d28` onto this repository's `ee2d19a`. The strip planner's algorithm
+  crossed unchanged; the rendering, the Shift+Tab decoding (a Win32 record
+  here, CBT there) and the photo placement were fitted to this build, and the
+  focused tab carries a mark as well as a highlight. Not taken: the shared
+  watcher (see above) and tab clicks, which would need mouse reporting and
+  take the console's own text selection away.
+- **`LogRestarted`**, the macOS build's non-retried log restart, for the same
+  reason it exists there.
 - **Row-level repainting** (`kamado-cli#23`). Reviewed, merged there, ported
   here with the Windows frame's own per-row `CLEAR_LINE` and trailing
   `CLEAR_BELOW`, and re-measured on this side.
