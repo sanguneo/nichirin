@@ -93,6 +93,36 @@ class CandidateTests(unittest.TestCase):
             path.write_bytes(plistlib.dumps([OWN_ID]))
             self.assertEqual(derive.read_preferences(path), {})
 
+    def test_a_refused_preferences_file_is_not_read_as_empty(self) -> None:
+        """No account and no permission are different answers."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.plist"
+            path.write_bytes(plistlib.dumps({"userId": OWN_ID}))
+            with patch.object(Path, "open", side_effect=PermissionError("synthetic denial")):
+                with self.assertRaises(PermissionError):
+                    derive.read_preferences(path)
+                with patch.object(paths, "preference_paths", return_value=[path]):
+                    with self.assertRaises(KamadoError) as raised:
+                        keyring._candidate_ids({"HOME": directory})
+            self.assertEqual(raised.exception.code, ErrorCode.PERMISSION_REQUIRED)
+
+    def test_reading_a_preferences_file_is_guarded_by_the_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.plist"
+            path.write_bytes(plistlib.dumps({"userId": OWN_ID}))
+            guarded = []
+            real = paths.guarded
+
+            def recording(operation, what):
+                guarded.append(what)
+                return real(operation, what)
+
+            with patch.object(paths, "preference_paths", return_value=[path]), patch.object(
+                paths, "guarded", side_effect=recording
+            ):
+                self.assertEqual(keyring._candidate_ids({"HOME": directory}), [OWN_ID])
+            self.assertEqual(guarded, ["preferences file"])
+
 
 class MachineAndMemoizationTests(unittest.TestCase):
     def test_hardware_uuid_is_parsed_from_the_injected_runner(self) -> None:

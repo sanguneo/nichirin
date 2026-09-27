@@ -50,11 +50,21 @@ class Account:
         return str(self.user_id)
 
 
+def _preferences(path: Path) -> dict:
+    """Read one preferences file under the same deadline as listing its directory.
+
+    Listing the container was guarded and opening what it listed was not, so
+    a read that the permission check holds in the kernel would have hung
+    discovery with no error at all.
+    """
+    return paths.guarded(lambda: derive.read_preferences(path), "preferences file")
+
+
 def _candidate_ids(environment=None) -> list[int]:
     """Every account id the preferences suggest, best first, without repeats."""
     found: list[int] = []
     for path in paths.preference_paths(environment):
-        for identifier in derive.candidate_user_ids(derive.read_preferences(path)):
+        for identifier in derive.candidate_user_ids(_preferences(path)):
             if identifier not in found:
                 found.append(identifier)
     return found
@@ -134,7 +144,7 @@ class Keyring:
             # below so it does not run twice.
             hashes: set[str] = set()
             for path in paths.preference_paths(environment):
-                hashes |= derive.account_hashes(derive.read_preferences(path))
+                hashes |= derive.account_hashes(_preferences(path))
             recovered = [i for i in derive.recover_user_ids(hashes) if i not in cheap]
             account = cls._resolve(recovered, databases, by_stem, uuid)
 

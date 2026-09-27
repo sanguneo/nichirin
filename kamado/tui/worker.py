@@ -34,10 +34,13 @@ synchronously by a test while production runs it over a thread.
 from __future__ import annotations
 
 import queue
+import sqlite3
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
+from ..errors import KamadoError
+from ..model import Message
 from ..reader import Reader
 from ..watch import Watcher
 
@@ -99,6 +102,59 @@ class Job:
         read on the strength of the read its predecessor asked for.
         """
         return (self.kind, self.room_id, self.token, self.about)
+
+
+@dataclass(frozen=True)
+class Changed:
+    """What became of messages a tab already holds, once the database moved.
+
+    Deleted for everyone, a message keeps its id and has its text replaced,
+    and a watcher asks only for ids above the newest it has seen - so without
+    this the words stayed on screen until the room was opened again.
+    """
+
+    removed: frozenset
+    """Held ids no longer returned at all."""
+    rebuilt: tuple
+    """Held messages read again because their row changed, or was not known."""
+    versions: tuple
+    """``(id, version)`` for each rebuilt message, from the row it was built from."""
+
+
+class Polled(list):
+    """What one poll found: the arrivals, as a list, and what changed in place.
+
+    A list so every caller that only wanted the arrivals still gets exactly
+    that; *changed* is keyed by room and names only rooms that did change.
+    """
+
+    def __init__(self, arrived: Sequence[Message] = ()) -> None:
+        super().__init__(arrived)
+        self.changed: dict[int, Changed] = {}
+
+
+_ROW_FAILURES = (KamadoError, OSError, sqlite3.Error)
+
+
+def _changes(reader: Reader, room_id: int, held: dict) -> Optional[Changed]:
+    """Compare the rows a tab holds with what the database holds now.
+
+    One range read of versions, and only a row whose version differs - or
+    was never known - is read again. The version and the message built from
+    it come from the same read, so a change landing in between is caught by
+    the next poll rather than filed as seen.
+    """
+    if not held:
+        return None
+    current = reader.row_versions(room_id, min(held), max(held), include_erased=True)
+    removed = {one for one in held if one not in current}
+    stale = [one for one, version in held.items() if one in current and version != current[one]]
+    rebuilt, versions = reader.messages_at(room_id, stale, include_erased=True)
+    # Gone between the two reads: as removed as a row the first read missed.
+    removed |= set(stale) - {message.id for message in rebuilt}
+    if not removed and not rebuilt:
+        return None
+    return Changed(frozenset(removed), tuple(rebuilt), tuple(versions.items()))
 
 
 @dataclass
@@ -202,7 +258,7 @@ class DatabaseOwner:
         if job.kind == OPEN:
             return self._open(reader, job)
         if job.kind == POLL:
-            return [] if self.watcher is None else self.watcher.poll()
+            return self._poll(reader, job)
         if job.kind == OLDER:
             before_id, limit = job.payload
             assert job.room_id is not None
@@ -248,6 +304,30 @@ class DatabaseOwner:
                 self.watcher.unwatch(room.id)
             raise
         return messages, stored
+
+    def _poll(self, reader: Reader, job: Job) -> Polled:
+        """Report arrivals, and what changed among the rows each tab holds.
+
+        *job.payload* is ``(room_id, ((log_id, version or None), ...))`` per
+        tab, copied when the poll was asked for. Only a room the watcher read
+        because the database moved is compared, so an idle poll still costs
+        one stat. A room whose comparison fails keeps its arrivals and is
+        compared again on the next move.
+        """
+        if self.watcher is None:
+            return Polled()
+        found = Polled(self.watcher.poll())
+        moved = set(self.watcher.moved)
+        for room_id, held in job.payload:
+            if room_id not in moved:
+                continue
+            try:
+                change = _changes(reader, room_id, dict(held))
+            except _ROW_FAILURES:
+                continue
+            if change is not None:
+                found.changed[room_id] = change
+        return found
 
     def _follow(self, reader: Reader, room_id: int) -> None:
         """Add a room to the one watcher, building it on the first tab."""

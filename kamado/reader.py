@@ -40,7 +40,7 @@ from .errors import ErrorCode, KamadoError
 from .keyring import Account, Keyring
 from .model import Friend, Message, Room
 from .names import NameLedger, NameRecord
-from .snapshot import SnapshotCache, SnapshotSource
+from .snapshot import Fingerprint, SnapshotCache, SnapshotSource
 
 _SELF_CHAT_TITLE = "나와의 채팅"
 _GROUP_TITLE_MEMBERS = 3
@@ -48,6 +48,18 @@ _GROUP_TITLE_MEMBERS = 3
 ROOM_TABLE = "NTChatRoom"
 MESSAGE_TABLE = "NTChatMessage"
 NAME_RETRY_SECONDS = 5.0
+
+_IN_CHUNK = 500
+"""How many ids one ``IN`` list carries, well inside SQLite's variable limit."""
+
+
+def _version(row: Sequence[Any]) -> int:
+    """A digest of the columns one message is built from.
+
+    Only compared with another taken in the same process, so Python's own
+    hash is enough; it is not a checksum and is never stored.
+    """
+    return hash(tuple(row))
 """How long an unknown sender waits before the name map is read again."""
 USER_TABLE = "NTUser"
 LINK_TABLE = "NTOpenLink"
@@ -155,6 +167,12 @@ class Reader:
         self._own_id: Optional[int] = None
         self._own_id_resolved = False
         self._columns: dict[str, set[str]] = {}
+        # The snapshot the name map and the column sets were read from. The
+        # cache hands back the same connection until the database changes, so
+        # a different one is the signal that a rename or a schema change may
+        # have landed; both are then asked again, once per snapshot rather
+        # than once per message.
+        self._snapshot: Optional[sqlite3.Connection] = None
 
     @property
     def keyring(self) -> Keyring:
@@ -189,14 +207,21 @@ class Reader:
             return self._connection
         account = self.account
         try:
-            return self._cache.connect(account.database, account.geometry)
+            connection = self._cache.connect(account.database, account.geometry)
         except sqlite3.DatabaseError:
             # If a malformed snapshot was encountered mid-write, invalidate and retry once cleanly.
             self._cache.invalidate(account.database)
-            return self._cache.connect(account.database, account.geometry)
+            connection = self._cache.connect(account.database, account.geometry)
+        if connection is not self._snapshot:
+            # Only a snapshot that opened replaces the old one: a failed
+            # connect raised above and left the previous map in place.
+            self._snapshot = connection
+            self._columns = {}
+            self._names = None
+        return connection
 
     def columns(self, table: str) -> set[str]:
-        """Return the columns a table has, asked once per table per process."""
+        """Return the columns a table has, asked once per table per snapshot."""
         known = self._columns.get(table)
         if known is None:
             known = {
@@ -246,7 +271,10 @@ class Reader:
                 "detail": detail,
             }
 
-        cached_rooms = self._cached_status_rooms(ring.account.database)
+        # Sampled before counting: a count is filed under the state it was
+        # counted from, never under one that arrived while it was counted.
+        sample = self._status_key(ring.account)
+        cached_rooms = self._cached_status_rooms(sample)
         if cached_rooms is not None:
             return {
                 "ready": True,
@@ -258,7 +286,7 @@ class Reader:
 
         try:
             rooms = self.count_rooms()
-            self._save_status_rooms(ring.account.database, rooms)
+            self._save_status_rooms(sample, rooms)
         except KamadoError as error:
             return {
                 "ready": False,
@@ -278,32 +306,45 @@ class Reader:
     def _status_cache_file(self) -> Path:
         return paths.state_directory() / "status.json"
 
-    def _cached_status_rooms(self, database: Path) -> Optional[int]:
+    @staticmethod
+    def _status_key(account: Account) -> dict[str, object]:
+        """What a cached room count is valid for: this account, this file, this state.
+
+        The log is part of the state. A room added or removed while the
+        client runs lands in the write-ahead log and leaves the database
+        file's stat alone, so a key on the file alone kept answering the old
+        count; and a second account's database with an equal stat would have
+        been handed the first one's.
+        """
+        database = account.database
+        sample = Fingerprint.of(database)
+        return {
+            "account": str(account.user_id),
+            "database": str(database),
+            "fingerprint": [*sample.database, *sample.log],
+        }
+
+    def _cached_status_rooms(self, key: dict[str, object]) -> Optional[int]:
         path = self._status_cache_file()
         try:
             stored = json.loads(path.read_text("utf-8"))
             if not isinstance(stored, dict):
                 return None
-            fp = stored.get("fingerprint")
-            current = (
-                database.stat().st_mtime_ns,
-                database.stat().st_size,
-            )
-            if fp == list(current) or fp == tuple(current):
-                return int(stored["rooms"])
-        except (OSError, ValueError, KeyError):
+            if any(stored.get(name) != value for name, value in key.items()):
+                return None
+            rooms = stored.get("rooms")
+            # A file that says something else is a miss, not an answer.
+            if not isinstance(rooms, int) or isinstance(rooms, bool) or rooms < 0:
+                return None
+            return rooms
+        except (OSError, ValueError):
             return None
-        return None
 
-    def _save_status_rooms(self, database: Path, rooms: int) -> None:
+    def _save_status_rooms(self, key: dict[str, object], rooms: int) -> None:
         path = self._status_cache_file()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            current = (database.stat().st_mtime_ns, database.stat().st_size)
-            path.write_text(
-                json.dumps({"fingerprint": current, "rooms": rooms}),
-                encoding="utf-8",
-            )
+            path.write_text(json.dumps({**key, "rooms": rooms}), encoding="utf-8")
         except OSError:
             pass
 
@@ -322,7 +363,12 @@ class Reader:
         """Map every known user id to the best available display name.
 
         A name the signed-in user assigned wins over the name the contact chose
-        for themselves, matching what the client shows.
+        for themselves, matching what the client shows. The map follows the
+        snapshot it was read from, so somebody who renamed is shown under the
+        name they carry now rather than the one they had when the reader
+        opened. :meth:`connection` forgets it when the snapshot moves, and
+        every read asks for its connection before it names anybody, so a
+        check here would only repeat that stat once per message.
         """
         if self._names is not None:
             return self._names
@@ -350,8 +396,8 @@ class Reader:
         self._names = found
         self._names_read_at = time.monotonic()
         if self._ledger is not None:
-            # Once per process: the map is memoised above, and only a name that
-            # differs from its last sighting is appended.
+            # Once per snapshot: the map is kept until the database changes,
+            # and only a name that differs from its last sighting is appended.
             self._ledger.observe(found)
         return found
 
@@ -364,20 +410,24 @@ class Reader:
         """
         if self._own_id_resolved:
             return self._own_id
-        self._own_id_resolved = True
-
+        # Settled only once the database has actually answered. Marking it
+        # first let one failed read stand for "there is no account" for the
+        # rest of the reader's life, and fromMe, mentionsMe and repliesToMe
+        # all quietly went false with it.
         if "userId" in self.columns(CONTEXT_TABLE):
             row = self.connection().execute(
                 f"SELECT userId FROM {CONTEXT_TABLE} WHERE userId IS NOT NULL LIMIT 1"
             ).fetchone()
             if row is not None and row[0]:
                 self._own_id = int(row[0])
+                self._own_id_resolved = True
                 return self._own_id
 
         # Failing that, the account that derived this database's filename is
         # the account signed into it.
         if self._keyring is not None and self._keyring.account is not None:
             self._own_id = self._keyring.account.user_id
+        self._own_id_resolved = True
         return self._own_id
 
     def friends(self, favorites_only: bool = False) -> list[Friend]:
@@ -720,19 +770,76 @@ class Reader:
         ).fetchone()
         return int(row[0])
 
-    def newest_log_id(self, room_id: int) -> Optional[int]:
+    def newest_log_id(self, room_id: int, include_erased: bool = False) -> Optional[int]:
         """Return the newest locally stored message id, without reading bodies.
 
         Deleted rows are excluded, as they are everywhere else: this id is
         where following resumes, and one that names a withdrawn message names
-        a position no query will ever return a message at.
+        a position no query will ever return a message at. *include_erased*
+        answers for the rows :meth:`messages` returns when asked for the same.
         """
-        _selected, deleted = self._message_query()
+        _selected, deleted = self._message_query(include_erased)
         row = self.connection().execute(
             f"SELECT MAX(logId) FROM {MESSAGE_TABLE} WHERE chatId = ? AND {deleted}",
             (room_id,),
         ).fetchone()
         return None if row is None or row[0] is None else int(row[0])
+
+    def row_versions(
+        self, room_id: int, low: int, high: int, include_erased: bool = False
+    ) -> dict[int, int]:
+        """Say what each row between two ids currently holds, without reading it.
+
+        A message already on screen can change without a new one arriving:
+        deleted for everyone, it keeps its id and has its type and text
+        rewritten, and a follower that only asks for higher ids never looks at
+        it again. The version is a digest of the columns a message is built
+        from, so a row that changed has a different one; a row no longer
+        returned at all - deleted, or a feed that is never shown - is absent.
+
+        One range read and no names, quotes or JSON, which is what makes
+        asking after every move of the database affordable.
+        """
+        selected, deleted = self._message_query(include_erased)
+        rows = self.connection().execute(
+            f"SELECT {selected} FROM {MESSAGE_TABLE} "
+            f"WHERE chatId = ? AND {deleted} AND logId BETWEEN ? AND ?",
+            (room_id, low, high),
+        ).fetchall()
+        return {int(row[0]): _version(row) for row in rows}
+
+    def messages_at(
+        self,
+        room_id: int,
+        log_ids: Sequence[int],
+        include_erased: bool = False,
+    ) -> tuple[list[Message], dict[int, int]]:
+        """Read these messages again, oldest first, leaving out any now gone.
+
+        The counterpart of :meth:`row_versions`: once a caller knows which of
+        its rows changed, only those are rebuilt. Each message comes back with
+        the version of the very row it was built from, so a change landing
+        between two reads is caught by the next comparison rather than filed
+        as already seen.
+        """
+        if not log_ids:
+            return [], {}
+        selected, deleted = self._message_query(include_erased)
+        wanted = sorted(set(log_ids))
+        rows: list[Any] = []
+        connection = self.connection()
+        for start in range(0, len(wanted), _IN_CHUNK):
+            chunk = wanted[start : start + _IN_CHUNK]
+            places = ",".join("?" for _ in chunk)
+            rows.extend(
+                connection.execute(
+                    f"SELECT {selected} FROM {MESSAGE_TABLE} WHERE chatId = ? AND {deleted} "
+                    f"AND logId IN ({places}) ORDER BY logId",
+                    [room_id, *chunk],
+                ).fetchall()
+            )
+        versions = {int(row[0]): _version(row) for row in rows}
+        return [self._message(room_id, row) for row in rows], versions
 
     def _sender_name(self, room_id: int, user_id: int) -> str:
         """Name *user_id*, looking again before settling for a number.

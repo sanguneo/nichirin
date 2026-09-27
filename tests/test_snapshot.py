@@ -482,11 +482,144 @@ class AdaptiveBudgetTests(_Fixture):
             self.addCleanup(SnapshotCache(budget_bytes=1).close)
 
 
+class ClonePairTests(_Fixture):
+    """Two clones are not one: the database and its log must be the same state.
+
+    Each file is frozen at its own instant, so a checkpoint that restarts the
+    log between the two clones pairs a database from before it with a log
+    from after it. That is what these inject, at exactly that point.
+    """
+
+    def settled(self) -> tuple[int, int, bytes]:
+        return (2, 2, self.encrypted(self.pages_a, 2))
+
+    def between_the_clones(self, action):
+        """Run *action* right after the database is cloned, before its log is."""
+        real = subprocess.run
+        calls = {"count": 0}
+
+        def run(command, *arguments, **keywords):
+            answer = real(command, *arguments, **keywords)
+            calls["count"] += 1
+            if calls["count"] == 1:
+                action()
+            return answer
+
+        return patch("kamado.snapshot.subprocess.run", side_effect=run)
+
+    def test_a_log_restarted_between_the_clones_is_refused(self) -> None:
+        self.log.write_bytes(make_wal([self.settled()]))
+        restart = lambda: self.log.write_bytes(
+            make_wal([(2, 2, self.encrypted(self.pages_b, 2))], salt=(99, 98))
+        )
+        with self.between_the_clones(restart), self.assertRaises(ConsistencyError):
+            snapshot.clone_snapshot(self.database, self.root / "staging")
+
+    def test_a_log_that_appeared_between_the_clones_is_refused(self) -> None:
+        appear = lambda: self.log.write_bytes(make_wal([self.settled()]))
+        with self.between_the_clones(appear), self.assertRaises(ConsistencyError):
+            snapshot.clone_snapshot(self.database, self.root / "staging")
+
+    def test_a_log_that_only_grew_between_the_clones_is_accepted(self) -> None:
+        """A checkpoint that does not restart copies frames the log still holds."""
+        self.log.write_bytes(make_wal([self.settled()]))
+        grow = lambda: self.log.write_bytes(
+            make_wal([self.settled(), (1, 2, self.encrypted(self.pages_a, 1))])
+        )
+        with self.between_the_clones(grow):
+            frozen = snapshot.clone_snapshot(self.database, self.root / "staging")
+        self.assertEqual(
+            frozen.with_name(frozen.name + "-wal").read_bytes(), self.log.read_bytes()
+        )
+
+    def test_a_plain_copy_that_moved_under_it_is_refused(self) -> None:
+        """Off APFS the copy is not frozen at any instant, so it is checked."""
+        refused = subprocess.CompletedProcess([], 1)
+        real_copy = snapshot.shutil.copyfile
+
+        def copy_then_write(source, target):
+            answer = real_copy(source, target)
+            if Path(source) == self.database:
+                self.database.write_bytes(encrypt_pages(self.pages_b))
+            return answer
+
+        with (
+            patch("kamado.snapshot.subprocess.run", return_value=refused),
+            patch("kamado.snapshot.shutil.copyfile", side_effect=copy_then_write),
+            self.assertRaises(ConsistencyError),
+        ):
+            snapshot.clone_snapshot(self.database, self.root / "staging")
+
+    def test_a_plain_copy_of_a_still_database_is_accepted(self) -> None:
+        self.log.write_bytes(make_wal([self.settled()]))
+        refused = subprocess.CompletedProcess([], 1)
+        with patch("kamado.snapshot.subprocess.run", return_value=refused):
+            frozen = snapshot.clone_snapshot(self.database, self.root / "staging")
+        self.assertEqual(frozen.read_bytes(), self.database.read_bytes())
+
+    def test_the_cache_retries_a_pair_that_straddled_a_restart(self) -> None:
+        self.log.write_bytes(make_wal([self.settled()]))
+        restart = lambda: self.log.write_bytes(
+            make_wal([(2, 2, self.encrypted(self.pages_a, 2))], salt=(99, 98))
+        )
+        cache = SnapshotCache()
+        self.addCleanup(cache.close)
+        with self.between_the_clones(restart), patch("kamado.snapshot.time.sleep"):
+            connection = cache.connect(self.database, geometry())
+        self.assertEqual(
+            connection.execute("SELECT COUNT(*) FROM note").fetchone()[0], len(ROWS_A)
+        )
+
+
 class CacheTests(_Fixture):
     def setUp(self) -> None:
         super().setUp()
         self.cache = SnapshotCache()
         self.addCleanup(self.cache.close)
+
+    def moved(self, path: Path) -> None:
+        """Move a file's stat forward, as a write in a later tick would."""
+        before = path.stat()
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    def test_a_commit_during_a_full_read_is_not_filed_as_read(self) -> None:
+        """The image is filed under what was sampled before it was read."""
+        real = snapshot.build_image
+
+        def committed_meanwhile(database, geometry_):
+            image = real(database, geometry_)
+            self.database.write_bytes(encrypt_pages(self.pages_b))
+            self.moved(self.database)
+            return image
+
+        with patch("kamado.snapshot.build_image", side_effect=committed_meanwhile):
+            first = self.cache.connect(self.database, geometry())
+        self.assertEqual(first.execute("SELECT body FROM note WHERE id = 1").fetchone()[0], "alpha 1")
+        second = self.cache.connect(self.database, geometry())
+        self.assertEqual(
+            second.execute("SELECT body FROM note WHERE id = 1").fetchone()[0],
+            "bravo 1",
+            "the commit that landed during the read was never read",
+        )
+
+    def test_a_commit_during_an_overlay_is_not_filed_as_read(self) -> None:
+        self.log.write_bytes(make_wal([(2, 2, self.encrypted(self.pages_a, 2))]))
+        self.cache.connect(self.database, geometry())
+        self.moved(self.log)
+        real = snapshot.update_image_with_wal
+
+        def committed_meanwhile(base, database, geometry_):
+            image = real(base, database, geometry_)
+            self.moved(self.log)
+            return image
+
+        with patch("kamado.snapshot.update_image_with_wal", side_effect=committed_meanwhile):
+            overlaid = self.cache.connect(self.database, geometry())
+        self.assertIsNot(
+            self.cache.connect(self.database, geometry()),
+            overlaid,
+            "a log that moved during the overlay was taken as read",
+        )
 
     def test_a_wal_only_change_uses_incremental_update_without_full_rebuild(self) -> None:
         first = self.cache.connect(self.database, geometry())

@@ -8,11 +8,13 @@ time somebody types.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from kamado import paths
+from kamado.model import ERASED_PLACEHOLDER
 from tests.platform import require_posix_console
 
 require_posix_console()
@@ -204,6 +206,125 @@ class DigestTests(LiveTests):
 
         self.assertEqual(self.viewport(), before, "the digest was rebuilt underneath the reader")
         self.assertIn("AFTER_DIGEST", [m.text for m in self.chat().messages])
+
+
+class ChangedInPlaceTests(LiveTests):
+    """A message already on screen can change without a new one arriving.
+
+    Deleted for everyone, it keeps its id and has its type rewritten, and the
+    watcher only asks for ids above the newest it has seen - so the text
+    stayed on screen, in the digest and in the export, until the room was
+    opened again.
+    """
+
+    def change(self, sql: str, parameters: tuple) -> None:
+        connection = self.cache.database
+        connection.execute(sql, parameters)
+        connection.commit()
+        touch_log(self.root, DIRECT_ROOM, b"changed " + sql.encode()[:40] + repr(parameters).encode())
+
+    def erase(self, log_id: int) -> None:
+        """What this client does: the row and its text stay, the type is flagged."""
+        self.change("UPDATE NTChatMessage SET type = type | 16384 WHERE logId = ?", (log_id,))
+
+    def test_a_message_deleted_for_everyone_is_replaced_by_the_placeholder(self) -> None:
+        self.assertIn("third", self.body())
+        self.erase(5003)
+        self.assertTrue(self.app.refresh(WIDTH))
+        body = self.body()
+        self.assertNotIn("third", body)
+        self.assertIn(ERASED_PLACEHOLDER, body)
+        self.assertTrue(next(m for m in self.chat().messages if m.id == 5003).erased)
+
+    def test_the_feed_a_deletion_writes_does_not_show_beside_it(self) -> None:
+        self.erase(5003)
+        connection = self.cache.database
+        connection.execute(
+            "INSERT INTO NTChatMessage "
+            "(logId, chatId, authorId, type, message, attachment, sentAt, deleted) "
+            "VALUES (5004, ?, ?, 0, ?, NULL, 1800005004, 0)",
+            (DIRECT_ROOM, PEER_ID, json.dumps({"feedType": 14, "logId": 5003, "hidden": True})),
+        )
+        connection.commit()
+        touch_log(self.root, DIRECT_ROOM, b"feed fourteen")
+        self.app.refresh(WIDTH)
+        body = self.body()
+        self.assertNotIn("third", body)
+        self.assertNotIn("feed 14", body)
+        self.assertEqual(body.count(ERASED_PLACEHOLDER), 1)
+
+    def test_a_row_deleted_outright_leaves_the_conversation(self) -> None:
+        self.change("UPDATE NTChatMessage SET deleted = 1 WHERE logId = ?", (5000,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertNotIn(5000, [message.id for message in self.chat().messages])
+        self.assertNotIn("first", self.body())
+
+    def test_text_replaced_at_the_same_id_is_shown_as_it_is_now(self) -> None:
+        self.change("UPDATE NTChatMessage SET message = 'REWRITTEN' WHERE logId = ?", (5000,))
+        self.app.refresh(WIDTH)
+        self.assertIn("REWRITTEN", self.body())
+        self.assertNotIn("first", self.body())
+
+    def test_a_database_that_moved_without_changing_a_held_row_redraws_nothing(self) -> None:
+        self.body()
+        rendered = self.chat().rendered
+        touch_log(self.root, DIRECT_ROOM, b"moved, nothing changed")
+        self.assertFalse(self.app.refresh(WIDTH))
+        self.body()
+        self.assertEqual(self.chat().revision, 0)
+        self.assertIs(self.chat().rendered, rendered, "the transcript was rebuilt")
+
+    def test_a_deletion_below_the_viewport_does_not_move_what_is_being_read(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        before = self.viewport()
+
+        self.change("UPDATE NTChatMessage SET deleted = 1 WHERE logId = ?", (5629,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertEqual(self.viewport(), before, "the viewport moved under the reader")
+
+    def test_a_deletion_inside_the_viewport_leaves_the_rest_in_place(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 12
+        before = self.viewport()
+        self.assertIn("HISTORY15", before)
+        self.change("UPDATE NTChatMessage SET message = 'REPLACED' WHERE logId = ?", (5615,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertEqual(
+            self.viewport(),
+            before.replace("HISTORY15", "REPLACED "),
+            "only the changed line may differ",
+        )
+
+    def test_a_digest_is_cut_again_without_the_deleted_line(self) -> None:
+        for index in range(6):
+            self.arrive(9200 + index, f"주제 배포 회의 {index}")
+        self.app.refresh(WIDTH)
+        self.app._run_command("/sum 30m")
+
+        def said() -> list[str]:
+            return [message.text for piece in self.chat().slices for message in piece.messages]
+
+        self.assertIn("주제 배포 회의 5", said())
+        self.assertIn("6 messages", self.viewport())
+
+        self.erase(9205)
+        self.app.refresh(WIDTH)
+        self.assertNotIn("주제 배포 회의 5", said())
+        self.assertIn("5 messages", self.viewport())
+
+    def test_a_digest_leaves_out_what_was_already_deleted(self) -> None:
+        for index in range(3):
+            self.arrive(9300 + index, f"요약 대상 {index}")
+        self.erase(9302)
+        self.app.refresh(WIDTH)
+        self.app._run_command("/sum 30m")
+        said = [message.text for piece in self.chat().slices for message in piece.messages]
+        self.assertNotIn("요약 대상 2", said)
 
 
 class TabArrivalTests(LiveTests):

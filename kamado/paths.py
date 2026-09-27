@@ -45,13 +45,29 @@ _PERMISSION_MESSAGE: Final = (
 )
 
 
+_abandoned: list[threading.Thread] = []
+"""Workers given up on that may still be stuck in the kernel."""
+
+
 def guarded(operation: Callable[[], _T], what: str) -> _T:
     """Run a container access with a deadline, reporting a refusal as an error.
 
     The worker is a daemon so that a call still stuck in the kernel cannot keep
     the process alive; it is abandoned rather than cancelled, because there is
     no way to cancel it.
+
+    While one abandoned worker is still stuck, the next access is refused at
+    once instead of starting another. Every access here waits on the same
+    permission, so a second worker would only be stuck beside the first, and
+    a long-lived process asking again and again would pile them up. Once the
+    stuck call returns - the permission was granted or refused - accesses go
+    through again.
     """
+    _abandoned[:] = [worker for worker in _abandoned if worker.is_alive()]
+    if _abandoned:
+        raise KamadoError(
+            ErrorCode.PERMISSION_REQUIRED, _PERMISSION_MESSAGE, permission="fullDiskAccess"
+        )
     result: list[_T] = []
     failure: list[BaseException] = []
 
@@ -66,6 +82,7 @@ def guarded(operation: Callable[[], _T], what: str) -> _T:
     worker.join(ACCESS_TIMEOUT_SECONDS)
 
     if worker.is_alive():
+        _abandoned.append(worker)
         raise KamadoError(
             ErrorCode.PERMISSION_REQUIRED, _PERMISSION_MESSAGE, permission="fullDiskAccess"
         )

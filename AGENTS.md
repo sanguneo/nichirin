@@ -164,6 +164,46 @@ code that depends on them without re-checking will quietly break.
   same `_overlay_log`, so a commit that shrank the database truncates the image
   in both. They drifted apart once already, and only the incremental path was
   fixed.
+- **Two clones are not one snapshot.** `clone_snapshot` clones the database and
+  then its log, and a checkpoint that restarts the log between the two pairs a
+  database from before it with a log from after it — a mix that passes every
+  structural check. The live log header is read before cloning and the cloned
+  log must still carry it; a restart always changes that salt. A plain copy
+  (off APFS) is not frozen at any instant, so it is compared with the live file
+  afterwards. Either failure is a `ConsistencyError` and is retried.
+- **An image is filed under the fingerprint taken before it was read.**
+  Sampling again afterwards put a commit that landed during the read beside an
+  image that does not hold it, and the next call returned the older image for
+  as long as the account stayed quiet. Both the full read and the overlay store
+  the first sample. Equal stats still say nothing about equal bytes.
+- **The forked decryption has a deadline and an undertaker.** `join` without a
+  limit made a stuck child a command that never returned. The wait is bounded
+  (`_PARALLEL_DEADLINE_SECONDS`), and every child that was started is
+  terminated and collected before the shared segment is released and before
+  the serial fallback begins.
+- **The name map and the column sets follow the snapshot.** The cache hands
+  back the same connection until the database changes, so `Reader.connection`
+  forgets both when it sees a different one: a known user who renamed is shown
+  under the new name, once per snapshot rather than once per message.
+  `own_user_id` is settled only after a lookup answered; one `BUSY` used to
+  stand for "no account" for the reader's whole life.
+- **A room's messages leave a poll in log-id order, whatever their clocks
+  say.** Sorting by `(sentAt, id)` put a room's 11 before its 10 whenever 11
+  carried the earlier time, and `/stream` published 10 as the cursor. Rooms are
+  merged by time comparing only each room's next message; the stream's cursor
+  is compared as a number and only advances. An empty room is primed at 0, or
+  its first message took the "never primed" path and was never reported, and a
+  catch-up pages only up to the newest id it started with.
+- **The daemon socket is framed.** A request and an answer are each one line.
+  One `recv` is not one request: the server reads to the newline under
+  `REQUEST_MAX_BYTES` and a deadline, and the client reads to the newline under
+  `RESPONSE_MAX_BYTES`. An answer that is cut short, malformed or too large is
+  `None` — the caller runs the command itself, as with no daemon — never a
+  partial success.
+- **Reading a preferences plist is a container access too.** Only listing the
+  directory had a deadline. `read_preferences` lets `PermissionError` rise so
+  the guard names the permission, and while one abandoned worker is still stuck
+  `guarded` refuses at once rather than piling another beside it.
 
 - **A message deleted for everyone keeps its text.** `deleted` stays 0 and
   0x4000 is added to the type (16385 for text, 16386 for a photo), and the
@@ -184,6 +224,22 @@ code that depends on them without re-checking will quietly break.
   watcher ask for that, so the screen says "삭제된 메시지입니다" where the
   client does; every command, `serve` and the shared `openapi.json` still
   leave the row out, and `as_json` never mentions the field.
+- **A message on screen can change without a new one arriving.** Deleted for
+  everyone it keeps its id, and the watcher asks only for ids above the newest,
+  so the words stayed on screen, in the digest and in the export. The TUI's
+  POLL job carries each tab's ids and known versions; for a room
+  `Watcher.moved` names, the owner thread compares `Reader.row_versions` (one
+  range read) and re-reads only changed or unknown rows with
+  `Reader.messages_at`, which returns each message with the version of the row
+  it was built from. `ChatState.revision` joins the transcript cache key, a
+  digest is cut again, and a reader scrolled up keeps the last visible line
+  pinned. A digest never counts an erased message.
+- **Somebody else's text is cleaned before it is styled.** Measuring past an
+  escape is not disarming it: `truncate_to_width` carries escapes through on
+  purpose. `layout.clean` replaces C0 with its control picture, DEL with its
+  own and C1 with U+FFFD, one character for one, at every site that draws
+  messages, names, titles, quotes, digests, notices or the status line. A URL
+  ends at a control or its picture. JSON is untouched; this is display policy.
 - **Feed types 4 and 2 are said in words** (`model.FEED_KINDS`): a join and a
   leave, checked on the Windows build against the client's own screen; here
   309 and 183 of the newest 20,000 feeds, every one naming a member.

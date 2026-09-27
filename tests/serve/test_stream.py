@@ -87,6 +87,38 @@ class StreamTests(ServedCase):
         published = json.loads(events[3]["data"])["cursor"]
         self.assertEqual(published, {"1": "11", "2": "4"})
 
+    def test_the_cursor_never_moves_a_room_backwards(self) -> None:
+        """Compared as numbers, and only ever advanced.
+
+        A published cursor promises that everything up to it has arrived, so
+        a batch that went backwards - or a "9" read as text after a "10" -
+        would hand a reconnecting caller its own messages again.
+        """
+        watcher = StubWatcher(
+            [
+                [StubMessage(11, 1, "alice", "one"), StubMessage(10, 1, "alice", "two")],
+                [StubMessage(9, 1, "alice", "late")],
+                [],
+            ]
+        )
+        self.serve(_start_server(StubSender(), watcher=watcher))
+        events = _read_sse(self.base, "/stream", timeout=2.0, max_events=8)
+        cursors = [
+            json.loads(event["data"])["cursor"]
+            for event in events if event["event"] == "cursor"
+        ]
+        self.assertEqual(cursors, [{"1": "11"}])
+
+    def test_a_resumed_cursor_is_compared_as_a_number(self) -> None:
+        watcher = StubWatcher([[StubMessage(10, 1, "alice", "next")], []])
+        self.serve(_start_server(StubSender(), watcher=watcher))
+        events = _read_sse(self.base, "/stream?since=1:9", timeout=2.0, max_events=4)
+        cursors = [
+            json.loads(event["data"])["cursor"]
+            for event in events if event["event"] == "cursor"
+        ]
+        self.assertEqual(cursors, [{"1": "10"}])
+
     def test_a_poll_that_finds_nothing_publishes_no_cursor(self) -> None:
         watcher = StubWatcher([[], []])
         self.serve(_start_server(StubSender(), watcher=watcher))

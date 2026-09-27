@@ -123,5 +123,98 @@ class LiveSendTests(unittest.TestCase):
         self.assertEqual(len(self.built), 2)
 
 
+class RoomIdTests(unittest.TestCase):
+    """`room` is "the room's title, or its id as a string", as the contract says.
+
+    A JSON body carries an id as a string like every other id, and the id path
+    was reached only by an int, so a client handing back the id `/rooms` gave
+    it was answered CHAT_NOT_FOUND.
+    """
+
+    ROOMS = [
+        _Room(7, "Synthetic"),
+        _Room(42, "Answer"),
+        _Room(8, "42"),
+        _Room(9, "123"),
+        _Room(10, "Twin"),
+        _Room(11, "Twin"),
+    ]
+
+    def setUp(self) -> None:
+        import kamado.keyring as keyring_module
+        import kamado.macauto as macauto_module
+        import kamado.reader as reader_module
+
+        original_reader = reader_module.Reader
+        original_discover = keyring_module.Keyring.discover
+        original_sender = macauto_module.make_sender
+        rooms = self.ROOMS
+        self.sent: list = []
+        sent = self.sent
+
+        class _CatalogReader:
+            def __init__(self, cache=None, keyring=None, ledger=None, connection=None):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exception):
+                return None
+
+            def room(self, room_id):
+                return next((room for room in rooms if room.id == room_id), None)
+
+            def resolve(self, target):
+                return [room for room in rooms if room.title.casefold() == target.casefold()]
+
+            def rooms(self):
+                return list(rooms)
+
+            def stored_title(self, _room_id):
+                return None
+
+        class _Sender:
+            def send(self, room, text, **_keywords):
+                sent.append(room)
+                return {"submitted": True, "room": room}
+
+        reader_module.Reader = _CatalogReader
+        keyring_module.Keyring.discover = staticmethod(lambda: object())  # type: ignore[attr-defined]
+        macauto_module.make_sender = lambda: _Sender()
+        self.addCleanup(setattr, reader_module, "Reader", original_reader)
+        self.addCleanup(setattr, keyring_module.Keyring, "discover", original_discover)
+        self.addCleanup(setattr, macauto_module, "make_sender", original_sender)
+        self.send = backends.make_live_send()
+
+    def test_an_id_from_rooms_resolves_to_that_room(self) -> None:
+        answer = self.send("7", "hello")
+        self.assertEqual(answer["roomId"], "7")
+        self.assertEqual(self.sent, ["Synthetic"])
+
+    def test_an_id_is_tried_before_a_title_that_happens_to_be_that_number(self) -> None:
+        self.assertEqual(self.send("42", "hello")["roomId"], "42")
+        self.assertEqual(self.sent, ["Answer"])
+
+    def test_a_number_no_room_has_as_its_id_still_resolves_by_title(self) -> None:
+        self.assertEqual(self.send("123", "hello")["roomId"], "9")
+
+    def test_a_number_that_names_nothing_is_not_found(self) -> None:
+        from kamado.errors import ErrorCode, KamadoError
+
+        with self.assertRaises(KamadoError) as raised:
+            self.send("999", "hello")
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_NOT_FOUND)
+        self.assertEqual(self.sent, [])
+
+    def test_an_id_whose_window_title_is_shared_is_still_refused(self) -> None:
+        from kamado.errors import ErrorCode, KamadoError
+
+        with self.assertRaises(KamadoError) as raised:
+            self.send("10", "hello")
+        self.assertEqual(raised.exception.code, ErrorCode.AMBIGUOUS_CHAT)
+        self.assertEqual(self.sent, [])
+
+
 if __name__ == "__main__":
     unittest.main()

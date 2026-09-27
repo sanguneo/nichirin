@@ -77,6 +77,15 @@ _PARALLEL_PAGE_THRESHOLD: Final = 4000
 """Databases with fewer pages decrypt in a few milliseconds and do not pay
 the multiprocessing overhead; larger live databases decrypt across CPU cores."""
 
+_PARALLEL_DEADLINE_SECONDS: Final = 120.0
+"""How long the forked decryption may take before it is abandoned for the serial pass.
+
+Far past what a measured 119 MB account needs; it exists so a child that never
+returns costs a slow answer rather than a command that never ends."""
+
+_REAP_SECONDS: Final = 2.0
+"""How long a terminated child is given to go before it is killed."""
+
 
 def _decrypt_pages_worker(
     shm_name: str,
@@ -160,21 +169,49 @@ def _decrypt_base_pages(
     reserve: int,
 ) -> bytes:
     """Decrypt all base pages, across CPU cores when this process may fork."""
-    total_size = len(encrypted)
     num_cpus = os.cpu_count() or 4
     num_workers = min(num_cpus, 8)
 
     if base_pages < _PARALLEL_PAGE_THRESHOLD or num_workers <= 1 or not _forkable():
         return _decrypt_serially(encrypted, geometry, base_pages, page_size, reserve)
 
+    try:
+        return _decrypt_in_parallel(
+            encrypted, geometry, base_pages, page_size, reserve, num_workers
+        )
+    except Exception:
+        # Every child has been reaped and the segment released by now, so the
+        # serial pass is the only work left running.
+        return _decrypt_serially(encrypted, geometry, base_pages, page_size, reserve)
+
+
+def _decrypt_in_parallel(
+    encrypted: bytes,
+    geometry: Geometry,
+    base_pages: int,
+    page_size: int,
+    reserve: int,
+    num_workers: int,
+) -> bytes:
+    """Decrypt across forked children, or raise with every child already gone.
+
+    The children are started one at a time, and any of them can fail to
+    start, fail, or never finish; ``join`` without a limit turned the last of
+    those into a command that never returned, with no fallback reached. So
+    the wait has one overall deadline, and on the way out - success or not -
+    every child that was started is terminated if it is still there and
+    collected, *before* the shared segment it writes into is released and
+    before the caller begins decrypting the same pages serially.
+    """
     from multiprocessing import get_context, shared_memory
 
+    total_size = len(encrypted)
     shm = None
+    processes: list = []
     try:
         shm = shared_memory.SharedMemory(create=True, size=total_size)
         ctx = get_context("fork")
         chunk_size = (base_pages + num_workers - 1) // num_workers
-        processes = []
         for w in range(num_workers):
             start_page = w * chunk_size + 1
             end_page = min(base_pages, (w + 1) * chunk_size)
@@ -195,10 +232,11 @@ def _decrypt_base_pages(
             proc.start()
             processes.append(proc)
 
+        deadline = time.monotonic() + _PARALLEL_DEADLINE_SECONDS
         for proc in processes:
-            proc.join()
-
-        # Check if all processes succeeded cleanly
+            proc.join(max(0.0, deadline - time.monotonic()))
+        if any(proc.is_alive() for proc in processes):
+            raise RuntimeError("parallel page decryption did not finish in time")
         if any(proc.exitcode != 0 for proc in processes):
             raise RuntimeError("parallel page decryption worker failed")
 
@@ -206,16 +244,25 @@ def _decrypt_base_pages(
         if view is None:  # as above: only reachable if it was closed
             raise RuntimeError("shared memory closed during decryption")
         return bytes(view[:total_size])
-    except Exception:
-        # Transparent fallback to single-threaded decryption on any multiprocessing error
-        return _decrypt_serially(encrypted, geometry, base_pages, page_size, reserve)
     finally:
+        _reap(processes)
         if shm is not None:
             try:
                 shm.close()
                 shm.unlink()
             except Exception:
                 pass
+
+
+def _reap(processes: list) -> None:
+    """Make sure no started child outlives the call that started it."""
+    for proc in processes:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(_REAP_SECONDS)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(_REAP_SECONDS)
 
 
 def _read_physical_memory() -> Optional[int]:
@@ -320,6 +367,15 @@ def _read_log(database: Path) -> bytes:
         return b""
 
 
+def _log_header(database: Path) -> bytes:
+    """The live log's header, which names its generation; empty when there is none."""
+    try:
+        with database.with_name(database.name + "-wal").open("rb") as handle:
+            return handle.read(wal_format.WAL_HEADER_SIZE)
+    except FileNotFoundError:
+        return b""
+
+
 def clone_snapshot(database: Path, into: Path) -> Path:
     """Copy a database and its log into *into*, frozen against the live writer.
 
@@ -338,9 +394,24 @@ def clone_snapshot(database: Path, into: Path) -> Path:
     first time.  A filesystem without clone support falls back to an ordinary
     copy, which is merely fast rather than instant and is still far steadier
     than reading in place.
+
+    Two clones are not one, though.  Each file is frozen at its own instant,
+    and a checkpoint that *restarts* the log between them pairs a database
+    from before it with a log from after it: pages the old log carried are
+    in neither, and the image is a mix of two states that each passes every
+    structural check.  A restart always writes a new salt pair into the log
+    header, so the header is read once before cloning and the cloned log
+    must still carry it; a log that appeared or vanished in between fails
+    the same comparison.  A checkpoint that does not restart is harmless,
+    because it copies frames the log still holds and the overlay applies
+    them anyway.  A plain copy is not frozen at any instant, so it is
+    compared with the live file afterwards instead of being trusted.
+    Raises :class:`ConsistencyError` so the caller retries.
     """
     into.mkdir(parents=True, exist_ok=True)
     destination = into / database.name
+    generation = _log_header(database)
+    copied: list[tuple[Path, Path]] = []
     for source in (database, database.with_name(database.name + "-wal")):
         if not source.exists():
             continue
@@ -353,6 +424,20 @@ def clone_snapshot(database: Path, into: Path) -> Path:
             # -c is refused off APFS; a plain copy still freezes far better
             # than reading a live file in place.
             shutil.copyfile(source, target)
+            copied.append((source, target))
+    if _log_header(destination) != generation:
+        raise ConsistencyError(f"the {database.name} log restarted while it was cloned")
+    for source, target in copied:
+        if source == database:
+            still = _matches(source, target.read_bytes())
+        else:
+            # The log only grows within a generation, so a copy that is a
+            # prefix of the live log under the same header is a whole one.
+            still = _log_header(database) == generation and _read_log(database).startswith(
+                target.read_bytes()
+            )
+        if not still:
+            raise ConsistencyError(f"{source.name} changed while it was copied")
     return destination
 
 
@@ -664,6 +749,14 @@ class SnapshotCache:
         moved (the usual case for new messages), an incremental WAL-only update
         overlays new frames on top of the cached base image in ~10ms rather than
         re-decrypting the whole multi-hundred-megabyte database.
+
+        The image is filed under the fingerprint taken *before* it was read.
+        Sampling again afterwards put a commit that landed during the read
+        beside an image that does not hold it, and the next call, finding the
+        files unchanged since, handed the older image back for as long as the
+        account stayed quiet.  A commit that did make it into the read costs
+        one extra read instead.  Equal stats still say nothing about equal
+        bytes; this does not claim to beat that.
         """
         current = Fingerprint.of(database)
         cached = self._entries.get(database)
@@ -676,7 +769,7 @@ class SnapshotCache:
             and cached.base is not None
             and cached.fingerprint.database == current.database
         ):
-            connection = self._reuse_base_pages(database, geometry, cached.base)
+            connection = self._reuse_base_pages(database, geometry, cached.base, current)
             if connection is not None:
                 return connection
 
@@ -684,7 +777,7 @@ class SnapshotCache:
         connection = open_image(image, database.name)
         self._store(
             database,
-            Fingerprint.of(database),
+            current,
             connection,
             len(image),
             getattr(image, "base", None),
@@ -712,7 +805,7 @@ class SnapshotCache:
         self.close()
 
     def _reuse_base_pages(
-        self, database: Path, geometry: Geometry, base: BasePages
+        self, database: Path, geometry: Geometry, base: BasePages, current: Fingerprint
     ) -> Optional[sqlite3.Connection]:
         """Try the log-only path, returning ``None`` when it must be given up on.
 
@@ -739,7 +832,7 @@ class SnapshotCache:
             sqlite3.DatabaseError,
         ):
             return None
-        self._store(database, Fingerprint.of(database), connection, len(image), base)
+        self._store(database, current, connection, len(image), base)
         return connection
 
     def _update_wal_with_retry(

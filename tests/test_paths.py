@@ -116,6 +116,10 @@ class GuardedTests(unittest.TestCase):
             entered.set()
             blocked.wait()
 
+        # Released afterwards, so the abandoned worker does not refuse every
+        # guarded access in the rest of the suite.
+        self.addCleanup(lambda: workers and workers[0].join(timeout=5))
+        self.addCleanup(blocked.set)
         # Time is the behavior under test. No real I/O or scheduling race can
         # make this callable finish; the worker is intentionally abandoned.
         with patch.object(paths, "ACCESS_TIMEOUT_SECONDS", 0.01):
@@ -124,6 +128,37 @@ class GuardedTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, ErrorCode.PERMISSION_REQUIRED)
         self.assertTrue(entered.wait(timeout=1))
         self.assertTrue(workers[0].daemon)
+
+    def test_a_stuck_access_is_not_joined_by_another(self) -> None:
+        """Every access waits on one permission; a second worker would only pile up."""
+        blocked = threading.Event()
+        entered = threading.Event()
+        workers: list = []
+        asked: list = []
+
+        def never_returns():
+            workers.append(threading.current_thread())
+            entered.set()
+            blocked.wait()
+
+        self.addCleanup(lambda: workers and workers[0].join(timeout=5))
+        self.addCleanup(blocked.set)
+        # Time is the behavior under test, as above.
+        with patch.object(paths, "ACCESS_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(KamadoError):
+                paths.guarded(never_returns, "fixture-stuck")
+            self.assertTrue(entered.wait(timeout=1))
+            for _ in range(3):
+                with self.assertRaises(KamadoError) as raised:
+                    paths.guarded(lambda: asked.append(True), "fixture-again")
+                self.assertEqual(raised.exception.code, ErrorCode.PERMISSION_REQUIRED)
+        self.assertEqual(asked, [], "a second worker was started beside the stuck one")
+        self.assertEqual(len(workers), 1)
+
+        blocked.set()
+        workers[0].join(timeout=5)
+        self.assertFalse(workers[0].is_alive())
+        self.assertEqual(paths.guarded(lambda: "answered", "fixture-after"), "answered")
 
     def test_other_failures_keep_their_identity(self) -> None:
         failure = ValueError("synthetic failure")

@@ -193,5 +193,97 @@ class ForkAllowedTests(DecryptionCase):
         self.assertEqual(self.asked, ["fork"])
 
 
+class _Child:
+    """A child process that does exactly what it is told, and nothing else.
+
+    It fails the ways a real one can - refusing to start, exiting non-zero,
+    never finishing - and remembers how it was waited for, so the order of
+    reaping and fallback can be asserted without a real fork or a clock.
+    """
+
+    def __init__(self, *, refuses: bool = False, exitcode: int = 0, hangs: bool = False) -> None:
+        self.refuses = refuses
+        self.hangs = hangs
+        self._exitcode = exitcode
+        self.alive = False
+        self.joins: list = []
+        self.terminated = False
+
+    def start(self) -> None:
+        if self.refuses:
+            raise OSError("synthetic: the child could not be started")
+        self.alive = True
+
+    def join(self, timeout=None) -> None:
+        self.joins.append(timeout)
+        if not self.hangs or self.terminated:
+            self.alive = False
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.terminated = True
+
+    @property
+    def exitcode(self):
+        if self.alive:
+            return None
+        return -15 if self.terminated else self._exitcode
+
+
+class ForkLifetimeTests(DecryptionCase):
+    """Every child that was started is gone before the serial pass begins."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        forkable = snapshot._forkable
+        self.addCleanup(setattr, snapshot, "_forkable", forkable)
+        snapshot._forkable = lambda: True
+        self.children: list[_Child] = []
+        self.plan: list[dict] = []
+        serial = snapshot._decrypt_serially
+        self.addCleanup(setattr, snapshot, "_decrypt_serially", serial)
+        self.alive_at_fallback: list = []
+
+        def watched(*arguments, **keywords):
+            self.alive_at_fallback.append([child.alive for child in self.children])
+            return serial(*arguments, **keywords)
+
+        snapshot._decrypt_serially = watched
+        children, plan = self.children, self.plan
+
+        class Scripted:
+            def Process(self, *arguments, **keywords):
+                child = _Child(**(plan[len(children)] if len(children) < len(plan) else {}))
+                children.append(child)
+                return child
+
+        multiprocessing.get_context = lambda method=None: Scripted()
+
+    def test_a_child_that_cannot_start_leaves_none_behind(self) -> None:
+        self.plan.extend([{}, {}, {"refuses": True}])
+        self.assertEqual(self.decrypt(), self.expected)
+        self.assertEqual(len(self.children), 3)
+        self.assertEqual(self.alive_at_fallback, [[False, False, False]])
+
+    def test_a_child_that_fails_falls_back_with_every_child_collected(self) -> None:
+        self.plan.extend([{"exitcode": 1}])
+        self.assertEqual(self.decrypt(), self.expected)
+        self.assertEqual(len(self.alive_at_fallback), 1)
+        self.assertFalse(any(self.alive_at_fallback[0]))
+
+    def test_a_child_that_never_finishes_is_waited_for_with_a_limit(self) -> None:
+        self.plan.extend([{"hangs": True}])
+        self.assertEqual(self.decrypt(), self.expected)
+        hung = self.children[0]
+        self.assertTrue(hung.terminated, "a child that never finished was left running")
+        self.assertNotIn(None, hung.joins, "a child was waited for without a limit")
+        self.assertFalse(any(self.alive_at_fallback[0]))
+
+
 if __name__ == "__main__":
     unittest.main()

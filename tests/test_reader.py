@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
 import unittest.mock
 
@@ -24,6 +25,7 @@ from tests.fixtures import (
     SELF_ROOM,
     STRANGER_ID,
     NAMED_ROOM,
+    StubCache,
     build_profile,
     build_reader,
 )
@@ -443,6 +445,82 @@ class StatusTests(unittest.TestCase):
                 second = reader.status()
             self.assertEqual(second, first)
 
+
+class StatusCacheKeyTests(unittest.TestCase):
+    """A cached room count answers only for the account and state it was counted from."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from tests.fixtures import build_reader_on_disk
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.reader, self.stub = build_reader_on_disk(self.root / "profile")
+        self.cache_file = self.root / "status.json"
+        patcher = unittest.mock.patch.object(
+            self.reader, "_status_cache_file", return_value=self.cache_file
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def counted(self) -> int:
+        calls = {"count": 0}
+        real = self.reader.count_rooms
+
+        def counting() -> int:
+            calls["count"] += 1
+            return real()
+
+        with unittest.mock.patch.object(self.reader, "count_rooms", side_effect=counting):
+            self.reader.status()
+        return calls["count"]
+
+    def test_a_change_only_the_log_saw_is_counted_again(self) -> None:
+        """A room added while the client runs lands in the log, not the file."""
+        self.assertEqual(self.counted(), 1)
+        log = self.reader.database.with_name(self.reader.database.name + "-wal")
+        log.write_bytes(log.read_bytes() + b"a room was added")
+        self.assertEqual(self.counted(), 1, "a log-only change reused the old count")
+
+    def test_an_unchanged_state_reuses_the_count(self) -> None:
+        self.assertEqual(self.counted(), 1)
+        self.assertEqual(self.counted(), 0)
+
+    def test_another_account_is_not_handed_this_ones_count(self) -> None:
+        self.reader.status()
+        stored = json.loads(self.cache_file.read_text("utf-8"))
+        stored["account"] = "someone-else"
+        self.cache_file.write_text(json.dumps(stored), encoding="utf-8")
+        self.assertEqual(self.counted(), 1)
+
+    def test_a_count_is_filed_under_the_state_it_was_counted_from(self) -> None:
+        log = self.reader.database.with_name(self.reader.database.name + "-wal")
+        real = self.reader.count_rooms
+
+        def moving() -> int:
+            answer = real()
+            log.write_bytes(log.read_bytes() + b"written while counting")
+            return answer
+
+        with unittest.mock.patch.object(self.reader, "count_rooms", side_effect=moving):
+            self.reader.status()
+        self.assertEqual(self.counted(), 1, "a count was filed under a later state")
+
+    def test_a_damaged_cache_is_a_miss(self) -> None:
+        self.reader.status()
+        for damaged in ("not json", "[]", json.dumps({"rooms": "six"})):
+            with self.subTest(damaged=damaged):
+                self.cache_file.write_text(damaged, encoding="utf-8")
+                self.assertEqual(self.counted(), 1)
+        stored = json.loads(self.cache_file.read_text("utf-8"))
+        stored["rooms"] = None
+        self.cache_file.write_text(json.dumps(stored), encoding="utf-8")
+        self.assertEqual(self.counted(), 1)
+
+
+class StatusFailureTests(unittest.TestCase):
     def test_an_unresolved_account_names_the_reason_a_read_fails(self) -> None:
         with build_reader() as reader:
             reader._keyring = Keyring(CONTAINER, [DATABASE], None)
@@ -588,6 +666,161 @@ class ErasedMessageTests(unittest.TestCase):
         with build_reader(messages=rows) as reader:
             found = reader.messages(DIRECT_ROOM, limit=50)
         self.assertEqual([message.id for message in found], [7100, 7104])
+
+
+def _new_snapshot(cache: StubCache) -> sqlite3.Connection:
+    """Hand the reader a fresh copy of its database, as a changed file would.
+
+    The real cache returns a new connection exactly when the file changed, so
+    a swapped-in copy is what "this database moved" looks like to a reader.
+    """
+    copy = sqlite3.connect(":memory:")
+    cache.database.backup(copy)
+    cache.database = copy
+    return copy
+
+
+def _stub_reader() -> tuple[Reader, StubCache]:
+    cache, keyring = build_profile()
+    return Reader(cache=cache, keyring=keyring), cache
+
+
+class _FailingOnce:
+    """A cache whose first connect fails the way a busy snapshot does."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.failures = 1
+
+    def connect(self, database, geometry):
+        if self.failures:
+            self.failures -= 1
+            raise KamadoError(ErrorCode.BUSY, "synthetic busy snapshot")
+        return self.inner.connect(database, geometry)
+
+    def invalidate(self, database) -> None:
+        self.inner.invalidate(database)
+
+    def close(self) -> None:
+        self.inner.close()
+
+
+class IdentityRetryTests(unittest.TestCase):
+    """A failure to look for the account is not proof that there is none."""
+
+    def test_a_failed_first_look_is_asked_again(self) -> None:
+        cache, keyring = build_profile()
+        reader = Reader(cache=_FailingOnce(cache), keyring=keyring)
+        self.addCleanup(cache.close)
+        with self.assertRaises(KamadoError):
+            reader.own_user_id()
+        self.assertEqual(reader.own_user_id(), OWN_ID)
+        by_id = {message.id: message for message in reader.messages(DIRECT_ROOM)}
+        self.assertTrue(by_id[5001].from_me)
+
+    def test_a_failed_first_look_is_not_settled(self) -> None:
+        cache, keyring = build_profile()
+        reader = Reader(cache=_FailingOnce(cache), keyring=keyring)
+        self.addCleanup(cache.close)
+        with self.assertRaises(KamadoError):
+            reader.own_user_id()
+        self.assertFalse(reader._own_id_resolved)
+
+
+class NameLifetimeTests(unittest.TestCase):
+    """The name shown is the one the user carries now, not at startup."""
+
+    def senders(self, reader: Reader) -> dict[int, str]:
+        return {message.id: message.sender for message in reader.messages(DIRECT_ROOM)}
+
+    def test_a_known_user_who_renamed_is_shown_under_the_new_name(self) -> None:
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        self.assertEqual(self.senders(reader)[5000], "Peer Renamed")
+        copy = _new_snapshot(cache)
+        copy.execute(
+            "UPDATE NTUser SET friendNickName = ? WHERE userId = ?", ("Peer Again", PEER_ID)
+        )
+        copy.commit()
+        self.assertEqual(self.senders(reader)[5000], "Peer Again")
+        self.assertEqual(reader.names()[PEER_ID], "Peer Again")
+
+    def test_an_unchanged_snapshot_is_not_read_again(self) -> None:
+        with build_reader() as reader:
+            first = reader.names()
+            reader.messages(DIRECT_ROOM)
+            reader.rooms()
+            self.assertIs(reader.names(), first)
+
+    def test_a_failed_look_keeps_the_names_it_had(self) -> None:
+        cache, keyring = build_profile()
+        failing = _FailingOnce(cache)
+        failing.failures = 0
+        reader = Reader(cache=failing, keyring=keyring)
+        self.addCleanup(cache.close)
+        first = reader.names()
+        failing.failures = 1
+        with self.assertRaises(KamadoError):
+            reader.messages(DIRECT_ROOM)
+        self.assertIs(reader.names(), first)
+
+
+class RowVersionTests(unittest.TestCase):
+    """How a caller holding messages learns that one of them changed."""
+
+    def test_a_version_moves_when_a_row_changes_and_only_then(self) -> None:
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        before = reader.row_versions(DIRECT_ROOM, 5000, 5003)
+        self.assertEqual(set(before), {5000, 5001, 5003})
+        self.assertEqual(reader.row_versions(DIRECT_ROOM, 5000, 5003), before)
+        cache.database.execute("UPDATE NTChatMessage SET message = 'edited' WHERE logId = 5001")
+        cache.database.commit()
+        after = reader.row_versions(DIRECT_ROOM, 5000, 5003)
+        self.assertNotEqual(after[5001], before[5001])
+        self.assertEqual(after[5000], before[5000])
+
+    def test_versions_read_with_messages_match_the_range_read(self) -> None:
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        found, versions = reader.messages_at(DIRECT_ROOM, [5000, 5001, 5003])
+        self.assertEqual([message.id for message in found], [5000, 5001, 5003])
+        self.assertEqual(versions, reader.row_versions(DIRECT_ROOM, 5000, 5003))
+
+    def test_a_row_no_longer_returned_has_no_version(self) -> None:
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        cache.database.execute("UPDATE NTChatMessage SET deleted = 1 WHERE logId = 5000")
+        cache.database.commit()
+        self.assertNotIn(5000, reader.row_versions(DIRECT_ROOM, 5000, 5003))
+        found, _versions = reader.messages_at(DIRECT_ROOM, [5000, 5003])
+        self.assertEqual([message.id for message in found], [5003])
+
+    def test_an_erased_row_is_versioned_only_when_asked_to_keep_it(self) -> None:
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        cache.database.execute("UPDATE NTChatMessage SET type = type | 16384 WHERE logId = 5003")
+        cache.database.commit()
+        self.assertNotIn(5003, reader.row_versions(DIRECT_ROOM, 5000, 5003))
+        self.assertIn(5003, reader.row_versions(DIRECT_ROOM, 5000, 5003, include_erased=True))
+
+    def test_other_rooms_are_not_versioned(self) -> None:
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        self.assertEqual(reader.row_versions(DIRECT_ROOM, 0, 10_000), reader.row_versions(DIRECT_ROOM, 5000, 5003))
+
+
+class SchemaLifetimeTests(unittest.TestCase):
+    def test_a_column_the_database_gains_is_seen_on_the_next_snapshot(self) -> None:
+        """Columns are asked for again once the file has changed."""
+        reader, cache = _stub_reader()
+        self.addCleanup(cache.close)
+        self.assertNotIn("added", reader.columns("NTChatMessage"))
+        copy = _new_snapshot(cache)
+        copy.execute("ALTER TABLE NTChatMessage ADD COLUMN added INTEGER")
+        copy.commit()
+        reader.messages(DIRECT_ROOM)
+        self.assertIn("added", reader.columns("NTChatMessage"))
 
 
 if __name__ == "__main__":

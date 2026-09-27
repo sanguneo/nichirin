@@ -7,7 +7,7 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Final, Optional
 
 from . import paths
 from .context import DEFAULT_LIMIT, _resolve, read_context
@@ -17,6 +17,50 @@ from .reader import Reader
 
 SOCKET_FILE = "daemon.sock"
 PID_FILE = "daemon.pid"
+
+REQUEST_MAX_BYTES: Final = 1024 * 1024
+"""The largest request line the daemon reads: room for any SQL, and a bound.
+
+A stream socket does not keep write boundaries, so one ``recv`` is not one
+request: a request is everything up to its newline, and a line that never
+ends has to be cut off somewhere."""
+
+RESPONSE_MAX_BYTES: Final = 64 * 1024 * 1024
+"""The largest answer a client will hold before giving up on the daemon.
+
+Past it the command runs in this process instead, exactly as it does when no
+daemon is running, so a large query gets the same answer either way; it only
+stops the daemon's answer from growing without a limit in the client."""
+
+REQUEST_TIMEOUT_SECONDS: Final = 10.0
+"""How long one request may take to arrive, however it is split up."""
+
+
+class FrameError(ValueError):
+    """A line on the daemon socket did not arrive whole: cut short, too long or late."""
+
+
+def _receive_line(sock: socket.socket, *, maximum: int, timeout: float, subject: str) -> bytes:
+    """Read one newline-terminated line under one byte and one time budget."""
+    deadline = time.monotonic() + timeout
+    buffer = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise FrameError(f"{subject} did not arrive before its deadline")
+        sock.settimeout(remaining)
+        try:
+            chunk = sock.recv(min(65536, maximum + 1 - len(buffer)))
+        except socket.timeout as error:
+            raise FrameError(f"{subject} did not arrive before its deadline") from error
+        if not chunk:
+            raise FrameError(f"{subject} ended before its newline")
+        newline = chunk.find(b"\n")
+        buffer.extend(chunk if newline < 0 else chunk[:newline])
+        if len(buffer) > maximum:
+            raise FrameError(f"{subject} is too large (over {maximum} bytes)")
+        if newline >= 0:
+            return bytes(buffer)
 
 
 def socket_path(environment: Any = None) -> Path:
@@ -36,7 +80,9 @@ def is_daemon_running(environment: Any = None) -> bool:
             sock.settimeout(0.5)
             sock.connect(str(sock_path))
             sock.sendall(json.dumps({"command": "ping"}).encode("utf-8") + b"\n")
-            response = sock.recv(4096)
+            response = _receive_line(
+                sock, maximum=4096, timeout=0.5, subject="the daemon's answer"
+            )
             data = json.loads(response.decode("utf-8"))
             return bool(data.get("ok"))
     except (OSError, ValueError):
@@ -46,6 +92,13 @@ def is_daemon_running(environment: Any = None) -> bool:
 def send_to_daemon(
     command: str, args: dict[str, Any], environment: Any = None, timeout: float = 5.0
 ) -> Optional[dict[str, Any]]:
+    """Ask the daemon, or answer None so the caller runs the command itself.
+
+    An answer that is cut short, malformed or larger than
+    :data:`RESPONSE_MAX_BYTES` is never handed back as though it were whole;
+    it is None, the same as no daemon at all. Every forwarded command only
+    reads, so running it again here cannot do anything twice.
+    """
     sock_path = socket_path(environment)
     if not sock_path.exists():
         return None
@@ -55,19 +108,14 @@ def send_to_daemon(
             sock.connect(str(sock_path))
             payload = json.dumps({"command": command, "args": args}, ensure_ascii=False)
             sock.sendall(payload.encode("utf-8") + b"\n")
-
-            buffer = bytearray()
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                buffer.extend(chunk)
-                if b"\n" in chunk:
-                    break
-            if not buffer:
-                return None
-            return json.loads(buffer.decode("utf-8"))
+            response = _receive_line(
+                sock, maximum=RESPONSE_MAX_BYTES, timeout=timeout, subject="the daemon's answer"
+            )
+            answer = json.loads(response.decode("utf-8"))
+            return answer if isinstance(answer, dict) else None
     except (OSError, ValueError):
+        # FrameError and a malformed body are ValueErrors: both mean the
+        # answer did not arrive whole.
         return None
 
 
@@ -201,13 +249,27 @@ class DaemonServer:
                     break
 
                 with conn:
-                    conn.settimeout(10.0)
                     try:
-                        raw = conn.recv(65536)
-                        if not raw:
-                            continue
-                        req = json.loads(raw.decode("utf-8"))
-                        command = req.get("command")
+                        try:
+                            raw = _receive_line(
+                                conn,
+                                maximum=REQUEST_MAX_BYTES,
+                                timeout=REQUEST_TIMEOUT_SECONDS,
+                                subject="the request",
+                            )
+                        except FrameError as error:
+                            raise KamadoError(ErrorCode.INVALID_REQUEST, str(error)) from error
+                        try:
+                            req = json.loads(raw.decode("utf-8"))
+                        except ValueError as error:
+                            raise KamadoError(
+                                ErrorCode.INVALID_REQUEST, "the request is not valid JSON"
+                            ) from error
+                        if not isinstance(req, dict):
+                            raise KamadoError(
+                                ErrorCode.INVALID_REQUEST, "the request is not a JSON object"
+                            )
+                        command = str(req.get("command") or "")
                         args = req.get("args", {})
 
                         if command == "ping":

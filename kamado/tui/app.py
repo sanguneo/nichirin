@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import time
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol, Sequence, TYPE_CHECKING
@@ -50,6 +51,7 @@ from .worker import (
     RELEASE,
     ROOMS,
     UNWATCH,
+    Changed,
     DatabaseOwner,
     Done,
     Job,
@@ -67,6 +69,7 @@ from .layout import (
     ELLIPSIS,
     TAB_SEPARATOR,
     Segment,
+    clean,
     display_width,
     elide_head,
     pad_to_width,
@@ -150,6 +153,8 @@ class ChatState:
     """Where the next character goes, counted in characters, not columns."""
     slices: list[digest.Slice] = field(default_factory=list)
     slice_label: str = ""
+    slice_span: Optional[timedelta] = None
+    """The span the digest was cut at, so it can be cut again when a message goes."""
     notice: str = ""
     notice_until: float = 0.0
     """When a passing notice stops showing; 0 keeps it until something replaces it.
@@ -185,8 +190,23 @@ class ChatState:
     A room closed and reopened is a different tab holding the same room, and
     a read the first one asked for must not land in the second.
     """
-    rendered: Optional[tuple[tuple[int, int, frozenset], list[str]]] = None
+    rendered: Optional[tuple[tuple[int, int, int, frozenset], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
+    versions: dict[int, int] = field(default_factory=dict)
+    """What each held row contained when its message was last read, by id.
+
+    A message on screen can change without a new one arriving - deleted for
+    everyone, it keeps its id - so this is what a moved database is compared
+    with. A message with no version yet is simply read again once.
+    """
+    revision: int = 0
+    """Bumped whenever a held message is replaced or removed.
+
+    The transcript is cached by message count, and a message deleted in
+    place changes no count: without this the screen would keep the text.
+    """
+    message_rows: dict[int, int] = field(default_factory=dict)
+    """Which transcript row each message starts on, rebuilt with it."""
     opened_photos: set[int] = field(default_factory=set)
     """Message ids whose picture is currently shown instead of ``[사진]``."""
     offset_before_photo: dict[int, int] = field(default_factory=dict)
@@ -645,8 +665,22 @@ class App:
         # room, loading older history — and they redrew for it themselves.
         # This answers for the poll it is about to ask for.
         self._dirty = False
-        self._ask(Job(ROOMS) if not self.chats else Job(POLL))
+        self._ask(Job(ROOMS) if not self.chats else Job(POLL, payload=self._held()))
         return self._pump(width)
+
+    def _held(self) -> tuple:
+        """What every tab holds, copied for the owner thread to compare.
+
+        A copy, because the owner reads it while this thread goes on
+        changing the tabs; ids and versions are all it needs.
+        """
+        return tuple(
+            (
+                chat.room.id,
+                tuple((message.id, chat.versions.get(message.id)) for message in chat.messages),
+            )
+            for chat in self.chats
+        )
 
     def _settle_poll(self, done: Done) -> bool:
         """Hand each arrival to the room it was written in.
@@ -660,7 +694,8 @@ class App:
                 self.chats[min(self.focus, len(self.chats) - 1)].notice = _said(done.error)
             return True
         arrived = done.value
-        if not arrived or not self.chats:
+        changed = getattr(arrived, "changed", {})
+        if (not arrived and not changed) or not self.chats:
             return False
         width = self._last_width
         drawn = False
@@ -668,7 +703,90 @@ class App:
             mine = [message for message in arrived if message.room_id == chat.room.id]
             if mine and self._absorb(chat, mine, width):
                 drawn = True
+            change = changed.get(chat.room.id)
+            if change is not None and self._reconcile(chat, change, width):
+                drawn = True
         return drawn
+
+    def _reconcile(self, chat: ChatState, change: Changed, width: int) -> bool:
+        """Bring messages already on screen up to date with a database that moved.
+
+        The watcher only asks for ids above the newest it has seen, so a
+        message deleted for everyone - which keeps its id and has its text
+        replaced - stayed on screen as it was, and so did anything built from
+        it: the digest, the export. The owner thread compared the held rows
+        and read again only those that changed; this puts the answer on screen.
+        """
+        chat.versions.update(change.versions)
+        by_id = {message.id: message for message in chat.messages}
+        removed = {one for one in change.removed if one in by_id}
+        rebuilt = {
+            message.id: message
+            for message in change.rebuilt
+            if message.id in by_id and by_id[message.id] != message
+        }
+        if not removed and not rebuilt:
+            # A row whose version was simply not known yet - an arrival, or a
+            # window just opened - says nothing new; the screen stays as it is.
+            return False
+
+        anchor = self._bottom_anchor(chat, width) if chat.offset > 0 else None
+        chat.messages = [
+            rebuilt.get(message.id, message)
+            for message in chat.messages
+            if message.id not in removed
+        ]
+        for one in removed | set(rebuilt):
+            chat.feeds.pop(one, None)
+        for one in removed:
+            chat.versions.pop(one, None)
+            chat.opened_photos.discard(one)
+        for one, message in rebuilt.items():
+            if message.photo is None:
+                chat.opened_photos.discard(one)
+        chat.revision += 1
+        if chat.slices and chat.slice_span is not None:
+            # Cut again from what is left, so a deleted line is not summarised.
+            chat.slices = digest.slice_messages(_spoken(chat.messages), chat.slice_span)
+        if anchor is not None:
+            self._restore_anchor(chat, width, anchor)
+        return True
+
+    def _bottom_anchor(self, chat: ChatState, width: int) -> Optional[tuple[int, int, list[int]]]:
+        """Which message the last visible line belongs to, and how far into it.
+
+        The offset counts lines up from the bottom, so a message that changed
+        below the viewport would move the text being read. Pinning the last
+        visible line to the message it is part of keeps it where it was.
+        """
+        lines = self._transcript_of(chat, width)
+        bottom = len(lines) - min(chat.offset, len(lines))
+        order = [message.id for message in chat.messages if message.id in chat.message_rows]
+        starts = [chat.message_rows[one] for one in order]
+        if not starts or bottom <= 0:
+            return None
+        index = bisect_right(starts, bottom - 1) - 1
+        if index < 0:
+            return None
+        return order[index], bottom - starts[index], order[index:]
+
+    def _restore_anchor(
+        self, chat: ChatState, width: int, anchor: tuple[int, int, list[int]]
+    ) -> None:
+        """Put the anchored line back at the bottom of the viewport.
+
+        A message that is gone hands its place to the next one that is not.
+        """
+        owner, depth, after = anchor
+        lines = self._transcript_of(chat, width)
+        rows = chat.message_rows
+        if owner in rows:
+            following = [rows[one] for one in after[1:] if one in rows]
+            limit = following[0] if following else len(lines)
+            bottom = min(rows[owner] + depth, limit)
+        else:
+            bottom = next((rows[one] for one in after if one in rows), len(lines))
+        chat.offset = max(0, len(lines) - bottom)
 
     def _absorb(self, chat: ChatState, arrived: Sequence[Message], width: int) -> bool:
         """Give one conversation what genuinely is new to it."""
@@ -821,7 +939,7 @@ class App:
             right_part = f"{meta}  {stamp}"
 
             room_width = max(10, width - 2 - display_width(right_part) - 2)
-            title = truncate_to_width(room.title, room_width, ELLIPSIS)
+            title = truncate_to_width(clean(room.title), room_width, ELLIPSIS)
             styled = self.theme.bold(title) if selected else title
             if room.unread:
                 styled = self.theme.fg("warning", styled)
@@ -879,10 +997,10 @@ class App:
             cursor = self.theme.fg("accent", "› ") if selected else "  "
             star = self.theme.fg("warning", "★ ") if friend.favorite else ""
             chat_mark = "" if friend.direct_chat_id else "  (방 없음)"
-            right_part = (friend.status_message or "").replace("\n", " ")
+            right_part = clean(friend.status_message or "")
 
             name_width = max(8, width // 3)
-            name = truncate_to_width(star + friend.name, name_width, ELLIPSIS)
+            name = truncate_to_width(star + clean(friend.name), name_width, ELLIPSIS)
             styled = self.theme.bold(name) if selected else name
 
             left = cursor + styled + self.theme.fg("dim", chat_mark)
@@ -1003,7 +1121,7 @@ class App:
         is on screen.
         """
         strip = plan_tabs(
-            [(chat.room.title, chat.unseen) for chat in self.chats], self.focus, width
+            [(clean(chat.room.title), chat.unseen) for chat in self.chats], self.focus, width
         )
         marker_tint = "warning" if strip.hidden_unseen else "dim"
         pieces: list[str] = []
@@ -1087,7 +1205,8 @@ class App:
         )
         if missing:
             self._ask(Job(FEEDS, room_id=chat.room.id, token=chat.token, payload=(missing,)))
-        key = (width, len(chat.messages), frozenset(chat.opened_photos))
+        # The revision is what a message changed in place changes.
+        key = (width, len(chat.messages), chat.revision, frozenset(chat.opened_photos))
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
         lines = self._build_transcript(chat, width)
@@ -1102,6 +1221,7 @@ class App:
 
         lines: list[str] = []
         chat.photo_rows = {}
+        chat.message_rows = {}
         previous_day = ""
         for message in chat.messages:
             instant = (
@@ -1117,7 +1237,9 @@ class App:
 
             speaker = "나" if message.from_me else message.sender
             stamp = instant.strftime("%H:%M") if instant else "--:--"
-            name = truncate_to_width(speaker, name_width, ELLIPSIS)
+            # Everything below that somebody else wrote is cleaned before it
+            # is styled; the tint still follows the name as it was stored.
+            name = truncate_to_width(clean(speaker), name_width, ELLIPSIS)
             if message.erased:
                 # Said the way the client says it; what was taken back is not
                 # carried here at all.
@@ -1134,9 +1256,11 @@ class App:
                 # because there is nothing to open.
                 wrapped = [self.theme.fg("dim", self._placeholder(message))]
             elif message.text:
-                wrapped = self._wrap_body(message.text, body_width)
+                wrapped = self._wrap_body(
+                    clean(message.text.replace("\r\n", "\n"), keep_newlines=True), body_width
+                )
             else:
-                detail = self._feed_detail(chat, message)
+                detail = clean(self._feed_detail(chat, message))
                 # A join or a leave is a sentence already, the one the client
                 # shows, so it is shown as one rather than as a tag.
                 if is_feed_sentence(detail):
@@ -1153,6 +1277,7 @@ class App:
             )
             body_colour = self.palette.body_colour(speaker)
             opening = head
+            chat.message_rows[message.id] = len(lines)
             if message.reply is not None:
                 # Named once, above what they were answering — the way the
                 # client itself stacks a reply. Their own words come next,
@@ -1654,7 +1779,10 @@ class App:
         if not self.theme.enabled or "http" not in text:
             return wrap_to_width(text, width)
 
-        url_pattern = re.compile(r"(https?://[^\s<>\"'()]+)")
+        # A control character, or the picture clean() leaves in its place,
+        # ends an address: neither belongs inside an OSC 8 target, where one
+        # ESC or BEL would end it early and hand the rest to the terminal.
+        url_pattern = re.compile(r"(https?://[^\s<>\"'()\x00-\x1f\x7f-\x9f\u2400-\u243f]+)")
         urls = [(m.start(), m.end(), m.group(0)) for m in url_pattern.finditer(text)]
         if not urls:
             return wrap_to_width(text, width)
@@ -1716,8 +1844,8 @@ class App:
         """
         quote = message.reply
         assert quote is not None
-        who = "나" if message.replies_to_me else (quote.sender or f"User {quote.sender_id}")
-        said = " ".join(quote.text.split())
+        who = "나" if message.replies_to_me else clean(quote.sender or f"User {quote.sender_id}")
+        said = " ".join(clean(quote.text).split())
         if not said:
             said = f"[{message_kind(quote.type)}]" if quote.type is not None else "[원문 없음]"
         return self.theme.fg("dim", truncate_to_width(f"{who}: {said}", body_width, ELLIPSIS))
@@ -1751,7 +1879,7 @@ class App:
 
         rows.append(boxed(""))
         label = self.theme.fg("customMessageLabel", self.theme.bold("[digest]"))
-        rows.append(boxed(label + self.theme.fg("muted", f" {chat.slice_label}")))
+        rows.append(boxed(label + self.theme.fg("muted", f" {clean(chat.slice_label)}")))
         rows.append(boxed(""))
 
         for piece in chat.slices:
@@ -1766,19 +1894,19 @@ class App:
             )
 
             speakers = ", ".join(
-                f"{name} {count}" for name, count in piece.speakers[:4]
+                f"{clean(name)} {count}" for name, count in piece.speakers[:4]
             )
             if speakers:
                 rows.append(boxed(self.theme.fg("muted", "  who   ") + speakers))
-            keywords = ", ".join(word for word, _count in piece.keywords[:6])
+            keywords = ", ".join(clean(word) for word, _count in piece.keywords[:6])
             if keywords:
                 rows.append(boxed(self.theme.fg("muted", "  about ") + keywords))
 
             for highlight in piece.highlights():
                 speaker = "나" if highlight.from_me else highlight.sender
-                text = (highlight.text or "").replace("\n", " ")
+                text = clean(highlight.text or "")
                 for index, piece_line in enumerate(
-                    wrap_to_width(f"{speaker}: {text}", inner - 8)
+                    wrap_to_width(f"{clean(speaker)}: {text}", inner - 8)
                 ):
                     prefix = "  ┃ " if index == 0 else "    "
                     rows.append(
@@ -1900,7 +2028,10 @@ class App:
                 chat.notice_until = 0.0
             else:
                 bullet = "•"
-                notice_text = truncate_to_width(chat.notice, max(1, width - 8))
+                # A notice quotes titles, names and error text, all of it
+                # somebody else's, so it is cleaned like any line of the
+                # conversation.
+                notice_text = truncate_to_width(clean(chat.notice), max(1, width - 8))
                 left = f"── {bullet} {notice_text} "
                 fill = max(0, width - display_width(left))
                 content = (
@@ -1932,7 +2063,7 @@ class App:
             return self._status_divider(width)
         if chat is not None and chat.unseen:
             return self._status_divider(width)
-        message = self.status
+        message = clean(self.status)
         if message:
             return truncate_to_width(self.theme.fg("muted", message), width)
         return ""
@@ -1968,7 +2099,8 @@ class App:
                 Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
             ]
         else:
-            anchor = [Segment(room.title, self.theme.fg("accent", room.title))]
+            title = clean(room.title)
+            anchor = [Segment(title, self.theme.fg("accent", title))]
             middle = [
                 Segment(people, self.theme.fg("muted", people)),
                 Segment(loaded, self.theme.fg("muted", loaded)),
@@ -2503,11 +2635,12 @@ class App:
                     f"30m, 2h 처럼 적어주세요 (최대 {int(digest.MAX_SPAN.total_seconds() // 3600)}h)"
                 )
                 return
-            slices = digest.slice_messages(chat.messages, span)
+            slices = digest.slice_messages(_spoken(chat.messages), span)
             if not slices:
                 chat.notice = "요약할 메시지가 없습니다"
                 return
             chat.slices = slices
+            chat.slice_span = span
             chat.slice_label = f"{arguments[0]} 구간 · {len(slices)}개 · 최근 12h 이내"
             # A digest is read from its beginning, unlike a conversation.
             chat.anchor_top = True
@@ -2695,6 +2828,15 @@ def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) ->
 def _next_poll_at(now: float, work_seconds: float) -> float:
     """Space refresh submissions; the worker coalesces unfinished polls."""
     return now + max(REFRESH_SECONDS, work_seconds)
+
+
+def _spoken(messages: Sequence[Message]) -> list[Message]:
+    """What a digest is cut from: every message except the ones taken back.
+
+    The screen keeps a deleted message as a placeholder so the gap shows, but
+    a digest counts and quotes what was said, and that was unsaid.
+    """
+    return [message for message in messages if not message.erased]
 
 
 def _same_words(text: str) -> str:

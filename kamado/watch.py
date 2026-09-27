@@ -19,6 +19,7 @@ pass is fully testable without waiting on a clock, and only the loop sleeps.
 
 from __future__ import annotations
 
+import heapq
 import sqlite3
 import time
 from typing import Iterator, Mapping, Optional, Sequence, Union
@@ -60,6 +61,14 @@ class Watcher:
         self._print: Optional[Fingerprint] = None
         self._seen: dict[int, int] = {}
         self._primed = False
+        self.moved: list[int] = []
+        """Rooms read in the last poll because the database had moved.
+
+        A database can move without a new message: a message deleted for
+        everyone keeps its id and has its text replaced. A caller holding
+        messages it has already shown needs to know that happened, and the
+        new ones alone cannot tell it.
+        """
 
     def watch(self, room_id: int) -> None:
         """Follow one more room, from now rather than from its beginning.
@@ -76,11 +85,21 @@ class Watcher:
         if not self._primed:
             return
         try:
-            newest = self._reader.newest_log_id(room_id)
+            self._seen[room_id] = self._position(room_id)
         except _ROOM_FAILURES:
             return
-        if newest is not None:
-            self._seen[room_id] = newest
+
+    def _position(self, room_id: int) -> int:
+        """Where a room stands now, which is 0 for a room with no messages yet.
+
+        An empty room is a place to start from like any other. Leaving it
+        unrecorded sent its first message down the path for a room that was
+        never primed, which records the position without reporting anything -
+        so the first message a room ever received was the one message a
+        follower was guaranteed not to see.
+        """
+        newest = self._reader.newest_log_id(room_id, include_erased=self._include_erased)
+        return 0 if newest is None else newest
 
     def unwatch(self, room_id: int) -> None:
         """Stop following a room, forgetting where it had got to."""
@@ -124,11 +143,9 @@ class Watcher:
         self._print = Fingerprint.of(self._database())
         for room_id in self.watched_rooms():
             try:
-                newest = self._reader.newest_log_id(room_id)
+                self._seen[room_id] = self._position(room_id)
             except _ROOM_FAILURES:
-                newest = None
-            if newest is not None:
-                self._seen[room_id] = newest
+                continue
         self._primed = True
 
     def poll(self) -> list[Message]:
@@ -137,6 +154,7 @@ class Watcher:
         A database that has not moved is never opened, so an unchanged poll
         performs one stat for the whole account and no decryption at all.
         """
+        self.moved = []
         if not self._primed:
             self.prime()
             return []
@@ -145,15 +163,13 @@ class Watcher:
         if self._print == current:
             return []
 
-        fresh: list[Message] = []
+        per_room: list[list[Message]] = []
         failed = False
         for room_id in self.watched_rooms():
             since = self._seen.get(room_id)
             try:
                 if since is None:
-                    newest = self._reader.newest_log_id(room_id)
-                    if newest is not None:
-                        self._seen[room_id] = newest
+                    self._seen[room_id] = self._position(room_id)
                     continue
                 arrived = self._catch_up(room_id, since)
             except _ROOM_FAILURES:
@@ -163,9 +179,10 @@ class Watcher:
                 # is a reason to stop reporting the other rooms.
                 failed = True
                 continue
+            self.moved.append(room_id)
             if arrived:
-                self._seen[room_id] = max(message.id for message in arrived)
-                fresh.extend(arrived)
+                self._seen[room_id] = max(since, arrived[-1].id)
+                per_room.append(arrived)
 
         # Only a pass where every room was read stands in for this state of
         # the database.  Recording it after a failure would let the failed
@@ -175,8 +192,7 @@ class Watcher:
         if not failed:
             self._print = current
 
-        fresh.sort(key=lambda message: (message.sent_at or 0, message.id))
-        return fresh
+        return _interleave(per_room)
 
     def _catch_up(self, room_id: int, since: int) -> list[Message]:
         """Collect every message after *since*, a page at a time.
@@ -184,12 +200,19 @@ class Watcher:
         One page is not enough.  The client backfills from the server after a
         reconnection, so a room can gain far more than a page between two
         polls, and a single read would report the newest page and leave the
-        cursor to skip the rest for good.  Each page is strictly after the
-        last id of the one before it, so this terminates.
+        cursor to skip the rest for good.
+
+        It is also bounded.  Each page is read from whatever snapshot the
+        cache holds by then, so a room written to faster than it is paged
+        through would keep every page full and never let the loop end.  The
+        newest id when the catch-up starts is the ceiling: anything past it
+        is left to the next poll, whose fingerprint will have moved.  That
+        bounds the number of pages, not the rows kept.
         """
+        ceiling = self._reader.newest_log_id(room_id, include_erased=self._include_erased)
         collected: list[Message] = []
         cursor = since
-        while True:
+        while ceiling is not None and cursor < ceiling:
             page = self._reader.messages(
                 room_id,
                 limit=_CATCH_UP_LIMIT,
@@ -211,3 +234,19 @@ class Watcher:
             for message in self.poll():
                 yield message
             time.sleep(self.interval)
+
+
+def _interleave(per_room: Sequence[Sequence[Message]]) -> list[Message]:
+    """Merge rooms by time without reordering anything inside one room.
+
+    Each room arrives in log-id order, and that order is the contract: it is
+    what a cursor resumes from.  Sorting everything by time broke it whenever
+    a room's clock disagreed with its ids - ``(10, 12:01)`` then
+    ``(11, 12:00)`` came out as 11, 10, and a follower storing the last id it
+    saw stored 10 and was handed 11 again on reconnecting.  A merge only ever
+    compares the next message of each room, so across rooms the earlier one
+    still goes first, and within a room nothing moves.
+    """
+    return list(
+        heapq.merge(*per_room, key=lambda message: (message.sent_at or 0, message.id))
+    )

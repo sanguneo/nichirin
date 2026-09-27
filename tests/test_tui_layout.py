@@ -16,6 +16,7 @@ from kamado.tui.layout import (
     MIN_TAB_COLUMNS,
     TAB_SEPARATOR,
     Segment,
+    clean,
     display_width,
     elide_head,
     pad_to_width,
@@ -112,6 +113,38 @@ class WrapTests(unittest.TestCase):
         text = "가나다 라마바 사아자"
         joined = "".join(wrap_to_width(text, 8)).replace(" ", "")
         self.assertEqual(joined, text.replace(" ", ""))
+
+
+class CleanTests(unittest.TestCase):
+    """Text somebody else wrote reaches the terminal as text, never as a command."""
+
+    def test_printable_text_is_returned_unchanged(self) -> None:
+        text = "안녕하세요 hello ✓ ↳ 😀"
+        self.assertIs(clean(text), text)
+
+    def test_every_control_is_replaced_by_something_visible(self) -> None:
+        cleaned = clean("a\x1b[2Jb\x07c\x7fd\x9be\x00f")
+        self.assertTrue(cleaned.isprintable())
+        self.assertEqual(cleaned, "a\u241b[2Jb\u2407c\u2421d\ufffde\u2400f")
+
+    def test_one_character_in_is_one_character_out(self) -> None:
+        text = "x\x1b\t\r\ny\x85"
+        self.assertEqual(len(clean(text)), len(text))
+        self.assertEqual(len(clean(text, keep_newlines=True)), len(text))
+
+    def test_newlines_are_kept_only_when_asked_for(self) -> None:
+        self.assertEqual(clean("a\nb"), "a b")
+        self.assertEqual(clean("a\nb", keep_newlines=True), "a\nb")
+
+    def test_tab_and_carriage_return_become_spaces(self) -> None:
+        self.assertEqual(clean("a\tb\rc"), "a b c")
+
+    def test_the_replacements_occupy_the_columns_they_are_measured_at(self) -> None:
+        for text in ("\x1b[2J", "\x07", "\x7f", "\x9b"):
+            with self.subTest(text=ascii(text)):
+                cleaned = clean(text)
+                self.assertEqual(display_width(cleaned), len(cleaned))
+                self.assertEqual(strip_ansi(cleaned), cleaned)
 
 
 class FooterTests(unittest.TestCase):

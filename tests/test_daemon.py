@@ -59,6 +59,133 @@ class DaemonTests(unittest.TestCase):
             server._cleanup()
 
 
+class _Connection:
+    """One end of a socket that hands its bytes over in exactly the pieces given.
+
+    A stream socket keeps no write boundaries, so what one ``recv`` returns is
+    whatever arrived; scripting the pieces is how a split is made certain
+    rather than hoped for.
+    """
+
+    def __init__(self, pieces: list[bytes]) -> None:
+        self.pieces = list(pieces)
+        self.sent = bytearray()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_error) -> None:
+        return None
+
+    def settimeout(self, _timeout: float) -> None:
+        return None
+
+    def connect(self, _path: str) -> None:
+        return None
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.extend(data)
+
+    def recv(self, size: int) -> bytes:
+        if not self.pieces:
+            return b""
+        piece = self.pieces.pop(0)
+        if len(piece) > size:
+            self.pieces.insert(0, piece[size:])
+            piece = piece[:size]
+        return piece
+
+
+class _Listener:
+    """A listening socket that accepts one scripted connection, then stops the server."""
+
+    def __init__(self, server: daemon.DaemonServer, connection: _Connection) -> None:
+        self.server = server
+        self.connection = connection
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_error) -> None:
+        return None
+
+    def bind(self, _path: str) -> None:
+        return None
+
+    def listen(self, _backlog: int) -> None:
+        return None
+
+    def settimeout(self, _timeout: float) -> None:
+        return None
+
+    def accept(self):
+        self.server.running = False
+        return self.connection, None
+
+
+class FramingTests(unittest.TestCase):
+    """A request is everything up to its newline, and one read is not one request."""
+
+    def serve(self, pieces: list[bytes]) -> dict:
+        import json
+
+        server = daemon.DaemonServer(environment=None)
+        connection = _Connection(pieces)
+        server.running = True
+        with patch("kamado.daemon.socket.socket", return_value=_Listener(server, connection)):
+            server._serve()
+        return json.loads(connection.sent.decode("utf-8"))
+
+    def padded(self, size: int) -> bytes:
+        prefix, suffix = b'{"command":"ping","padding":"', b'"}'
+        return prefix + b"x" * (size - len(prefix) - len(suffix)) + suffix
+
+    def test_a_request_split_across_two_reads_is_put_back_together(self) -> None:
+        self.assertEqual(self.serve([b'{"command":"pi', b'ng"}\n']), {"ok": True, "status": "pong"})
+
+    def test_a_request_exactly_at_the_limit_is_read(self) -> None:
+        answer = self.serve([self.padded(daemon.REQUEST_MAX_BYTES) + b"\n"])
+        self.assertEqual(answer, {"ok": True, "status": "pong"})
+
+    def test_a_request_past_the_limit_is_refused(self) -> None:
+        answer = self.serve([self.padded(daemon.REQUEST_MAX_BYTES + 1) + b"\n"])
+        self.assertEqual(answer["error"]["code"], ErrorCode.INVALID_REQUEST.value)
+        self.assertIn("too large", answer["error"]["message"])
+
+    def test_a_request_cut_off_before_its_newline_is_incomplete(self) -> None:
+        answer = self.serve([b'{"command":"ping"}'])
+        self.assertEqual(answer["error"]["code"], ErrorCode.INVALID_REQUEST.value)
+        self.assertIn("newline", answer["error"]["message"])
+
+    def test_malformed_json_is_told_apart_from_an_incomplete_request(self) -> None:
+        answer = self.serve([b'{"command":}\n'])
+        self.assertEqual(answer["error"]["code"], ErrorCode.INVALID_REQUEST.value)
+        self.assertIn("JSON", answer["error"]["message"])
+
+    def client(self, pieces: list[bytes]):
+        connection = _Connection(pieces)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "daemon.sock"
+        path.touch()
+        with (
+            patch("kamado.daemon.socket_path", return_value=path),
+            patch("kamado.daemon.socket.socket", return_value=connection),
+        ):
+            return daemon.send_to_daemon("ping", {})
+
+    def test_an_answer_split_across_reads_is_put_back_together(self) -> None:
+        self.assertEqual(self.client([b'{"ok": tr', b'ue}\n']), {"ok": True})
+
+    def test_an_answer_cut_short_is_not_taken_as_whole(self) -> None:
+        """None sends the caller to run the command itself, as with no daemon."""
+        self.assertIsNone(self.client([b'{"ok": true, "rooms": [']))
+
+    def test_an_answer_past_the_limit_is_not_held(self) -> None:
+        with patch.object(daemon, "RESPONSE_MAX_BYTES", 64):
+            self.assertIsNone(self.client([b'{"ok": true, "padding": "' + b"x" * 100 + b'"}\n']))
+
+
 class NamedRoomTests(unittest.TestCase):
     """`messages` given a title rather than an id.
 

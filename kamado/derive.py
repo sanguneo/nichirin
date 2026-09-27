@@ -179,10 +179,17 @@ def candidate_user_ids(plist: dict) -> list[int]:
 
 
 def read_preferences(path: Path) -> dict:
-    """Load one preferences plist, treating an unreadable one as empty."""
+    """Load one preferences plist, treating a missing or damaged one as empty.
+
+    A refusal is not either of those. ``PermissionError`` is left to rise, so
+    the guard around the read can name the permission rather than the tool
+    quietly concluding that no account is signed in.
+    """
     try:
         with path.open("rb") as handle:
             loaded = plistlib.load(handle)
+    except PermissionError:
+        raise
     except (OSError, ValueError, plistlib.InvalidFileException):
         return {}
     return loaded if isinstance(loaded, dict) else {}
