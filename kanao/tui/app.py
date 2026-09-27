@@ -17,7 +17,9 @@ must change that key.
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence, TYPE_CHECKING
@@ -108,6 +110,8 @@ class ChatState:
     """Where the next character goes, counted in characters, not columns."""
     slices: list[digest.Slice] = field(default_factory=list)
     slice_label: str = ""
+    slice_span: Optional[timedelta] = None
+    """The span the digest was cut at, so it can be cut again when a message goes."""
     notice: str = ""
     watcher: Optional[Watcher] = None
     """Follows this room so arrivals show up without reopening it."""
@@ -129,8 +133,22 @@ class ChatState:
     """
     feeds: dict[int, str] = field(default_factory=dict)
     """What each feed row in this window says about itself, asked once."""
-    rendered: Optional[tuple[tuple[int, int, frozenset[int]], list[str]]] = None
+    rendered: Optional[tuple[tuple[int, int, int, frozenset[int]], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
+    versions: dict[int, int] = field(default_factory=dict)
+    """What each loaded row held when its message was built, by id.
+
+    A message on screen can change without a new one arriving - deleted for
+    everyone, it keeps its id - so this is what a moved log is compared with.
+    """
+    revision: int = 0
+    """Bumped whenever a loaded message is replaced or removed.
+
+    The transcript is cached by message count, and a message deleted in
+    place changes no count: without this the screen would keep the text.
+    """
+    message_rows: dict[int, int] = field(default_factory=dict)
+    """Which transcript row each message starts on, rebuilt with it."""
     opened_photos: set[int] = field(default_factory=set)
     """Which messages are showing their picture rather than a label."""
     photo_rows: dict[int, int] = field(default_factory=dict)
@@ -428,7 +446,10 @@ class App:
             self.focus = already
             return
 
-        messages = self.reader.messages(room.id, limit=HISTORY_WINDOW, include_erased=True)
+        versions: dict[int, int] = {}
+        messages = self.reader.messages(
+            room.id, limit=HISTORY_WINDOW, include_erased=True, versions=versions
+        )
         if not beside:
             self.palette = SpeakerPalette(dark=self.theme.dark)
         for message in messages:
@@ -448,6 +469,7 @@ class App:
             draft=kept,
             caret=len(kept),
             window_alias=stored if stored and stored != room.title else None,
+            versions=versions,
         )
         if beside:
             self.chats.append(opened)
@@ -515,7 +537,7 @@ class App:
         return drawn
 
     def _refresh_pane(self, chat: ChatState, width: int) -> bool:
-        """Pick up what arrived in one conversation."""
+        """Pick up what arrived in one conversation, and what changed in it."""
         if chat.watcher is None:
             return False
         try:
@@ -523,9 +545,15 @@ class App:
         except KanaoError as error:
             chat.notice = error.message
             return True
+        drawn = self._append_arrivals(chat, arrived, width)
+        if chat.room.id in getattr(chat.watcher, "moved", ()):
+            drawn |= self._reconcile(chat, width)
+        return drawn
+
+    def _append_arrivals(self, chat: ChatState, arrived: Sequence[Message], width: int) -> bool:
+        """Add what is new to the conversation, holding the reader's place."""
         if not arrived:
             return False
-
         known = {message.id for message in chat.messages}
         fresh = [message for message in arrived if message.id not in known]
         if not fresh:
@@ -545,6 +573,113 @@ class App:
         else:
             chat.unseen = 0
         return True
+
+    def _reconcile(self, chat: ChatState, width: int) -> bool:
+        """Bring messages already on screen up to date with a log that moved.
+
+        The watcher only asks for ids above the newest it has seen, so a
+        message deleted for everyone - which keeps its id and has its text
+        replaced - stayed on screen as it was, and so did anything built from
+        it: the digest, the export. The rows the window holds are compared by
+        version, one range read with no names or quotes, and only a row that
+        changed is read again; a row no longer returned at all is taken out.
+
+        What a row held and the message built from it always come from the
+        same read, so a change landing between two reads is caught by the
+        next poll rather than filed as already seen.
+        """
+        if not chat.messages:
+            return False
+        low, high = chat.messages[0].id, chat.messages[-1].id
+        try:
+            current = self.reader.row_versions(chat.room.id, low, high, include_erased=True)
+        except (KanaoError, OSError, sqlite3.Error):
+            return False
+        held = [message.id for message in chat.messages]
+        removed = {one for one in held if one not in current}
+        stale = [
+            one for one in held if one in current and chat.versions.get(one) != current[one]
+        ]
+        if not removed and not stale:
+            return False
+        rebuilt: dict[int, Message] = {}
+        if stale:
+            fresh_versions: dict[int, int] = {}
+            try:
+                again = self.reader.messages_at(
+                    chat.room.id, stale, include_erased=True, versions=fresh_versions
+                )
+            except (KanaoError, OSError, sqlite3.Error):
+                return False
+            rebuilt = {message.id: message for message in again}
+            chat.versions.update(fresh_versions)
+            # Gone between the two reads: as removed as a row the first missed.
+            removed |= {one for one in stale if one not in rebuilt}
+        if not removed and all(
+            rebuilt[message.id] == message for message in chat.messages if message.id in rebuilt
+        ):
+            # A row whose version was simply not known yet - an arrival read
+            # a moment earlier - says nothing new; the screen stays as it is.
+            return False
+
+        anchor = self._bottom_anchor(chat, width) if chat.offset > 0 else None
+        chat.messages = [
+            rebuilt.get(message.id, message)
+            for message in chat.messages
+            if message.id not in removed
+        ]
+        for one in removed | set(rebuilt):
+            chat.feeds.pop(one, None)
+        for one in removed:
+            chat.versions.pop(one, None)
+            chat.opened_photos.discard(one)
+        for one, message in rebuilt.items():
+            if message.photo is None:
+                chat.opened_photos.discard(one)
+        chat.revision += 1
+        if chat.slices and chat.slice_span is not None:
+            # Cut again from what is left, so a deleted line is not summarised.
+            chat.slices = digest.slice_messages(_said(chat.messages), chat.slice_span)
+        if anchor is not None:
+            self._restore_anchor(chat, width, anchor)
+        return True
+
+    def _bottom_anchor(self, chat: ChatState, width: int) -> Optional[tuple[int, int, list[int]]]:
+        """Which message the last visible line belongs to, and how far into it.
+
+        The offset counts lines up from the bottom, so a message that changed
+        below the viewport would move the text being read. Pinning the last
+        visible line to the message it is part of keeps it where it was.
+        """
+        lines = self._transcript_of(chat, width)
+        bottom = len(lines) - min(chat.offset, len(lines))
+        order = [message.id for message in chat.messages if message.id in chat.message_rows]
+        starts = [chat.message_rows[one] for one in order]
+        if not starts or bottom <= 0:
+            return None
+        index = bisect_right(starts, bottom - 1) - 1
+        if index < 0:
+            return None
+        return order[index], bottom - starts[index], order[index:]
+
+    def _restore_anchor(
+        self, chat: ChatState, width: int, anchor: tuple[int, int, list[int]]
+    ) -> None:
+        """Put the anchored line back at the bottom of the viewport.
+
+        A message that is gone hands its place to the next one that is not.
+        """
+        owner, depth, after = anchor
+        lines = self._transcript_of(chat, width)
+        rows = chat.message_rows
+        if owner in rows:
+            following = [rows[one] for one in after[1:] if one in rows]
+            limit = following[0] if following else len(lines)
+            bottom = min(rows[owner] + depth, limit)
+        else:
+            survivor = next((rows[one] for one in after if one in rows), len(lines))
+            bottom = survivor
+        chat.offset = max(0, len(lines) - bottom)
 
     def _confirm_delivery(self, chat: ChatState, arrived: Sequence[Message]) -> None:
         """Turn the queued mark into a tick once the client writes it back.
@@ -591,8 +726,14 @@ class App:
         chat = self.chat
         if chat is None or not chat.messages:
             return
+        # Erased rows are kept here as they are everywhere else on this
+        # screen; without them an older page lost the placeholders.
         older = self.reader.messages(
-            chat.room.id, limit=LOAD_MORE_STEP, before_id=chat.messages[0].id
+            chat.room.id,
+            limit=LOAD_MORE_STEP,
+            before_id=chat.messages[0].id,
+            include_erased=True,
+            versions=chat.versions,
         )
         if not older:
             chat.notice = "이전 기록이 더 없습니다"
@@ -883,8 +1024,9 @@ class App:
     def _transcript_of(self, chat: ChatState, width: int) -> list[str]:
         """The same, for one named conversation rather than the focused one."""
         # Opening a picture reserves rows, so it changes the transcript as
-        # surely as a new message does and has to change the key with it.
-        key = (width, len(chat.messages), frozenset(chat.opened_photos))
+        # surely as a new message does and has to change the key with it;
+        # the revision is what a message changed in place changes.
+        key = (width, len(chat.messages), chat.revision, frozenset(chat.opened_photos))
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
         lines = self._build_transcript(chat, width)
@@ -925,6 +1067,7 @@ class App:
         # Rebuilt with the transcript, because a row number only means anything
         # against the lines it was counted in.
         chat.photo_rows = {}
+        chat.message_rows = {}
         for message in chat.messages:
             instant = (
                 datetime.fromtimestamp(message.sent_at, timezone.utc).astimezone(self.zone)
@@ -984,6 +1127,7 @@ class App:
             )
             body_colour = self.palette.body_colour(speaker)
             opening = head
+            chat.message_rows[message.id] = len(lines)
             if message.reply is not None:
                 # Named once, above what they were answering — the way the
                 # client itself stacks a reply. Their own words come next,
@@ -1676,11 +1820,12 @@ class App:
                     f"30m, 2h 처럼 적어주세요 (최대 {int(digest.MAX_SPAN.total_seconds() // 3600)}h)"
                 )
                 return
-            slices = digest.slice_messages(chat.messages, span)
+            slices = digest.slice_messages(_said(chat.messages), span)
             if not slices:
                 chat.notice = "요약할 메시지가 없습니다"
                 return
             chat.slices = slices
+            chat.slice_span = span
             chat.slice_label = f"{arguments[0]} 구간 · {len(slices)}개 · 최근 12h 이내"
             # A digest is read from its beginning, unlike a conversation.
             chat.anchor_top = True
@@ -1862,6 +2007,15 @@ def _next_poll_at(now: float, work_seconds: float) -> float:
     one stat.
     """
     return now + max(REFRESH_SECONDS, work_seconds)
+
+
+def _said(messages: Sequence[Message]) -> list[Message]:
+    """What a digest is cut from: every message except the ones taken back.
+
+    The screen keeps a deleted message as a placeholder so the gap shows, but
+    a digest counts and quotes what was said, and that was unsaid.
+    """
+    return [message for message in messages if not message.erased]
 
 
 def _same_words(text: str) -> str:

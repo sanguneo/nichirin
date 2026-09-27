@@ -717,6 +717,39 @@ class SchemaLifetimeTests(unittest.TestCase):
             self.assertEqual(reply.message_id, 5000)
 
 
+class RowVersionTests(unittest.TestCase):
+    """How a caller holding messages learns that one of them changed."""
+
+    def test_a_version_moves_when_a_row_changes_and_only_then(self) -> None:
+        with build_reader() as reader:
+            before = reader.row_versions(DIRECT_ROOM, 5000, 5003)
+            self.assertEqual(set(before), {5000, 5001, 5003})
+            self.assertEqual(reader.row_versions(DIRECT_ROOM, 5000, 5003), before)
+            log = reader._cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+            log.execute("UPDATE chatLogs SET message = 'edited' WHERE logId = 5001")
+            log.commit()
+            after = reader.row_versions(DIRECT_ROOM, 5000, 5003)
+        self.assertNotEqual(after[5001], before[5001])
+        self.assertEqual(after[5000], before[5000])
+
+    def test_versions_taken_with_messages_match_the_range_read(self) -> None:
+        with build_reader() as reader:
+            versions: dict[int, int] = {}
+            reader.messages(DIRECT_ROOM, versions=versions)
+            self.assertEqual(versions, reader.row_versions(DIRECT_ROOM, 5000, 5003))
+
+    def test_a_row_no_longer_returned_has_no_version(self) -> None:
+        with build_reader() as reader:
+            log = reader._cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+            log.execute("UPDATE chatLogs SET deleted = 1 WHERE logId = 5000")
+            log.commit()
+            self.assertNotIn(5000, reader.row_versions(DIRECT_ROOM, 5000, 5003))
+            self.assertEqual(
+                [message.id for message in reader.messages_at(DIRECT_ROOM, [5000, 5003])],
+                [5003],
+            )
+
+
 class _EvictingCache:
     """A cache that holds one snapshot and closes the rest, like a tight budget.
 

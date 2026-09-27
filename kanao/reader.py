@@ -68,6 +68,19 @@ the quote has to be read back out of the conversation.
 """
 
 
+_IN_CHUNK = 500
+"""How many ids one ``IN`` list carries, well inside SQLite's variable limit."""
+
+
+def _version(row: "sqlite3.Row | tuple[Any, ...]") -> int:
+    """A digest of the columns one message is built from.
+
+    Only compared with another taken in the same process, so Python's own
+    hash is enough; it is not a checksum and is never stored.
+    """
+    return hash(tuple(row))
+
+
 class Reader:
     """Read-only access to one signed-in KakaoTalk profile."""
 
@@ -684,8 +697,13 @@ class Reader:
         before_id: Optional[int] = None,
         after_id: Optional[int] = None,
         include_erased: bool = False,
+        versions: Optional[dict[int, int]] = None,
     ) -> list[Message]:
         """Return up to *limit* messages, oldest first.
+
+        *versions*, when given, is filled with each returned row's version -
+        see :meth:`row_versions` - taken from the very rows the messages were
+        built from, so a caller holding them can later tell which changed.
 
         *include_erased* keeps messages deleted for everyone, text withheld,
         so the interface can say "삭제된 메시지입니다" where the client does.
@@ -722,6 +740,69 @@ class Reader:
         rows = connection.execute(sql, parameters).fetchall()
         if not forwards:
             rows = list(reversed(rows))
+        if versions is not None:
+            versions.update({int(row[0]): _version(row) for row in rows})
+        self._revalidate_names()
+        return [self._message(room_id, row) for row in rows]
+
+    def row_versions(
+        self, room_id: int, low: int, high: int, include_erased: bool = False
+    ) -> dict[int, int]:
+        """Say what each row between two ids currently holds, without reading it.
+
+        A message already on screen can change without a new one arriving:
+        deleted for everyone, it keeps its id and has its text replaced, and
+        a follower that only asks for higher ids never looks at it again. The
+        version is a digest of the columns a message is built from, so a row
+        that changed has a different one; a row no longer returned at all -
+        deleted, or a feed that is never shown - is simply absent.
+
+        One range read on the primary key and no names, quotes or JSON, which
+        is what makes asking after every change of the log affordable.
+        """
+        connection = self._logs(room_id)
+        condition = (
+            self._kept(room_id, connection) if include_erased else self._live(room_id, connection)
+        )
+        rows = connection.execute(
+            f"SELECT {self._selection(room_id, connection)} FROM chatLogs "
+            f"WHERE {condition} AND logId BETWEEN ? AND ?",
+            (low, high),
+        ).fetchall()
+        return {int(row[0]): _version(row) for row in rows}
+
+    def messages_at(
+        self,
+        room_id: int,
+        log_ids: Sequence[int],
+        include_erased: bool = False,
+        versions: Optional[dict[int, int]] = None,
+    ) -> list[Message]:
+        """Read these messages again, oldest first, leaving out any now gone.
+
+        The counterpart of :meth:`row_versions`: once a caller knows which of
+        its rows changed, only those are rebuilt.
+        """
+        if not log_ids:
+            return []
+        connection = self._logs(room_id)
+        condition = (
+            self._kept(room_id, connection) if include_erased else self._live(room_id, connection)
+        )
+        wanted = sorted(set(log_ids))
+        rows: list[Any] = []
+        for start in range(0, len(wanted), _IN_CHUNK):
+            chunk = wanted[start : start + _IN_CHUNK]
+            places = ",".join("?" for _ in chunk)
+            rows.extend(
+                connection.execute(
+                    f"SELECT {self._selection(room_id, connection)} FROM chatLogs "
+                    f"WHERE {condition} AND logId IN ({places}) ORDER BY logId",
+                    chunk,
+                ).fetchall()
+            )
+        if versions is not None:
+            versions.update({int(row[0]): _version(row) for row in rows})
         self._revalidate_names()
         return [self._message(room_id, row) for row in rows]
 

@@ -8,11 +8,13 @@ time somebody types.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from kanao import paths
+from kanao.model import ERASED_PLACEHOLDER
 from tests.platform import require_windows_console
 
 require_windows_console()
@@ -203,6 +205,126 @@ class DigestTests(LiveTests):
 
         self.assertEqual(self.viewport(), before, "the digest was rebuilt underneath the reader")
         self.assertIn("AFTER_DIGEST", [m.text for m in self.chat().messages])
+
+
+class ChangedInPlaceTests(LiveTests):
+    """A message already on screen can change without a new one arriving.
+
+    Deleted for everyone, it keeps its id and has its text replaced, and the
+    watcher only asks for ids above the newest it has seen - so the text
+    stayed on screen, in the digest and in the export, until the room was
+    opened again.
+    """
+
+    def change(self, sql: str, parameters: tuple, room_id: int = DIRECT_ROOM) -> None:
+        connection = self.cache.databases[paths.chat_log_name(room_id)]
+        connection.execute(sql, parameters)
+        connection.commit()
+        touch_log(self.root, room_id, b"changed " + sql.encode()[:40] + repr(parameters).encode())
+
+    def erase(self, log_id: int) -> None:
+        """What the client does: the row stays, flagged, its text replaced."""
+        self.change(
+            "UPDATE chatLogs SET type = type | 16384, message = 'c2VjcmV0' WHERE logId = ?",
+            (log_id,),
+        )
+
+    def test_a_message_deleted_for_everyone_is_replaced_by_the_placeholder(self) -> None:
+        self.assertIn("third", self.body())
+        self.erase(5003)
+        self.assertTrue(self.app.refresh(WIDTH))
+        body = self.body()
+        self.assertNotIn("third", body)
+        self.assertIn(ERASED_PLACEHOLDER, body)
+        self.assertNotIn("third", [message.text for message in self.chat().messages])
+
+    def test_the_feed_a_deletion_writes_does_not_show_beside_it(self) -> None:
+        self.erase(5003)
+        connection = self.cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (5004, ?, 0, ?, NULL, 1800005004, 0)",
+            (PEER_ID, json.dumps({"feedType": 14, "logId": 5003, "hidden": True})),
+        )
+        connection.commit()
+        touch_log(self.root, DIRECT_ROOM, b"feed fourteen")
+        self.app.refresh(WIDTH)
+        body = self.body()
+        self.assertNotIn("third", body)
+        self.assertNotIn("feed 14", body)
+        self.assertEqual(body.count(ERASED_PLACEHOLDER), 1)
+
+    def test_a_row_deleted_outright_leaves_the_conversation(self) -> None:
+        self.change("UPDATE chatLogs SET deleted = 1 WHERE logId = ?", (5000,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertNotIn(5000, [message.id for message in self.chat().messages])
+        self.assertNotIn("first", self.body())
+
+    def test_text_replaced_at_the_same_id_is_shown_as_it_is_now(self) -> None:
+        self.change("UPDATE chatLogs SET message = 'REWRITTEN' WHERE logId = ?", (5000,))
+        self.app.refresh(WIDTH)
+        self.assertIn("REWRITTEN", self.body())
+        self.assertNotIn("first", self.body())
+
+    def test_a_log_that_moved_without_changing_a_held_row_redraws_nothing(self) -> None:
+        self.body()
+        rendered = self.chat().rendered
+        touch_log(self.root, DIRECT_ROOM, b"moved, nothing changed")
+        self.assertFalse(self.app.refresh(WIDTH))
+        self.body()
+        self.assertEqual(self.chat().revision, 0)
+        self.assertIs(self.chat().rendered, rendered, "the transcript was rebuilt")
+
+    def test_a_deletion_below_the_viewport_does_not_move_what_is_being_read(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        before = self.viewport()
+
+        self.change("UPDATE chatLogs SET deleted = 1 WHERE logId = ?", (5629,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertEqual(self.viewport(), before, "the viewport moved under the reader")
+
+    def test_a_deletion_inside_the_viewport_leaves_the_rest_in_place(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        self.assertIn("HISTORY20", self.viewport())
+        self.erase(5620)
+        self.app.refresh(WIDTH)
+        viewport = self.viewport()
+        self.assertNotIn("HISTORY20", viewport)
+        self.assertIn("HISTORY19", viewport)
+        self.assertIn("HISTORY21", viewport)
+
+    def test_a_digest_is_cut_again_without_the_deleted_line(self) -> None:
+        for index in range(6):
+            self.arrive(6000 + index, f"주제 배포 회의 {index}")
+        self.app.refresh(WIDTH)
+        self.app._run_command("/sum 30m")
+
+        def said() -> list[str]:
+            return [
+                message.text for piece in self.chat().slices for message in piece.messages
+            ]
+
+        self.assertIn("주제 배포 회의 5", said())
+        self.assertIn("6 messages", self.viewport())
+
+        self.erase(6005)
+        self.app.refresh(WIDTH)
+        self.assertNotIn("주제 배포 회의 5", said())
+        self.assertIn("5 messages", self.viewport())
+
+    def test_an_older_page_keeps_its_deleted_messages_as_placeholders(self) -> None:
+        self.erase(5000)
+        chat = self.chat()
+        chat.messages = [message for message in chat.messages if message.id != 5000]
+        self.app.load_older()
+        self.assertIn(5000, [message.id for message in chat.messages])
+        self.assertTrue(next(m for m in chat.messages if m.id == 5000).erased)
 
 
 if __name__ == "__main__":

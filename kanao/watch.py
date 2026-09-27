@@ -62,6 +62,14 @@ class Watcher:
         self._prints: dict[int, Fingerprint] = {}
         self._seen: dict[int, int] = {}
         self._primed = False
+        self.moved: list[int] = []
+        """Rooms whose log changed and was read in the last poll.
+
+        A log can move without a new message: a message deleted for everyone
+        keeps its id and has its text replaced. A caller holding messages it
+        has already shown needs to know that happened, and the new ones alone
+        cannot tell it.
+        """
 
     def watched_rooms(self) -> list[int]:
         """Return the room ids being followed, defaulting to every readable room."""
@@ -96,7 +104,9 @@ class Watcher:
             path = self._log_path(room_id)
             self._prints[room_id] = Fingerprint.of(path)
             try:
-                newest = self._reader.newest_log_id(room_id)
+                newest = self._reader.newest_log_id(
+                    room_id, include_erased=self._include_erased
+                )
             except _ROOM_FAILURES:
                 newest = None
             if newest is not None:
@@ -114,6 +124,7 @@ class Watcher:
             return []
 
         per_room: list[list[Message]] = []
+        self.moved = []
         for room_id in self.watched_rooms():
             path = self._log_path(room_id)
             current = Fingerprint.of(path)
@@ -123,7 +134,9 @@ class Watcher:
             since = self._seen.get(room_id)
             try:
                 if since is None:
-                    newest = self._reader.newest_log_id(room_id)
+                    newest = self._reader.newest_log_id(
+                        room_id, include_erased=self._include_erased
+                    )
                     if newest is not None:
                         self._seen[room_id] = newest
                     arrived = []
@@ -143,6 +156,7 @@ class Watcher:
                 continue
 
             self._prints[room_id] = current
+            self.moved.append(room_id)
             if arrived:
                 self._seen[room_id] = max(since, arrived[-1].id)
                 per_room.append(arrived)

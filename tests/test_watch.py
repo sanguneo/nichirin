@@ -114,6 +114,25 @@ class DetectionTests(WatcherTests):
         self.assertTrue(found[0].from_me)
 
 
+class MovedTests(WatcherTests):
+    """A log can move with nothing new in it, and a caller needs to know."""
+
+    def test_a_room_whose_log_moved_is_named_even_with_nothing_new(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        touch_log(self.root, DIRECT_ROOM, b"a message was deleted in place")
+        self.assertEqual(watcher.poll(), [])
+        self.assertEqual(watcher.moved, [DIRECT_ROOM])
+
+    def test_a_quiet_poll_names_no_room(self) -> None:
+        watcher = Watcher(self.reader)
+        watcher.prime()
+        touch_log(self.root, DIRECT_ROOM, b"moved")
+        watcher.poll()
+        watcher.poll()
+        self.assertEqual(watcher.moved, [])
+
+
 class CatchUpTests(WatcherTests):
     """A burst larger than one catch-up page must still arrive whole.
 
