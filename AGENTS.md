@@ -66,6 +66,7 @@ the current implementation already satisfies it.
 | `winauto.py` | Exact window targeting, draft replacement, background text sending |
 | `wic.py` | Any image's bytes → pixels, through the codecs Windows already has |
 | `digest.py` | The digest the command and the server both ask for |
+| `files.py` | A file message's bytes: the client's saved copy, or its address |
 | `serve/config.py` | Constants, token and interval validation, error-to-status map |
 | `serve/handler.py` | Auth, routing, and every route that answers and closes |
 | `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
@@ -302,6 +303,58 @@ Taken from a live client, not guessed.
   code stays a number until it is checked the same way.
   They are shown as the client's own sentence, "이름님이 입장하셨습니다." —
   three names at most, then "외 N명" — and not as a bracketed tag.
+
+### What else a room records: 공감, edits, notices, files, SafeBot
+
+Read off this client on 2026-09-28, nine readable rooms, schema and counts
+only. The idea came from reviewing `piratetalk-web`, whose read side does the
+same with the same tables; its send side injects a DLL and none of that
+crossed over.
+
+- **공감 live in `chatLogMeta`, keyed `(logId, type)`, `type = 2`.** 746 rows,
+  each `{"rx": [{"k", "c", "o", "a": {"ko"}}]}`: `c` how many, `o` the mini
+  emoticon, `a.ko` the word the client shows (사랑 333, 엄지척 300, 웃음 44 …).
+  `k` was 2 on all 840 entries and is not relied on. **Who reacted is not
+  stored.** The content is read by a correlated subquery *inside* the message
+  selection, so a 공감 added later changes the row's version and the screen
+  rebuilds that row like any other change; it is one primary-key lookup. The
+  table is asked for, not assumed, like `threadId`.
+- **An edit raises `chatLogs.revision` and keeps every version in
+  `chatLogHistory(logId, revision, …)`.** 128 edited rows: 96 had history and
+  every one held revision 0 through the current one; 32 had none. The edit also
+  writes a `feedType 25` feed (140 of them, all `hidden: true`) that is hidden
+  like the deletion feed 14 — the mark stands on the message. **History is
+  refused for a message deleted for everyone**: 4 erased rows had history, and
+  returning it would undo the deletion.
+- **The notice is in the catalog twice, and the board post wins.**
+  `moimMetas.type = 1` is a 톡게시판 post (`notice: true`, `type`
+  TEXT/IMAGE/SCHEDULE, `created_at` ISO with `Z`); `chatMetas.type = 1` is the
+  older plain-text row. In all four rooms holding both, the older row was
+  2019–2023 and the post 2025–2026, and the texts never matched — so the older
+  row is read only when there is no post. Reading it needs no room key.
+- **A file is `type = 18`** with `url`, `name`, `size` (also `s`), `expire` in
+  ms and a checksum `cs`, on `talk.kakaocdn.net` or `dn.talk.kakao.com`. A live
+  address answered a ranged GET with 206; expired ones 410 and 403. So
+  `files.open_file` decides expiry from `expire` before any request, prefers a
+  copy in `Documents\카카오톡 받은 파일` matching **name and size**, and fetches
+  only from the whitelist. The name is somebody else's text: `safe_name` keeps
+  its last path component, and `Content-Disposition` carries it
+  percent-encoded in `filename*` with a printable-ASCII fallback. **This is the
+  second network exception**, beside `Ctrl+P`: only `GET /file`, only on
+  request. Measured live: a 5,491-byte file streamed whole, `remote`.
+- **SafeBot marks the message itself: `{"safeBot": true}` in the attachment**,
+  11 rows; `type & 0x2000` (which piratetalk also checks) was 0 rows here and is
+  not used. The row keeps its text, so hiding it is this tool's decision:
+  `Reader.reveal_covered` is off by default, as the client shows it, and
+  `/safebot` or `--show-covered` turns it on. Off, the text is withheld from
+  the message, a quote of it, its links and the search — a match with empty
+  text would still say what it contained. The six `openchat_blind` cover feeds
+  seen all pointed at rows already `is_encrypt_delete_msg = 1`, which show as
+  deleted anyway.
+- **These reads are Windows-only in `openapi.json` for now.** Each new route,
+  message key and error code carries `x-platform`, because the macOS schema has
+  not been checked for these tables; the pinned set in `test_openapi.py` says
+  so. The macOS measurement and port are `kamado-cli#44`.
 
 ### Being addressed: mentions and replies
 
@@ -1001,7 +1054,7 @@ on a live client, newest 4,000 rows of each readable room.
   itself, and `patch` refuses an attribute that is not there. It does **not**
   model POSIX path comparison, which is the other half of what differs and is
   why the profile walk folds case itself. On Windows nothing is skipped:
-  the suite is 998 tests with a skip count of zero, and that is the check that
+  the suite is 1032 tests with a skip count of zero, and that is the check that
   a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not

@@ -96,6 +96,14 @@ computer has never seen the account.
 `follow` carries the same keys on each streamed message, so a mention can be
 noticed as it arrives.
 
+Three more keys follow the same rule:
+
+| Key on a message | What it means |
+| --- | --- |
+| `reactions` | `[{label, count, code}]` — the 공감 on it, by kind. Who reacted is not stored. |
+| `edited` | The sender edited it; `text` is the newest version. `revisions --message-id` lists the others. |
+| `covered` | `"safebot"`: an open chat's SafeBot covered it, and `text` is empty the way the client hides it. Do not guess what it said. Only pass `--show-covered` when the user asks to see covered messages. |
+
 ## Following a conversation live
 
 ```powershell
@@ -123,6 +131,9 @@ python "<skill-dir>/scripts/kanao-cli.py" search "meeting time" --limit 20
 python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345
 python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345 "Sample Nickname"
 python "<skill-dir>/scripts/kanao-cli.py" names --room-id 12345 --user-id 98765
+python "<skill-dir>/scripts/kanao-cli.py" notice --room-id 12345          # the pinned notice, or null
+python "<skill-dir>/scripts/kanao-cli.py" attachments --room-id 12345 --kind file   # photo, video, file, link
+python "<skill-dir>/scripts/kanao-cli.py" revisions --room-id 12345 --message-id 9876
 python "<skill-dir>/scripts/kanao-cli.py" status
 python "<skill-dir>/scripts/kanao-cli.py" verify
 python "<skill-dir>/scripts/kanao-cli.py" schema
@@ -195,7 +206,15 @@ curl -s -H "$H" "$T/digest?roomId=1&span=30m"
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
   -d '{"room": "Sample Room", "text": "hi"}' $T/send
 curl -N -H "$H" $T/stream      # SSE: ready / message / cursor / ping
+curl -s -H "$H" "$T/attachments?roomId=1&kind=file"
+curl -OJ -H "$H" "$T/file?roomId=1&messageId=9876"   # the file's bytes
 ```
+
+`/notice`, `/attachments` and `/revisions` answer like the commands of the
+same name. `/file` streams a file message's bytes: the copy KakaoTalk saved,
+when one matches, otherwise fetched from the client's own CDN. An expired
+link with no saved copy is `410 FILE_EXPIRED` — tell the user to save the file
+in KakaoTalk; do not retry.
 
 Every command obeys the same envelope, the same error codes, and the same
 two-seconds-between-sends rule — but a send that arrives early **waits its

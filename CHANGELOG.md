@@ -6,6 +6,25 @@
 
 ## [Unreleased]
 
+### 추가
+
+- **공감이 보입니다.** 메시지 아래 `공감 사랑 3 · 엄지척 1`, JSON에는 `reactions`.
+  누가 눌렀는지는 클라이언트가 저장하지 않아 종류별 개수만 있습니다.
+- **수정된 메시지에 `(수정됨)`이 붙고 버전을 전부 볼 수 있습니다.** `tui`의 `/edits`,
+  명령 `revisions --message-id`, `serve`의 `/revisions`. 수정이 남기는 피드는 숨깁니다.
+  모두에게 삭제된 메시지의 이력은 돌려주지 않습니다.
+- **방 공지.** 대화 위 한 줄과 `/notice`, 명령 `notice`, `serve`의 `/notice`.
+  톡게시판 공지가 예전 공지 칸보다 우선합니다.
+- **사진·동영상·파일·링크 모아보기.** `/files` `/links` `/photos` `/videos`,
+  명령 `attachments --kind`, `serve`의 `/attachments`.
+- **세이프봇이 가린 메시지는 카카오톡처럼 가리고, 켜고 끌 수 있습니다.** `tui`의
+  `/safebot`, 명령의 `--show-covered`. 가린 동안은 인용·검색·링크 목록에서도 가립니다.
+- **`serve`에서 파일을 내려받습니다.** `GET /file?roomId=…&messageId=…`. 카카오톡이
+  저장해 둔 사본이 있으면 그걸, 없으면 클라이언트 CDN에서 받아 흘려보냅니다. 링크가
+  만료됐으면 `410 FILE_EXPIRED`. 사진과 함께 네트워크를 여는 두 번째 지점입니다.
+- 오류 코드 `MESSAGE_NOT_FOUND`(404), `FILE_EXPIRED`(410). `openapi.json` 0.15.0에
+  새 라우트와 키가 Windows 전용(`x-platform`)으로 들어갔습니다.
+
 ## [0.21.0] — 2026-09-27
 
 ### 바뀜
