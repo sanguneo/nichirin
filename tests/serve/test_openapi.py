@@ -80,8 +80,13 @@ class DocumentTests(unittest.TestCase):
         ours = set(code.value for code in ErrorCode)
         self.assertLessEqual(documented - ours, set(schema["x-platform"]))
 
-    def test_the_platform_differences_are_the_two_that_are_known(self) -> None:
-        """A third divergence has to be declared here, not discovered later."""
+    def test_the_platform_differences_are_the_ones_that_are_known(self) -> None:
+        """Another divergence has to be declared here, not discovered later.
+
+        Two are macOS-only (a room key and an error code). The reads added
+        in 0.15.0 are Windows-only until the macOS schema is checked for the
+        tables they read, and each of their members says so.
+        """
         marked = set()
         def walk(node, trail=()):
             if isinstance(node, dict):
@@ -100,6 +105,13 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
+                "components/schemas/Message/properties/reactions",
+                "components/schemas/Message/properties/edited",
+                "components/schemas/Message/properties/covered",
+                "paths//notice",
+                "paths//attachments",
+                "paths//revisions",
+                "paths//file",
             },
         )
 
@@ -125,6 +137,10 @@ class RouteTests(ServedCase):
     def test_every_documented_route_is_routed(self) -> None:
         for route, operations in self.spec["paths"].items():
             if "get" not in operations:
+                continue
+            if "x-platform" in operations:
+                # Documented for the Windows build only until this schema is
+                # checked for the tables it reads; not routed here yet.
                 continue
             with self.subTest(route=route):
                 # /stream would hold the connection; asking it for a bad
