@@ -4,6 +4,19 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [0.21.2] — 2026-09-28
+
+`openapi.json`을 kanao-cli 0.22.0과 바이트 단위로 다시 같게 맞췄습니다. 명령과 이 빌드의 HTTP 동작은 그대로입니다.
+
+### 바뀜
+
+- **계약 0.15.0.** kanao-cli에 들어간 `/notice`, `/attachments`, `/revisions`, `/file`,
+  메시지 키 `reactions`·`edited`·`covered`, 오류 코드 `MESSAGE_NOT_FOUND`·`FILE_EXPIRED`가
+  문서에 올라갔고, 모두 `x-platform`으로 **Windows 전용**이라고 적혀 있습니다. 맥 DB에서
+  같은 정보를 실측한 뒤 구현하는 일은 #44입니다.
+- `tests/serve/test_openapi.py`: 고정된 `x-platform` 목록을 새 항목까지 넓혔고, 다른 빌드
+  전용으로 문서화된 라우트는 라우팅 검사에서 건너뜁니다.
+
 ## [0.21.1] — 2026-09-27
 
 `improvement.md` 검토(M01–M12)의 적용분입니다. 명령·HTTP 계약과 `openapi.json`은 그대로입니다.
