@@ -174,7 +174,7 @@ def _start_server(sender, *, rooms=None, watcher=None, token=TOKEN, min_interval
                   rooms_provider=None, context_provider=None, digest_provider=None,
                   poll_interval=0.05, clock=None, request_timeout=None,
                   max_streams=None, watcher_factory=None, max_queued_sends=None,
-                  room_opener=None):
+                  room_opener=None, **providers):
     if rooms_provider is None:
         listed = [StubRoom(room) for room in (rooms or [])]
         rooms_provider = lambda: listed  # noqa: E731 - one expression, read once
@@ -199,6 +199,7 @@ def _start_server(sender, *, rooms=None, watcher=None, token=TOKEN, min_interval
         kwargs["clock"] = clock
     if room_opener is not None:
         kwargs["room_opener"] = room_opener
+    kwargs.update(providers)
     return serve.build_handler(sender.send, **kwargs)
 
 

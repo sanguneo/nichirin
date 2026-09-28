@@ -8,6 +8,10 @@ machine connects with a bearer token and can then:
   by making the second send wait rather than by refusing it.
 - ``GET /rooms`` — list readable rooms in the same shape as the CLI command.
 - ``GET /context?roomId=…`` — read one room's recent messages.
+- ``GET /notice``, ``/attachments``, ``/revisions`` — a room's pinned notice,
+  what its messages carried, and every version of an edited message.
+- ``GET /file?roomId=…&messageId=…`` — a file message's bytes: the client's
+  saved copy when there is one, otherwise fetched from the client's own hosts.
 - ``GET /stream`` — Server-Sent Events carrying new messages as ``watch.Watcher``
   finds them. Programmable SSE clients and ``curl -N`` consume this, and the
   same channel works for a remote build that forwards chat into an LLM.
@@ -41,6 +45,10 @@ re-exported here, so ``from kanao import serve`` still reaches all of it.
 from __future__ import annotations
 
 from .backends import (
+    make_live_attachments_provider,
+    make_live_file_provider,
+    make_live_notice_provider,
+    make_live_revisions_provider,
     make_live_context_provider,
     make_live_room_opener,
     make_live_digest_provider,
@@ -82,6 +90,10 @@ __all__ = [
     "QuietDisconnects",
     "ServeHTTPServer",
     "build_handler",
+    "make_live_attachments_provider",
+    "make_live_file_provider",
+    "make_live_notice_provider",
+    "make_live_revisions_provider",
     "make_live_context_provider",
     "make_live_room_opener",
     "make_live_digest_provider",

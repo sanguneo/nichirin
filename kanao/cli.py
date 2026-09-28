@@ -24,7 +24,7 @@ from . import __version__
 from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
-from .model import Room
+from .model import ATTACHMENT_KINDS, Room
 from .names import NameLedger
 from .opening import open_for_reading, window_target
 from .reader import Reader
@@ -65,6 +65,14 @@ def _add_room_selector(parser: argparse.ArgumentParser, required: bool) -> None:
     target.add_argument("--room-id", type=int, help="Numeric conversation id")
 
 
+def _add_cover_toggle(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--show-covered",
+        action="store_true",
+        help="Include the text of messages an open chat's SafeBot covered (hidden by default)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kanao",
@@ -85,9 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     context = commands.add_parser("context", help="Read one conversation with coverage")
     _add_room_selector(context, required=True)
     context.add_argument("--limit", type=_positive, default=DEFAULT_LIMIT)
+    _add_cover_toggle(context)
 
     messages = commands.add_parser("messages", help="Read a page of messages")
     _add_room_selector(messages, required=True)
+    _add_cover_toggle(messages)
     messages.add_argument("--limit", type=_positive, default=DEFAULT_LIMIT)
     messages.add_argument("--before-id", type=int, help="Page backwards from this id")
     messages.add_argument(
@@ -111,6 +121,26 @@ def build_parser() -> argparse.ArgumentParser:
     digest.add_argument(
         "--highlights", type=_positive, default=3, help="Representative lines per slice"
     )
+    _add_cover_toggle(digest)
+
+    notice = commands.add_parser("notice", help="Show the notice pinned in a room")
+    _add_room_selector(notice, required=True)
+
+    attachments = commands.add_parser(
+        "attachments", help="List the photos, videos, files and links a room carried"
+    )
+    _add_room_selector(attachments, required=True)
+    attachments.add_argument("--kind", choices=ATTACHMENT_KINDS, help="Only one kind")
+    attachments.add_argument(
+        "--limit", type=_positive, default=50, help="How many of the newest messages to look through"
+    )
+    attachments.add_argument("--before-id", type=int, help="Page backwards from this id")
+    _add_cover_toggle(attachments)
+
+    revisions = commands.add_parser("revisions", help="Show every version of an edited message")
+    _add_room_selector(revisions, required=True)
+    revisions.add_argument("--message-id", type=int, required=True)
+    _add_cover_toggle(revisions)
 
     friends = commands.add_parser("friends", help="List the signed-in user's friends")
     friends.add_argument("--favorites", action="store_true", help="Only 즐겨찾기")
@@ -145,10 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
     search = commands.add_parser("search", help="Search readable conversations")
     search.add_argument("keyword")
     search.add_argument("--limit", type=_positive, default=20)
+    _add_cover_toggle(search)
 
     follow = commands.add_parser("follow", help="Stream new messages as NDJSON")
     follow.add_argument("--room-id", type=int, action="append", dest="room_ids")
     follow.add_argument("--interval", type=_interval, default=DEFAULT_INTERVAL_SECONDS)
+    _add_cover_toggle(follow)
 
     query = commands.add_parser("query", help="Run one read-only SQL statement")
     query.add_argument("sql")
@@ -161,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = commands.add_parser(
         "serve",
-        help="Expose send, rooms, context, and a message stream over HTTP + SSE",
+        help="Expose send, reads, file downloads and a message stream over HTTP + SSE",
     )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -220,6 +252,7 @@ def _digest(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any]:
 
 def run(arguments: argparse.Namespace, reader: Reader) -> int:
     """Execute one command and return its exit status."""
+    reader.reveal_covered = bool(getattr(arguments, "show_covered", False))
     if arguments.command == "status":
         _emit(success(reader.status()))
         return 0
@@ -277,11 +310,56 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
     if arguments.command == "names":
         return _names(reader, arguments)
 
+    if arguments.command == "notice":
+        room = _selected_room(reader, arguments)
+        pinned = reader.notice(room.id)
+        _emit(
+            success(
+                {"room": room.as_json(), "notice": None if pinned is None else pinned.as_json()}
+            )
+        )
+        return 0
+
+    if arguments.command == "attachments":
+        room = _selected_room(reader, arguments)
+        found = reader.attachments(
+            room.id, kind=arguments.kind, limit=arguments.limit, before_id=arguments.before_id
+        )
+        _emit(
+            success(
+                {
+                    "room": room.as_json(),
+                    "attachments": [item.as_json() for item in found],
+                    "count": len(found),
+                }
+            )
+        )
+        return 0
+
+    if arguments.command == "revisions":
+        room = _selected_room(reader, arguments)
+        versions = reader.revisions(room.id, arguments.message_id)
+        _emit(
+            success(
+                {
+                    "room": room.as_json(),
+                    "messageId": str(arguments.message_id),
+                    "revisions": [version.as_json() for version in versions],
+                    "count": len(versions),
+                }
+            )
+        )
+        return 0
+
     if arguments.command == "send":
         return _send(reader, arguments)
 
     if arguments.command == "serve":
         from .serve import (
+            make_live_attachments_provider,
+            make_live_file_provider,
+            make_live_notice_provider,
+            make_live_revisions_provider,
             make_live_context_provider,
             make_live_digest_provider,
             make_live_room_opener,
@@ -315,6 +393,10 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             ),
             poll_interval=arguments.poll_interval,
             room_opener=make_live_room_opener(lambda: Reader()),
+            notice_provider=make_live_notice_provider(lambda: Reader()),
+            attachments_provider=make_live_attachments_provider(lambda: Reader()),
+            revisions_provider=make_live_revisions_provider(lambda: Reader()),
+            file_provider=make_live_file_provider(lambda: Reader()),
         )
 
     if arguments.command == "search":

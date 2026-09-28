@@ -68,6 +68,9 @@ _STATUS_BY_CODE = {
     ErrorCode.INVALID_REQUEST: 400,
     ErrorCode.AMBIGUOUS_CHAT: 409,
     ErrorCode.CHAT_NOT_FOUND: 404,
+    ErrorCode.MESSAGE_NOT_FOUND: 404,
+    # The file existed and its address no longer answers: gone, not missing.
+    ErrorCode.FILE_EXPIRED: 410,
     ErrorCode.WINDOW_NOT_FOUND: 404,
     # The window was found and its input box was not: the caller asked for
     # something that is not there, which is the same answer as a missing
@@ -158,6 +161,19 @@ def validate_room_id(raw: object) -> int:
             ErrorCode.INVALID_REQUEST, "roomId is outside the range an id can have"
         )
     return room_id
+
+
+def validate_message_id(raw: object, *, name: str = "messageId") -> int:
+    """Accept a message id the way :func:`validate_room_id` accepts a room's."""
+    try:
+        log_id = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise KanaoError(ErrorCode.INVALID_REQUEST, f"a numeric {name} is required")
+    if not 0 <= log_id <= _SQLITE_INT_MAX:
+        raise KanaoError(
+            ErrorCode.INVALID_REQUEST, f"{name} is outside the range an id can have"
+        )
+    return log_id
 
 
 def validate_count(raw: object, *, name: str, maximum: int) -> int:

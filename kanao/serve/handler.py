@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable, Optional, Type
 
 from ..errors import ErrorCode, KanaoError, as_envelope
+from ..model import ATTACHMENT_KINDS
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
@@ -31,6 +32,7 @@ from .config import (
     validate_flag,
     validate_cursor,
     validate_max_streams,
+    validate_message_id,
     validate_min_interval,
     validate_poll_interval,
     validate_request_timeout,
@@ -38,6 +40,24 @@ from .config import (
     validate_token,
 )
 from .stream import serve_stream
+
+
+_FILE_CHUNK = 64 * 1024
+
+
+def _disposition(name: str) -> str:
+    """Name a download for the caller, whatever characters the sender used.
+
+    The name is somebody else's text, so it never reaches a header raw: the
+    plain ``filename`` carries only printable ASCII, and ``filename*`` the
+    whole name percent-encoded, which is how RFC 6266 names a Hangul file.
+    """
+    fallback = "".join(
+        character if 32 <= ord(character) < 127 and character not in '"\\' else "_"
+        for character in name
+    ) or "file"
+    encoded = urllib.parse.quote(name, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
 
 
 class _BodyTimeout(Exception):
@@ -161,6 +181,10 @@ def build_handler(
     max_streams: int = MAX_STREAMS,
     max_queued_sends: int = MAX_QUEUED_SENDS,
     room_opener: Optional[Callable[[int], None]] = None,
+    notice_provider: Optional[Callable[[int], dict[str, Any]]] = None,
+    attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
+    revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
+    file_provider: Optional[Callable[[int, int], Any]] = None,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -296,6 +320,14 @@ def build_handler(
                 self._handle_digest(parsed)
             elif parsed.path == "/stream":
                 self._handle_stream(parsed)
+            elif parsed.path == "/notice":
+                self._handle_notice(parsed)
+            elif parsed.path == "/attachments":
+                self._handle_attachments(parsed)
+            elif parsed.path == "/revisions":
+                self._handle_revisions(parsed)
+            elif parsed.path == "/file":
+                self._handle_file(parsed)
             else:
                 self._reply(
                     404, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, "not found"))
@@ -450,6 +482,144 @@ def build_handler(
                 self._reply(500, as_envelope(KanaoError(ErrorCode.READ_FAILED, str(error))))
                 return
             self._reply(200, {"ok": True, **payload})
+
+        def _answer_read(
+            self, provider: Optional[Callable[..., Any]], label: str, read: Callable[[], Any]
+        ) -> None:
+            """Run one read route's provider and answer in the usual envelope."""
+            if provider is None:
+                self._reply(
+                    500,
+                    as_envelope(
+                        KanaoError(
+                            ErrorCode.READ_FAILED,
+                            f"no {label} source is configured on this server",
+                        )
+                    ),
+                )
+                return
+            try:
+                payload = read()
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            except OSError as error:
+                self._reply(500, as_envelope(KanaoError(ErrorCode.READ_FAILED, str(error))))
+                return
+            self._reply(200, {"ok": True, **payload})
+
+        def _handle_notice(self, parsed) -> None:
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                room_id = validate_room_id(query.get("roomId", [""])[0])
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            provider = notice_provider
+            self._answer_read(provider, "notice", lambda: provider(room_id))  # type: ignore[misc]
+
+        def _handle_attachments(self, parsed) -> None:
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                room_id = validate_room_id(query.get("roomId", [""])[0])
+                limit = validate_count(
+                    query.get("limit", ["50"])[0], name="limit", maximum=MAX_LIMIT
+                )
+                kind = query.get("kind", [""])[0] or None
+                if kind is not None and kind not in ATTACHMENT_KINDS:
+                    raise KanaoError(
+                        ErrorCode.INVALID_REQUEST,
+                        f"kind must be one of {', '.join(ATTACHMENT_KINDS)}",
+                    )
+                before = query.get("beforeId", [""])[0]
+                before_id = validate_message_id(before, name="beforeId") if before else None
+                wanted = validate_flag(query.get("open", ["false"])[0], name="open")
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            provider = attachments_provider
+            self._answer_read(
+                provider,
+                "attachment",
+                lambda: self._read_opening(
+                    room_id, wanted, lambda: provider(room_id, kind, limit, before_id)  # type: ignore[misc]
+                ),
+            )
+
+        def _handle_revisions(self, parsed) -> None:
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                room_id = validate_room_id(query.get("roomId", [""])[0])
+                message_id = validate_message_id(query.get("messageId", [""])[0])
+                wanted = validate_flag(query.get("open", ["false"])[0], name="open")
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            provider = revisions_provider
+            self._answer_read(
+                provider,
+                "revision",
+                lambda: self._read_opening(
+                    room_id, wanted, lambda: provider(room_id, message_id)  # type: ignore[misc]
+                ),
+            )
+
+        def _handle_file(self, parsed) -> None:
+            """Stream one file message's bytes, never buffering the whole file.
+
+            The provider says where they come from — the client's saved copy
+            or its address — and hands over something to read and close.
+            Failures before the first byte answer in the usual JSON envelope;
+            one after it can only end the connection early, which is what a
+            client sees as a short ``Content-Length``.
+            """
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                room_id = validate_room_id(query.get("roomId", [""])[0])
+                message_id = validate_message_id(query.get("messageId", [""])[0])
+                wanted = validate_flag(query.get("open", ["false"])[0], name="open")
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            if file_provider is None:
+                self._reply(
+                    500,
+                    as_envelope(
+                        KanaoError(
+                            ErrorCode.READ_FAILED, "no file source is configured on this server"
+                        )
+                    ),
+                )
+                return
+            try:
+                download = self._read_opening(
+                    room_id, wanted, lambda: file_provider(room_id, message_id)
+                )
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            except OSError as error:
+                self._reply(500, as_envelope(KanaoError(ErrorCode.READ_FAILED, str(error))))
+                return
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", _disposition(download.name))
+                self.send_header("X-Kanao-Source", download.source)
+                if download.size is not None:
+                    self.send_header("Content-Length", str(download.size))
+                else:
+                    self.close_connection = True
+                self.end_headers()
+                while True:
+                    chunk = download.stream.read(_FILE_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                self.close_connection = True
+            finally:
+                download.close()
 
         def _handle_stream(self, parsed) -> None:
             try:
