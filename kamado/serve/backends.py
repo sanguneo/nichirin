@@ -159,6 +159,79 @@ def make_live_digest_provider(reader_factory) -> Callable[[int, str, int, int], 
     return provider
 
 
+def _room_of(reader, room_id: int):
+    room = reader.room(room_id)
+    if room is None:
+        raise KamadoError(ErrorCode.CHAT_NOT_FOUND, f"no room {room_id} in the catalog")
+    return room
+
+
+def make_live_notice_provider(reader_factory) -> Callable[[int], dict[str, Any]]:
+    """Return the pinned notice a live server reads on each ``GET /notice``."""
+
+    def provider(room_id: int) -> dict[str, Any]:
+        with reader_factory() as reader:
+            room = _room_of(reader, room_id)
+            pinned = reader.notice(room_id)
+            return {
+                "room": room.as_json(),
+                "notice": None if pinned is None else pinned.as_json(),
+            }
+
+    return provider
+
+
+def make_live_attachments_provider(reader_factory) -> Callable[..., dict[str, Any]]:
+    """Return what a live server lists on each ``GET /attachments``."""
+
+    def provider(room_id: int, kind: Any, limit: int, before_id: Any) -> dict[str, Any]:
+        with reader_factory() as reader:
+            room = _room_of(reader, room_id)
+            found = reader.attachments(room_id, kind=kind, limit=limit, before_id=before_id)
+            return {
+                "room": room.as_json(),
+                "attachments": [item.as_json() for item in found],
+                "count": len(found),
+            }
+
+    return provider
+
+
+def make_live_revisions_provider(reader_factory) -> Callable[[int, int], dict[str, Any]]:
+    """Return an edited message's versions on each ``GET /revisions``."""
+
+    def provider(room_id: int, message_id: int) -> dict[str, Any]:
+        with reader_factory() as reader:
+            room = _room_of(reader, room_id)
+            versions = reader.revisions(room_id, message_id)
+            return {
+                "room": room.as_json(),
+                "messageId": str(message_id),
+                "revisions": [version.as_json() for version in versions],
+                "count": len(versions),
+            }
+
+    return provider
+
+
+def make_live_file_provider(reader_factory) -> Callable[[int, int], Any]:
+    """Return what ``GET /file`` streams: the client's saved copy, or the address.
+
+    The reader is closed before a byte is sent; the download it found is a
+    file or a response, and it is the handler's to close.
+    """
+
+    def provider(room_id: int, message_id: int):
+        from ..files import open_file
+
+        with reader_factory() as reader:
+            _room_of(reader, room_id)
+            attachment = reader.file_at(room_id, message_id)
+        return open_file(attachment)
+
+    return provider
+
+
 def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], Any]:
     """Return one ``watch.Watcher`` per SSE connection on a live server."""
 

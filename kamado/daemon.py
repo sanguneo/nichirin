@@ -292,6 +292,9 @@ class DaemonServer:
         reader = self._reader
         if reader is None:
             raise KamadoError(ErrorCode.KEY_UNAVAILABLE, "daemon reader is not initialized")
+        # Set on every request: the reader outlives them, and one caller's
+        # --show-covered must not uncover the next caller's messages.
+        reader.reveal_covered = bool(args.get("show_covered", False))
 
         if command == "status":
             return success(reader.status())

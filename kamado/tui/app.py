@@ -29,10 +29,12 @@ from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 from .. import __version__
 from ..errors import ErrorCode, KamadoError
 from ..model import (
+    COVERED_PLACEHOLDER,
     ERASED_PLACEHOLDER,
     FEED_MESSAGE,
     Friend,
     Message,
+    Notice,
     Room,
     is_feed_sentence,
     message_kind,
@@ -41,14 +43,18 @@ from ..reader import Reader
 from . import digest
 from . import images
 from .worker import (
+    ATTACHMENTS,
     DatabaseWorker,
     FEEDS,
     FRIENDS,
     NAMES,
+    NOTICE,
     OLDER,
     OPEN,
     POLL,
     RELEASE,
+    REVEAL,
+    REVISIONS,
     ROOMS,
     UNWATCH,
     Changed,
@@ -131,6 +137,11 @@ TYPING_GRACE_SECONDS = 0.4
 """How long after a keystroke to leave the conversation alone."""
 COMPOSING_GRACE_SECONDS = 3.0
 """How long a half-written message holds a poll off, IME pauses included."""
+ATTACHMENT_LIST_LIMIT = 200
+"""How many of the newest messages ``/files``, ``/links`` and ``/photos`` look through."""
+EDITS_SHOWN = 20
+"""How many edited messages ``/edits`` lists, newest first."""
+_ATTACHMENT_TITLES = {"file": "파일", "link": "링크", "photo": "사진", "video": "동영상"}
 
 
 class PhotoSource(Protocol):
@@ -222,6 +233,15 @@ class ChatState:
     Built while the transcript is rendered, because that is the only place the
     mapping from a screen row back to a message is known.
     """
+    room_notice: Optional[Notice] = None
+    """The room's pinned notice, asked for once when the room is opened."""
+    panel: list[tuple[str, str]] = field(default_factory=list)
+    """A list shown in place of the conversation: ``(style, text)`` rows.
+
+    What ``/notice``, ``/files``, ``/links``, ``/photos``, ``/videos`` and
+    ``/edits`` put on screen. Escape takes it away, as it does a digest.
+    """
+    panel_title: str = ""
 
 
 class App:
@@ -296,6 +316,8 @@ class App:
         the list otherwise closes the conversation standing in front of it.
         """
         self.pending_send: Optional[str] = None
+        self.reveal_covered = False
+        """Whether the owner's reader was last told to show what SafeBot covered."""
         self._clock = time.monotonic
         """Read rather than called directly, so a test can hold time still."""
         """Text the last keystroke asked to send, not sent yet.
@@ -452,6 +474,14 @@ class App:
             drawn = self._settle_feeds(done)
         elif kind == NAMES:
             drawn = self._settle_names(done)
+        elif kind == NOTICE:
+            drawn = self._settle_notice(done)
+        elif kind == ATTACHMENTS:
+            drawn = self._settle_attachments(done)
+        elif kind == REVISIONS:
+            drawn = self._settle_revisions(done)
+        elif kind == REVEAL:
+            drawn = self._settle_reveal(done)
         elif kind in (UNWATCH, RELEASE):
             # Nothing to draw: what they were about is already off the screen.
             drawn = False
@@ -626,7 +656,7 @@ class App:
             # has already been moved to it and a second tab would be a second
             # viewport over one conversation.
             return False
-        messages, stored = done.value
+        messages, stored, pinned = done.value
         if not self.chats:
             # Tints are kept across a tab's lifetime: rebuilding the palette
             # while another conversation is on screen would recolour it.
@@ -644,6 +674,7 @@ class App:
                 draft=kept,
                 caret=len(kept),
                 window_alias=stored if stored and stored != room.title else None,
+                room_notice=pinned,
             )
         )
         self.focus = len(self.chats) - 1
@@ -1064,7 +1095,9 @@ class App:
                     ],
                     width,
                 ),
-                "",
+                # The row under the hints was blank; a pinned notice takes
+                # it, so the conversation starts where it always did.
+                self._notice_row(chat, width),
             ]
         )
 
@@ -1083,9 +1116,7 @@ class App:
         self.placements = []
         body_top = len(lines)
         self._body_geometry = (body_top, rows, width)
-        body = (
-            self._digest_of(chat, width) if chat.slices else self._transcript_of(chat, width)
-        )
+        body = self._body_of(chat, width)
         if chat.anchor_top:
             # Resolved here because the top is a distance from the bottom,
             # and neither the body nor the screen height is known earlier.
@@ -1244,6 +1275,10 @@ class App:
                 # Said the way the client says it; what was taken back is not
                 # carried here at all.
                 wrapped = [self.theme.fg("dim", ERASED_PLACEHOLDER)]
+            elif message.covered is not None and not message.text:
+                # Covered and not revealed: the reader withheld the text, and
+                # the line says why rather than looking like an empty message.
+                wrapped = [self.theme.fg("dim", COVERED_PLACEHOLDER)]
             elif message.photo is not None:
                 # The live client writes "사진" into the text of a photo message,
                 # so its own words are not what a reader needs here; the label
@@ -1290,6 +1325,22 @@ class App:
             for continuation in wrapped[1:]:
                 lines.append(
                     truncate_to_width(" " * indent + self.theme.fg(body_colour, continuation), width)
+                )
+            marks = self._message_marks(message)
+            if marks:
+                # Beside the last line when it fits, as the client puts
+                # "수정됨" beside the bubble; on a line of its own otherwise,
+                # so it is never cut off the edge.
+                if display_width(strip_ansi(wrapped[-1])) + display_width(marks) <= body_width:
+                    lines[-1] = truncate_to_width(lines[-1] + self.theme.fg("dim", marks), width)
+                else:
+                    lines.append(
+                        truncate_to_width(" " * indent + self.theme.fg("dim", marks.strip()), width)
+                    )
+            if message.reactions and not message.erased:
+                felt = " · ".join(f"{clean(one.label)} {one.count}" for one in message.reactions)
+                lines.append(
+                    truncate_to_width(" " * indent + self.theme.fg("muted", f"공감 {felt}"), width)
                 )
             if message.id in chat.opened_photos and message.photo is not None:
                 for row in self._photo_rows(message, indent, width):
@@ -1863,6 +1914,212 @@ class App:
             return " " + self.theme.fg("muted", "@")
         return "  "
 
+    def _body_of(self, chat: ChatState, width: int) -> list[str]:
+        """What the body shows: a digest, a list, or the conversation.
+
+        One answer for the frame and for a click, so a click is measured
+        against the rows that are actually on screen.
+        """
+        if chat.slices:
+            return self._digest_of(chat, width)
+        if chat.panel:
+            return self._panel_of(chat, width)
+        return self._transcript_of(chat, width)
+
+    def _message_marks(self, message: Message) -> str:
+        """The words that follow a message: edited, or shown despite a cover."""
+        if message.erased:
+            return ""
+        marks = []
+        if message.edited:
+            marks.append("수정됨")
+        if message.covered is not None and message.text:
+            marks.append("세이프봇 가림 해제")
+        return f" ({', '.join(marks)})" if marks else ""
+
+    def _notice_row(self, chat: ChatState, width: int) -> str:
+        """The pinned notice on one line, or the blank row it replaces."""
+        pinned = chat.room_notice
+        if pinned is None:
+            return ""
+        said = " ".join(clean(pinned.text).split()) or f"[{pinned.kind}]"
+        label = self.theme.fg("accent", "공지 ")
+        hint = self.theme.fg("dim", "  /notice")
+        room = max(4, width - display_width("공지 ") - display_width("  /notice"))
+        return label + self.theme.fg("muted", truncate_to_width(said, room, ELLIPSIS)) + hint
+
+    def _panel_of(self, chat: ChatState, width: int) -> list[str]:
+        """Draw a list in the digest's box: a title, its rows, how to leave."""
+        inner = max(20, width - 2)
+        rows: list[str] = []
+
+        def boxed(content: str) -> str:
+            return self.theme.bg("customMessageBg", pad_to_width(" " + content, width))
+
+        rows.append(boxed(""))
+        label = self.theme.fg(
+            "customMessageLabel", self.theme.bold(f"[{clean(chat.panel_title)}]")
+        )
+        rows.append(boxed(label))
+        rows.append(boxed(""))
+        styles = {"head": "accent", "body": "text", "dim": "muted", "link": "dim"}
+        for style, text in chat.panel:
+            if not text:
+                rows.append(boxed(""))
+                continue
+            said = clean(text.replace("\r\n", "\n"), keep_newlines=True)
+            indent = "  " if style == "head" else "    "
+            for piece in self._wrap_body(said, inner - 4):
+                rows.append(boxed(indent + self.theme.fg(styles.get(style, "text"), piece)))
+        rows.append(boxed(""))
+        rows.append(boxed(self.theme.fg("muted", "  esc 대화로 돌아가기")))
+        rows.append(boxed(""))
+        return rows
+
+    def _show_panel(self, chat: ChatState, title: str, rows: list[tuple[str, str]]) -> None:
+        chat.slices = []
+        chat.panel = rows
+        chat.panel_title = title
+        chat.anchor_top = True
+        chat.notice = ""
+
+    def _settle_notice(self, done: Done) -> bool:
+        """Keep the notice for its row, and put it up when it was asked for."""
+        chat = self._tab(done.job.token)
+        if chat is None:
+            return False
+        asked = done.job.about == "show"
+        if done.error is not None:
+            if asked:
+                chat.notice = f"공지를 읽지 못했습니다: {_said(done.error)}"
+            return asked
+        pinned: Optional[Notice] = done.value
+        chat.room_notice = pinned
+        if not asked:
+            return True
+        if pinned is None:
+            chat.notice = "이 대화방에는 공지가 없습니다"
+            return True
+        who = pinned.author or (f"User {pinned.author_id}" if pinned.author_id else "작성자 모름")
+        when = _stamp(pinned.posted_at, self.zone)
+        source = "톡게시판" if pinned.source == "board" else ""
+        rows: list[tuple[str, str]] = [
+            ("dim", " · ".join(part for part in (who, when, source) if part)),
+            ("", ""),
+        ]
+        rows.extend(("body", line) for line in (pinned.text or f"[{pinned.kind}]").splitlines())
+        self._show_panel(chat, "공지", rows)
+        return True
+
+    def _settle_attachments(self, done: Done) -> bool:
+        """List what the room carried, newest first, the way a drawer does."""
+        chat = self._tab(done.job.token)
+        if chat is None:
+            return False
+        kind, limit = done.job.payload
+        title = _ATTACHMENT_TITLES.get(kind, kind)
+        if done.error is not None:
+            chat.notice = f"목록을 읽지 못했습니다: {_said(done.error)}"
+            return True
+        found = done.value
+        if not found:
+            chat.notice = f"최근 {limit}개 메시지에서 {title} 항목을 찾지 못했습니다"
+            return True
+        now_ms = int(time.time() * 1000)
+        rows: list[tuple[str, str]] = []
+        for item in reversed(found):
+            head = " ".join(part for part in (_stamp(item.sent_at, self.zone), item.sender) if part)
+            if item.kind == "file":
+                size = _size(item.size) if item.size is not None else ""
+                head += f"  {item.name}" + (f" · {size}" if size else "")
+                if item.expires_at is not None and item.expires_at < now_ms:
+                    head += " · 만료됨"
+            elif item.count > 1:
+                head += f"  사진 {item.count}장"
+            rows.append(("head", head))
+            rows.append(("link", item.url))
+        self._show_panel(chat, f"{title} {len(found)}개 · 최근 {limit}개 메시지", rows)
+        return True
+
+    def _settle_revisions(self, done: Done) -> bool:
+        """Every edited message in the window, each with what history it kept."""
+        chat = self._tab(done.job.token)
+        if chat is None:
+            return False
+        if done.error is not None:
+            chat.notice = f"수정 이력을 읽지 못했습니다: {_said(done.error)}"
+            return True
+        (wanted,) = done.job.payload
+        held = {message.id: message for message in chat.messages}
+        rows: list[tuple[str, str]] = []
+        for log_id in reversed(wanted):
+            message = held.get(log_id)
+            if message is None:
+                continue
+            who = "나" if message.from_me else message.sender
+            rows.append(("head", f"{_stamp(message.sent_at, self.zone)} {who}"))
+            rows.append(("body", message.text or f"[{message_kind(message.type)}]"))
+            versions = done.value.get(log_id, [])
+            if not versions:
+                rows.append(("dim", "이전 버전이 기록되지 않았습니다"))
+            for version in versions:
+                said = " ".join(version.text.split()) or f"[{message_kind(version.type)}]"
+                rows.append(("dim", f"{version.revision}. {said}"))
+            rows.append(("", ""))
+        self._show_panel(chat, f"수정된 메시지 {len(wanted)}개", rows)
+        return True
+
+    def _show_edits(self, chat: ChatState) -> None:
+        edited = [message.id for message in chat.messages if message.edited and not message.erased]
+        if not edited:
+            chat.notice = "불러온 대화에 수정된 메시지가 없습니다"
+            return
+        self._ask(
+            Job(REVISIONS, room_id=chat.room.id, token=chat.token, payload=(tuple(edited[-EDITS_SHOWN:]),))
+        )
+
+    def _toggle_covered(self, chat: ChatState) -> None:
+        """Show what SafeBot covered, or cover it again, in every open tab.
+
+        The reader decides what text a covered message carries, so every
+        held message is read again under the new setting, on the owner thread.
+        """
+        held = tuple(
+            (tab.room.id, tuple(message.id for message in tab.messages)) for tab in self.chats
+        )
+        wanted = not self.reveal_covered
+        if not self._ask(Job(REVEAL, token=chat.token, about=str(wanted), payload=(wanted, held))):
+            chat.notice = "DB 작업이 밀려 있습니다. 잠시 후 다시 시도해주세요."
+
+    def _settle_reveal(self, done: Done) -> bool:
+        chat = self._tab(done.job.token) or self.chat
+        wanted, _held = done.job.payload
+        if done.error is not None:
+            if chat is not None:
+                chat.notice = f"다시 읽지 못했습니다: {_said(done.error)}"
+            return True
+        self.reveal_covered = wanted
+        for tab in self.chats:
+            answer = done.value.get(tab.room.id)
+            if answer is None:
+                continue
+            again, versions = answer
+            fresh = {message.id: message for message in again}
+            # Rows that arrived since the question are kept as they came; they
+            # were read under the new setting already.
+            tab.messages = [fresh.get(message.id, message) for message in tab.messages]
+            tab.versions.update(versions)
+            tab.revision += 1
+            if tab.slices and tab.slice_span is not None:
+                tab.slices = digest.slice_messages(_spoken(tab.messages), tab.slice_span)
+        if chat is not None:
+            chat.notice = (
+                "세이프봇이 가린 메시지를 보여줍니다 (/safebot 으로 다시 가리기)"
+                if wanted
+                else "세이프봇이 가린 메시지를 다시 가립니다"
+            )
+        return True
+
     def _digest_lines(self, width: int) -> list[str]:
         """Render the focused conversation's slices."""
         chat = self.chat
@@ -2106,7 +2363,7 @@ class App:
                 Segment(loaded, self.theme.fg("muted", loaded)),
                 Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
             ]
-        mode = "digest" if chat.slices else "transcript"
+        mode = "digest" if chat.slices else ("list" if chat.panel else "transcript")
         tail = Segment(mode, self.theme.fg("dim", mode))
         right = Segment(f"v{__version__}", self.theme.fg("muted", f"v{__version__}"))
         return self._compose_footer(anchor, middle, tail, right, width)
@@ -2271,6 +2528,9 @@ class App:
             if chat.slices:
                 chat.slices = []
                 chat.offset = 0
+            elif chat.panel:
+                chat.panel = []
+                chat.offset = 0
             else:
                 self._leave_room(chat)
         elif kind == Key.UP:
@@ -2384,9 +2644,7 @@ class App:
         top, rows, width = geometry
         if screen_row < top or screen_row >= top + rows:
             return None
-        body = (
-            self._digest_of(chat, width) if chat.slices else self._transcript_of(chat, width)
-        )
+        body = self._body_of(chat, width)
         scrollable = len(body) - rows
         offset = min(chat.offset, scrollable) if scrollable > 0 else chat.offset
         end = max(1, len(body) - max(0, offset))
@@ -2405,7 +2663,7 @@ class App:
         """
         geometry = self._body_geometry
         width = geometry[2] if geometry is not None else self._last_width
-        body = self._digest_of(chat, width) if chat.slices else self._transcript_of(chat, width)
+        body = self._body_of(chat, width)
         if not 0 <= body_row < len(body):
             return None
         seen = 0
@@ -2659,6 +2917,24 @@ class App:
             self._real(chat, " ".join(arguments))
         elif name in ("photo", "pic"):
             self._toggle_newest_photo(chat)
+        elif name == "notice":
+            self._ask(Job(NOTICE, room_id=chat.room.id, token=chat.token, about="show"))
+        elif name in ("files", "file", "links", "link", "photos", "media", "videos"):
+            kind = {"files": "file", "links": "link", "media": "photo", "photos": "photo",
+                    "videos": "video"}.get(name, name)
+            self._ask(
+                Job(
+                    ATTACHMENTS,
+                    room_id=chat.room.id,
+                    token=chat.token,
+                    about=kind,
+                    payload=(kind, ATTACHMENT_LIST_LIMIT),
+                )
+            )
+        elif name == "edits":
+            self._show_edits(chat)
+        elif name == "safebot":
+            self._toggle_covered(chat)
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name in ("back", "close"):
@@ -2669,7 +2945,8 @@ class App:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
                 "(사용 가능: /open 방 · /close · /sum 30m · /older · "
-                "/real 닉 · /photo · /export · /quit)"
+                "/real 닉 · /photo · /notice · /files · /links · /photos · /videos · "
+                "/edits · /safebot · /export · /quit)"
             )
 
     def _open_beside(self, chat: ChatState, wanted: str) -> None:
@@ -2869,6 +3146,18 @@ def _window(lines: list[str], offset: int, height: int) -> list[str]:
     end = max(1, len(lines) - max(0, offset))
     start = max(0, end - height)
     return lines[start:end]
+
+
+def _size(count: int) -> str:
+    """A byte count the way a file list shows one."""
+    if count < 1024:
+        return f"{count}B"
+    value = count / 1024
+    for unit in ("KB", "MB"):
+        if value < 1024:
+            return f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{value:.1f}GB"
 
 
 def _stamp(epoch: Optional[int], zone: timezone) -> str:

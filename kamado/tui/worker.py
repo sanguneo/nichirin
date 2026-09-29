@@ -53,6 +53,10 @@ FEEDS = "feeds"
 NAMES = "names"
 UNWATCH = "unwatch"
 RELEASE = "release"
+NOTICE = "notice"
+ATTACHMENTS = "attachments"
+REVISIONS = "revisions"
+REVEAL = "reveal"
 
 QUEUE_LIMIT = 16
 """How many jobs may wait at once, and so how many answers can be waiting.
@@ -273,6 +277,19 @@ class DatabaseOwner:
             return reader.feed_details(job.room_id, list(wanted))
         if job.kind == NAMES:
             return self._names(reader, job)
+        if job.kind == NOTICE:
+            assert job.room_id is not None
+            return reader.notice(job.room_id)
+        if job.kind == ATTACHMENTS:
+            kind, limit = job.payload
+            assert job.room_id is not None
+            return reader.attachments(job.room_id, kind=kind, limit=limit)
+        if job.kind == REVISIONS:
+            (wanted,) = job.payload
+            assert job.room_id is not None
+            return self._revisions(reader, job.room_id, wanted)
+        if job.kind == REVEAL:
+            return self._reveal(reader, job)
         if job.kind == UNWATCH:
             if self.watcher is not None and job.room_id is not None:
                 self.watcher.unwatch(job.room_id)
@@ -303,7 +320,14 @@ class DatabaseOwner:
             if self.watcher is not None:
                 self.watcher.unwatch(room.id)
             raise
-        return messages, stored
+        try:
+            # Read beside the window rather than as a job of its own: a
+            # notice is one row, and a second job per opened room is a
+            # second slot in a queue that is bounded on purpose.
+            notice = reader.notice(room.id)
+        except _ROW_FAILURES:
+            notice = None
+        return messages, stored, notice
 
     def _poll(self, reader: Reader, job: Job) -> Polled:
         """Report arrivals, and what changed among the rows each tab holds.
@@ -354,6 +378,37 @@ class DatabaseOwner:
             )
             for user_id in found
         }
+
+    def _revisions(self, reader: Reader, room_id: int, wanted: Sequence[int]) -> dict:
+        """Each message's earlier versions; one that has since gone has none."""
+        found: dict[int, list] = {}
+        for log_id in wanted:
+            try:
+                found[log_id] = reader.revisions(room_id, log_id)
+            except KamadoError:
+                found[log_id] = []
+        return found
+
+    def _reveal(self, reader: Reader, job: Job) -> dict:
+        """Cover or uncover SafeBot's messages, and read every held one again.
+
+        The reader decides what text a covered message carries, and the
+        watcher reads through the same reader, so the switch is made here,
+        on the thread that owns both. A read that fails puts the switch back:
+        a screen told the change did not happen must not be followed by
+        arrivals that say it did.
+        """
+        reveal, held = job.payload
+        before = reader.reveal_covered
+        reader.reveal_covered = reveal
+        try:
+            return {
+                room_id: reader.messages_at(room_id, list(ids), include_erased=True)
+                for room_id, ids in held
+            }
+        except BaseException:
+            reader.reveal_covered = before
+            raise
 
     def _shutdown(self) -> None:
         """Give up the watcher and close the reader, on the owning thread."""

@@ -40,6 +40,12 @@ class ErrorCode(str, Enum):
     CHAT_NOT_FOUND = "CHAT_NOT_FOUND"
     """No catalogued room matched the requested name or identifier."""
 
+    MESSAGE_NOT_FOUND = "MESSAGE_NOT_FOUND"
+    """No readable message has that id in that room, or it is not the kind asked for."""
+
+    FILE_EXPIRED = "FILE_EXPIRED"
+    """A file's address has expired and no local copy was found."""
+
     AMBIGUOUS_CHAT = "AMBIGUOUS_CHAT"
     """Several rooms matched; candidates are returned instead of a guess."""
 

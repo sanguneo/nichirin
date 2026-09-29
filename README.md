@@ -135,6 +135,7 @@ python3 -m kamado tui                         # 터미널에서 직접 읽기
 | **이름 이력** | 같은 닉네임을 쓰는 계정이 둘일 때, 이름이 아니라 `userId`로 구분 |
 | **보내기** | 로그인된 클라이언트의 입력창에 글자를 넣고 전송 버튼 한 번. 포커스·커서·클립보드는 그대로 |
 | **에이전트** | 한 번의 호출에 대화·커버리지·나를 부른 줄이 함께 |
+| **방 정보** | 공지, 공감, 수정됨, 사진·동영상·파일·링크 모아보기, 세이프봇이 가린 메시지 켜고 끄기 → [방 정보](#방-정보) |
 
 ## 이 도구가 푸는 문제
 
@@ -172,12 +173,15 @@ PBKDF2-HMAC-SHA256을 100,000회 적용해 유도합니다. 힙 스캔도, 실�
 | `status` | 읽기 준비 상태: `ready`, `account`, `database`, `rooms`, `detail` |
 | `verify` | 실제 복호화 확인: `verified`, `rooms`, `readableRooms` |
 | `rooms` | `[--limit N] [--readable-only]` — 최근 활동 순 |
-| `context` | `(--room TITLE \| --room-id ID) [--limit N]` — 기본 40개와 커버리지 |
-| `messages` | `(--room TITLE \| --room-id ID) [--limit N] [--before-id ID]` — 기본 40개, 오래된 순 |
+| `context` | `(--room TITLE \| --room-id ID) [--limit N] [--show-covered]` — 기본 40개와 커버리지 |
+| `messages` | `(--room TITLE \| --room-id ID) [--limit N] [--before-id ID] [--show-covered]` — 기본 40개, 오래된 순 |
+| `notice` | `(--room TITLE \| --room-id ID)` — 방 공지, 없으면 `notice: null` |
+| `attachments` | `(--room TITLE \| --room-id ID) [--kind photo\|video\|file\|link] [--limit N] [--before-id ID]` — 최신 N개(기본 50) 메시지가 담은 것, 오래된 순 |
+| `revisions` | `(--room TITLE \| --room-id ID) --message-id ID` — 수정 전 버전. 맥 클라이언트는 남기지 않아 늘 빈 목록 |
 | `digest` | `(--room TITLE \| --room-id ID) [--span 30m] [--limit N] [--highlights N]` — 최신 N개(기본 400)를 시간 구간으로 잘라 활동량·화자·단어·대표 문장. 화면의 `/sum`과 같은 재료를 JSON으로 |
 | `friends` | `[--favorites] [--with-phone]` — 전화번호는 요청할 때만 |
 | `names` | `(--room TITLE \| --room-id ID) [NAME] [--user-id ID]` — 닉네임은 한 개 |
-| `search` | `KEYWORD [--limit N]` — 기본 20개, 최신 일치부터 |
+| `search` | `KEYWORD [--limit N] [--show-covered]` — 기본 20개, 최신 일치부터 |
 | `send` | `(--room TITLE \| --room-id ID) TEXT [--dry-run] [--open]` |
 | `follow` | `[--room-id ID ...] [--interval SECONDS]` — 방마다 `--room-id` 반복, 기본 1초 |
 | `query` | `SQL [--room-id ID]` — 읽기 전용 SQL |
@@ -199,6 +203,10 @@ python3 -m kamado schema
 python3 -m kamado query 'SELECT COUNT(*) AS count FROM NTChatMessage'
 python3 -m kamado follow --room-id 123 --room-id 456
 ```
+
+`--show-covered`는 `context`·`messages`·`digest`·`attachments`·`revisions`·`search`·`follow`에
+붙일 수 있습니다. 데몬이 떠 있으면 데몬이 답하는 명령(`status`·`verify`·`rooms`·`context`·
+`messages`·`friends`·`query`)만 넘기고, 나머지는 이 프로세스가 직접 실행합니다.
 
 `follow`는 시작 시 `event: "watching"`, 이후 `event: "message"`를 한 줄씩 내보냅니다.
 기존 기록을 재생하지 않고 시작 이후 새 기록을 따라갑니다. 로컬 저장분을 보는 것이므로
@@ -312,7 +320,8 @@ export KAMADO_MOUSE=0
 작성란에 `/photo`)가 **지금 보고 있는 대화의 가장 최근 사진**을 열고, 한 번 더
 누르면 닫습니다. 다른 모든 읽기는 이미 이 컴퓨터에 있는 데이터로
 답하지만 사진은 그럴 수 없습니다. 클라이언트가 픽셀이 아니라 CDN 주소만 저장하기
-때문이고, 그래서 사진을 여는 순간이 이 도구가 네트워크를 여는 유일한 지점입니다.
+때문이고, 그래서 사진을 여는 순간은 이 도구가 네트워크를 여는 두 지점 중 하나입니다
+(다른 하나는 `serve`의 `/file`입니다).
 그 지점에서 일어나는 일은 아래가 전부입니다.
 
 | | |
@@ -364,6 +373,28 @@ export KAMADO_MOUSE=0
 원문을 내보냅니다. `/older`는 이전 기록, `/real 닉네임`은 이름 이력, `/photo`(=`Ctrl+P`)는
 가장 최근 사진, `/back`은 뒤로, `/quit`은 종료입니다. 목록에서 `f`는 친구, `/`는 필터입니다.
 `Ctrl+G`는 마우스를 [클릭과 드래그 복사](#마우스-클릭과-드래그-복사) 사이에서 바꿉니다.
+`/notice`, `/files`, `/links`, `/photos`, `/videos`, `/edits`, `/safebot`은 [방 정보](#방-정보)에
+있습니다. `esc`는 다이제스트나 목록을 먼저 닫고, 그다음에 방을 닫습니다.
+
+### 방 정보
+
+카카오톡이 같은 DB에 적어 두는 것 중 대화 줄 말고도 읽을 만한 것들입니다. 이미 복호화한
+DB에서 표 하나를 더 읽을 뿐이라 새 열쇠나 권한이 필요 없습니다.
+
+| | 화면 | 명령 | JSON |
+| --- | --- | --- | --- |
+| **공감** | 메시지 아래 `공감 사랑 3 · 엄지척 1` | — | `reactions: [{label, count, code}]` |
+| **수정됨** | 메시지 끝에 `(수정됨)`, `/edits`로 모아보기 | `revisions --message-id` | `edited: true` |
+| **공지** | 대화 위 한 줄, `/notice`로 전체 | `notice` | `source: "legacy"` |
+| **모아보기** | `/files` `/links` `/photos` `/videos` (최근 200개 메시지) | `attachments --kind` | 주소·이름·크기·만료 |
+| **세이프봇** | "세이프봇에 의해 가려진 메시지입니다.", `/safebot`으로 켜고 끄기 | `--show-covered` | `covered: "safebot"` |
+
+누가 공감했는지는 클라이언트가 저장하지 않아 종류별 개수만 있습니다. **맥 클라이언트는
+수정 전 문장을 남기지 않습니다.** 수정된 45개 행 어디에도 이전 버전이 없었기 때문에,
+`(수정됨)`은 표시하지만 `revisions`는 빈 목록입니다(Windows 클라이언트는 이력을 따로 둡니다).
+공지는 `NTChatMeta`의 공지 한 줄이고, 톡게시판 표가 이 DB에는 없습니다. 세이프봇이 가린
+메시지는 검색·인용·링크 목록에서도 가려진 채로 남고, `--show-covered`나 `/safebot`을 줄
+때만 드러납니다.
 
 TUI의 DB 읽기는 전담 작업자에서 실행하고, 화면과 키 입력은 별도로 처리합니다.
 갱신을 기다리는 동안에도 입력·스크롤·방 전환이 가능하며, 늦게 도착한 읽기 결과가
@@ -483,8 +514,27 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `GET /rooms` | 방 목록, `rooms` 명령과 같은 모양 |
 | `GET /context?roomId=…&limit=…` | 한 방의 최근 메시지 |
 | `GET /digest?roomId=…&span=…&limit=…&highlights=…` | 같은 창을 추출 요약으로 (원문보다 훨씬 작습니다) |
+| `GET /notice?roomId=…` | 방 공지 (없으면 `notice: null`) |
+| `GET /attachments?roomId=…&kind=…&limit=…&beforeId=…` | 사진·동영상·파일·링크 모아보기 |
+| `GET /revisions?roomId=…&messageId=…` | 수정 전 버전 (맥에서는 늘 빈 목록) |
+| `GET /file?roomId=…&messageId=…` | **파일 내려받기** — 바이트를 그대로 흘려보냅니다 (아래) |
 | `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
 | `GET /stream` | **SSE** — `event: ready` → `message` → `cursor` → `ping`, 실패 시 `event: error` 한 줄 뒤 종료. `?since=방id:logId`로 끊긴 지점부터 재개 |
+
+**파일은 HTTP로 바로 받습니다.** 어떤 메시지가 파일인지는 `/attachments?kind=file`이
+알려주고, `/file`이 그 파일을 내려보냅니다.
+
+```bash
+curl -OJ -H "$H" "$T/file?roomId=1&messageId=9006"
+```
+
+카카오톡에서 파일을 저장했으면 클라이언트가 그 위치를 기록해 둡니다(`localFilePath`).
+그 자리에 **기록된 크기 그대로의 일반 파일**이 아직 있으면 그걸 보내고(`X-Kanao-Source:
+local`, 네트워크 없음), 없으면 클라이언트 CDN(`talk.kakaocdn.net`, `dn-talk.kakaocdn.net`,
+`dn.talk.kakao.com`, https만)에서 받아 그대로 넘깁니다(`remote`). 저장 기록이 있던 36개 중
+35개는 이미 옮겨지거나 지워져 있었으므로, 대개는 `remote`입니다. 파일 링크에는 만료가 있어서
+만료가 지났으면 요청하지 않고 `410 FILE_EXPIRED`로 답합니다. 파일명은
+`Content-Disposition`의 `filename*`에 UTF-8로 담깁니다.
 
 연속 전송은 **서버가 줄을 세웁니다.** 앞 전송이 끝나기 전에 온 요청은 거절되지 않고
 차례를 기다렸다 나갑니다 — 두 줄을 연달아 쳐도 둘 다 도착하고, 그 요청이 조금 더
@@ -502,6 +552,8 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `401 UNAUTHORIZED` | 토큰이 없거나 틀림 | `Authorization: Bearer …` 확인 |
 | `429 RATE_LIMITED` | 대기 줄이 가득 참 (앞의 전송들은 그대로 나갑니다) | 앞의 것들이 빠진 뒤 그 한 건만 재시도 |
 | `404 CHAT_NOT_FOUND` | 그 방이 카탈로그에 없음 | `/rooms`로 id 확인 |
+| `404 MESSAGE_NOT_FOUND` | 그 방에 그런 메시지가 없거나 파일이 아님 | `/attachments?kind=file`에서 id 확인 |
+| `410 FILE_EXPIRED` | 파일 링크가 만료됐고 저장된 사본도 없음 | 카카오톡에서 파일을 저장한 뒤 다시 |
 | `409 AMBIGUOUS_CHAT` | 같은 제목의 방이 여럿 | 방 이름을 클라이언트에서 바꾸기 |
 | `503 PERMISSION_REQUIRED` | 전체 디스크 접근·손쉬운 사용 권한이 없음 | 터미널 앱에 권한 주기 (500이 아니라 503인 이유입니다 — 사람이 30초면 고칩니다) |
 | `503 BUSY` | 스트림을 이미 8개 붙들고 있음 | 안 쓰는 `/stream` 연결 닫기 |
@@ -553,7 +605,8 @@ python3 install.py --target "$HOME/.claude/skills/kamado-cli" --force
 ## 못 하는 것
 
 - **로컬에 있는 것만.** 서버의 전체 이력을 내려받거나 빈 기록을 복원하지 않습니다.
-- **첨부는 사진만 봅니다.** 사진은 `tui` 에서 터미널에 띄울 수 있고, 동영상·파일·이모티콘은 `[영상]`처럼 종류만 표시합니다.
+- **첨부는 사진만 그 자리에 그립니다.** 사진은 `tui` 에서 터미널에 띄울 수 있고, 동영상·파일·이모티콘은 `[영상]`처럼 종류만 표시합니다. 파일은 `serve`의 `/file`로 받을 수 있지만, 링크가 만료되면 저장해 둔 사본이 있을 때만 됩니다.
+- **수정 전 문장은 없습니다.** 맥 클라이언트가 남기지 않으므로 `(수정됨)` 표시까지만 합니다.
 - **글자만 보냅니다.** 첨부 전송, 로그인 자동화, 프로토콜 재구현, 기록 수집은 없습니다.
 - **macOS 전용입니다.** 다른 운영체제는 지원하지 않습니다.
 - **일관성이 없으면 거절합니다.** 읽기가 충돌하면 `BUSY` 등으로 실패하며 완전한 기록인 척하지 않습니다.

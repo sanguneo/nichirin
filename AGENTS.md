@@ -250,6 +250,52 @@ code that depends on them without re-checking will quietly break.
   opened stayed `User <id>`. `Reader._sender_name` re-reads the map at most
   every `NAME_RETRY_SECONDS`, then takes the room's join-feed nickname.
 
+### What else a room records: 공감, edits, notices, files, SafeBot
+
+Measured on this client on 2026-09-29 (#44), schema and counts only, against
+what kanao-cli 0.22.0 found on Windows. Most of it is the same server data in
+a different table; where it is not, this build says less rather than guessing.
+
+- **공감 are `NTChatLogMeta` type 2, keyed `(logId, chatId, type)`.** 4,582
+  rows, content `{"rx": [{"k", "c", "o", "a": {"ko"}}]}` exactly as on Windows,
+  plus an `extra` of `{"myRx": [...]}` this build does not read. The key has the
+  room in it — Windows keys on `logId` alone — so the correlated subquery inside
+  `_message_query` matches `chatId` too, and a 공감 added later changes the
+  row's version like any other change. Only 600 of the 4,582 point at a row this
+  database still holds.
+- **An edit raises `NTChatMessage.revision`, and nothing keeps the old text.**
+  45 of 63,766 rows at revision 1; there is no `chatLogHistory` counterpart, and
+  neither `supplement`, `extra` nor `NTChatLogMeta` held an earlier version for
+  any of them. `edited` is shown, and `revisions` answers an empty list — the
+  contract's "never recorded" — after the same `MESSAGE_NOT_FOUND` check for a
+  row that is gone. The `feedType 25` edit feed (146, all `hidden`, with
+  `targetRevision`) is hidden beside the deletion feed 14.
+- **The notice is `NTChatMeta` type 1, and there is no board table.** 8 rooms;
+  `content` equals `noticeText` in every one, plain text, `authorId` and
+  `updatedAt` in seconds. It is reported as `source: "legacy"`, the meta-row
+  value in the shared enum. Type 15 also carries a long `noticeText` beside
+  `{hostId, revision, warehouse}`; what it is has not been read off the screen,
+  so it is not treated as a notice.
+- **A file is `type = 18` with the Windows keys** (`url`, `name`, `size`/`s`,
+  `expire` ms, `cs`, `k`), 93 on `talk.kakaocdn.net` and 22 on
+  `dn.talk.kakao.com`. **The saved copy is `localFilePath`, not a folder.** The
+  client records the absolute path the user saved to (Downloads 16, Desktop
+  15, elsewhere 5, over types 2, 3 and 18), and 35 of those 36 files were gone.
+  `files.local_copy` therefore takes the path only when it is absolute, not a
+  symlink, a regular file and exactly the recorded size, and opens it with
+  `O_NOFOLLOW`; otherwise the whitelisted address is fetched. Live: a
+  22,483-byte file streamed whole as `remote`, and an expired one was 410
+  without a request.
+- **SafeBot is `{"safeBot": true}` in the attachment**, 37 rows (36 text, one
+  since deleted for everyone), never in `supplement` or `extra`; `type &
+  0x2000` was 0 rows. `Reader.reveal_covered` is off by default and withholds
+  the text from the message, a quote of it, its links and search.
+- **In the interface the notice rides on the OPEN job.** Asking for it as a job
+  of its own put a second job per opened room into a queue that is bounded on
+  purpose, and the worker-saturation tests caught it filling. `/safebot` is a
+  `REVEAL` job: the switch is made on the owner thread, because the watcher
+  reads through the same reader, and a failed re-read puts it back.
+
 ### Sending
 
 Sending into an **already open** room window costs 0.07 s of accessibility
@@ -381,16 +427,21 @@ keep rather than one to rediscover.
 | Module | Responsibility |
 | --- | --- |
 | `digest.py` | The digest the command and the server both ask for |
+| `files.py` | A file message's bytes: the client's saved copy, or its address |
 | `serve/config.py` | Constants, token and interval validation, error-to-status map |
 | `serve/handler.py` | Auth, routing, and every route that answers and closes |
 | `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
 | `serve/backends.py` | Reader, Sender and Watcher wiring for a live host |
 | `serve/server.py` | Binding the socket and serving until interrupted |
 
-- **`serve` must never be forwarded to the daemon.** `cli.main` hands query
-  commands to a running daemon, which answers one request and returns — a
-  server that is supposed to hold a socket open would print that answer and
-  exit. It is on the exclusion list beside `tui`, `follow` and `send`.
+- **Only the commands the daemon answers are forwarded to it.** `cli.main`
+  used to forward everything not on an exclusion list, and the daemon answered
+  `digest`, `search`, `names` and every new command with `unknown daemon
+  command`, which was printed as the result. `cli.DAEMON_COMMANDS` names the
+  seven `DaemonServer._dispatch` handles; `serve`, `tui`, `follow` and `send`
+  stay local for the reasons they always did — a server holding a socket open
+  would print one answer and exit. The daemon's reader outlives requests, so
+  `_dispatch` sets `reveal_covered` from each request's `show_covered`.
 - **SSE, not WebSockets.** This is a one-way push of small JSON payloads, so
   `curl -N` is a complete client and no dependency is needed for either side.
 - **Sends are serialized under one lock and spaced by the server**, because the
@@ -453,6 +504,12 @@ keep rather than one to rediscover.
   command does, and reaching into `cli` for it meant assembling an
   `argparse.Namespace` and pointing `serve` at the layer above it.
 
+- **The 0.15.0 reads are answered here since contract 0.16.0.** `/notice`,
+  `/attachments`, `/revisions` and `/file` lost their `x-platform` marks with
+  the message keys and the two codes; the pinned set in `test_openapi.py` is
+  back to the two macOS-only members. kanao-cli has to take the same document
+  for the two copies to be byte-identical again. `/file` answers with the
+  shared contract's `X-Kanao-Source` header name.
 - **`open` is in the shared contract, and does nothing here.** The Windows
   build needs `open=true` on `/context` and `/digest` to have its client open a
   room whose key is not in memory. Every room is readable on this side, so the

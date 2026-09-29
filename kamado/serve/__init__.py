@@ -7,6 +7,10 @@ otherwise remote machine connects with a bearer token and can then:
   command drives, with the two-seconds-between-sends rule enforced server-side.
 - ``GET /rooms`` — list readable rooms in the same shape as the CLI command.
 - ``GET /context?roomId=…`` — read one room's recent messages.
+- ``GET /notice``, ``/attachments``, ``/revisions`` — a room's pinned notice,
+  what its messages carried, and the versions of an edited message.
+- ``GET /file?roomId=…&messageId=…`` — a file message's bytes: the client's
+  saved copy when it is still there, otherwise fetched from the client's hosts.
 - ``GET /stream`` — Server-Sent Events carrying new messages as ``watch.Watcher``
   finds them. Programmable SSE clients and ``curl -N`` consume this, and the
   same channel works for a remote build that forwards chat into an LLM.
@@ -38,8 +42,12 @@ re-exported here, so ``from kamado import serve`` still reaches all of it.
 from __future__ import annotations
 
 from .backends import (
+    make_live_attachments_provider,
     make_live_context_provider,
     make_live_digest_provider,
+    make_live_file_provider,
+    make_live_notice_provider,
+    make_live_revisions_provider,
     make_live_rooms_provider,
     make_live_send,
     make_live_watcher_factory,
@@ -78,8 +86,12 @@ __all__ = [
     "QuietDisconnects",
     "ServeHTTPServer",
     "build_handler",
+    "make_live_attachments_provider",
     "make_live_context_provider",
     "make_live_digest_provider",
+    "make_live_file_provider",
+    "make_live_notice_provider",
+    "make_live_revisions_provider",
     "make_live_rooms_provider",
     "make_live_send",
     "make_live_watcher_factory",

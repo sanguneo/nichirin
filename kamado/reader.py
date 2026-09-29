@@ -103,6 +103,27 @@ put a bare ``[feed 14]`` where the message had been.
 _MESSAGE_TEXT_COLUMNS = ("message", "text")
 _SENT_AT_COLUMNS = ("sentAt", "sendAt", "createdAt")
 
+LOG_META_TABLE = "NTChatLogMeta"
+"""Per-message side rows; type 2 is a message's 공감."""
+_REVISION_COLUMN = "revision"
+"""Raised when the sender edits a message: 45 of 63,766 rows measured at 1."""
+_LOCAL_PATH_COLUMN = "localFilePath"
+"""Where the client saved a file, photo or video somebody chose to keep.
+
+An absolute path the user picked (Downloads, Desktop, …), set on 36 rows and
+still present for one of them, so it is a hint to be checked, never trusted.
+"""
+_NOTICE_META_TYPE = 1
+_HIDDEN_FEEDS = (_ERASED_FEED, model.EDIT_FEED)
+"""Feeds that stand for a change to another message, marked where it happened."""
+_ATTACHMENT_TYPES = (
+    model.PHOTO_MESSAGE,
+    model.MULTI_PHOTO_MESSAGE,
+    model.VIDEO_MESSAGE,
+    model.FILE_MESSAGE,
+)
+_LINK_TYPES = (model.TEXT_MESSAGE, model.REPLY_MESSAGE)
+
 
 def _first_present(available: set[str], candidates: Iterable[str]) -> Optional[str]:
     """Return the first candidate this table actually has."""
@@ -173,6 +194,12 @@ class Reader:
         # have landed; both are then asked again, once per snapshot rather
         # than once per message.
         self._snapshot: Optional[sqlite3.Connection] = None
+        self.reveal_covered = False
+        """Whether a message SafeBot covered keeps its text.
+
+        Off by default, the way the client shows it; the interface's
+        ``/safebot`` and the commands' ``--show-covered`` turn it on.
+        """
 
     @property
     def keyring(self) -> Keyring:
@@ -705,14 +732,33 @@ class Reader:
             conditions.append(f"NOT {erased}")
         if text != "NULL":
             # CASE keeps json_extract away from a body that is not JSON, which
-            # would fail the whole statement rather than the one row.
+            # would fail the whole statement rather than the one row. A
+            # deletion writes a type-14 feed and an edit a type-25 one; the
+            # mark stands where the message is, so neither feed ever shows.
+            hidden = ", ".join(str(code) for code in _HIDDEN_FEEDS)
             conditions.append(
-                f"CASE WHEN type = {model.FEED_MESSAGE} AND json_valid({text}) "
-                f"THEN json_extract({text}, '$.feedType') END IS NOT {_ERASED_FEED}"
+                f"COALESCE(CASE WHEN type = {model.FEED_MESSAGE} AND json_valid({text}) "
+                f"THEN json_extract({text}, '$.feedType') END, -1) NOT IN ({hidden})"
             )
         predicate = " AND ".join(conditions)
+        revision = (
+            f"COALESCE({_REVISION_COLUMN}, 0)" if _REVISION_COLUMN in columns else "0"
+        )
+        # Read with the row it belongs to, so a 공감 added later changes the
+        # row's version and the screen rebuilds it like any other change.
+        # The table's key is (logId, chatId, type), so this is one lookup.
+        meta = self.columns(LOG_META_TABLE)
+        reactions = (
+            f"(SELECT content FROM {LOG_META_TABLE} "
+            f"WHERE {LOG_META_TABLE}.logId = {MESSAGE_TABLE}.logId "
+            f"AND {LOG_META_TABLE}.chatId = {MESSAGE_TABLE}.chatId "
+            f"AND {LOG_META_TABLE}.type = {model.REACTION_META})"
+            if {"logId", "chatId", "type", "content"} <= meta
+            else "NULL"
+        )
         return (
-            f"logId, authorId, type, {text}, {attachment}, {sent_at}, {thread}, {erased}",
+            f"logId, authorId, type, {text}, {attachment}, {sent_at}, {thread}, {erased}, "
+            f"{revision}, {reactions}",
             predicate,
         )
 
@@ -876,7 +922,18 @@ class Reader:
         return feeds.get(user_id) or f"User {user_id}"
 
     def _message(self, room_id: int, row: "sqlite3.Row | tuple[Any, ...]") -> Message:
-        log_id, author, type_code, text, attachment, sent_at, thread, erased = tuple(row)
+        (
+            log_id,
+            author,
+            type_code,
+            text,
+            attachment,
+            sent_at,
+            thread,
+            erased,
+            revision,
+            reacted,
+        ) = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
         if erased:
@@ -905,6 +962,7 @@ class Reader:
             room_id, int(log_id), thread
         )
         photo = model.photo_in(extra, kind)
+        covered = model.covered_in(extra)
         return Message(
             id=int(log_id),
             room_id=room_id,
@@ -913,7 +971,7 @@ class Reader:
             # A membership feed's message column is the client's own JSON,
             # not words anybody typed, so it is not passed off as text.
             text=""
-            if kind == model.FEED_MESSAGE
+            if kind == model.FEED_MESSAGE or (covered and not self.reveal_covered)
             else (text if isinstance(text, str) and text else ""),
             type=kind,
             sent_at=None if sent_at is None else int(sent_at),
@@ -925,6 +983,9 @@ class Reader:
             replies_to_me=own is not None and reply is not None and reply.sender_id == own,
             photo=photo,
             video=model.video_in(kind, extra),
+            reactions=model.reactions_in(reacted),
+            edited=bool(revision),
+            covered=covered,
         )
 
     def _threaded_quote(
@@ -955,18 +1016,206 @@ class Reader:
         ).fetchone()
         if row is None:
             return None
-        _log_id, author, type_code, text, _attachment, _sent_at, _thread, _erased = tuple(row)
+        _log_id, author, type_code, text, attachment, *_rest = tuple(row)
         sender_id = int(author or 0)
         kind = int(type_code or 0)
+        hidden = (
+            model.covered_in(model.parse_attachment(attachment)) is not None
+            and not self.reveal_covered
+        )
         return model.Quote(
             message_id=source,
             sender_id=sender_id,
             sender=self.names().get(sender_id),
             # A feed's text is the client's own JSON, which is not something
             # anybody said; it is dropped here exactly as it is for a message.
-            text="" if kind == model.FEED_MESSAGE or not isinstance(text, str) else text,
+            # A covered message stays covered when somebody quotes it.
+            text=""
+            if kind == model.FEED_MESSAGE or hidden or not isinstance(text, str)
+            else text,
             type=kind,
         )
+
+    # -- what a room carries besides its messages ----------------------------
+
+    def _live_row(self, room_id: int, log_id: int) -> Optional[Sequence[Any]]:
+        """One message row as the commands see it, or None when it is not there."""
+        selected, deleted = self._message_query()
+        return self.connection().execute(
+            f"SELECT {selected} FROM {MESSAGE_TABLE} "
+            f"WHERE chatId = ? AND logId = ? AND {deleted}",
+            (room_id, log_id),
+        ).fetchone()
+
+    def revisions(self, room_id: int, log_id: int) -> list[model.Revision]:
+        """Every earlier version of one message this database kept: none.
+
+        The Windows client keeps them in ``chatLogHistory``. This one has no
+        such table — of the 45 rows edited here, none had a version anywhere
+        but the row itself, whose text is already the newest — so an edited
+        message answers with an empty list, which the contract reads as
+        "never recorded". Still asked only of a message that is there: one
+        deleted for everyone is ``MESSAGE_NOT_FOUND``, as on Windows.
+        """
+        if self._live_row(room_id, log_id) is None:
+            raise KamadoError(
+                ErrorCode.MESSAGE_NOT_FOUND, f"no readable message {log_id} in room {room_id}"
+            )
+        return []
+
+    def notice(self, room_id: int) -> Optional[model.Notice]:
+        """The notice pinned in a room, or None when it has none.
+
+        ``NTChatMeta`` type 1: ``content`` is the notice's text, ``authorId``
+        who pinned it and ``updatedAt`` seconds. There is no board table in
+        this database, so there is nothing for a post to win over.
+        """
+        columns = self.columns(META_TABLE)
+        if not {"chatId", "type", "content"} <= columns:
+            return None
+        author = "authorId" if "authorId" in columns else "NULL"
+        moment = "updatedAt" if "updatedAt" in columns else "NULL"
+        order = " ORDER BY revision DESC" if "revision" in columns else ""
+        row = self.connection().execute(
+            f"SELECT {author}, content, {moment} FROM {META_TABLE} "
+            f"WHERE chatId = ? AND type = ?{order} LIMIT 1",
+            (room_id, _NOTICE_META_TYPE),
+        ).fetchone()
+        if row is None or not isinstance(row[1], str) or not row[1].strip():
+            return None
+        author_id = model._identifier(row[0]) or None
+        return model.Notice(
+            text=row[1],
+            kind="text",
+            author_id=author_id,
+            author=None if author_id is None else self.names().get(author_id),
+            posted_at=model.instant_of(row[2]),
+            source="legacy",
+        )
+
+    def attachments(
+        self,
+        room_id: int,
+        kind: Optional[str] = None,
+        limit: int = 50,
+        before_id: Optional[int] = None,
+    ) -> list[model.Attachment]:
+        """Gather what a room's messages carried: photos, videos, files, links.
+
+        *limit* counts messages, newest first, and the answer is oldest first
+        like every other list here; *before_id* pages further back. A link is
+        an address inside the text, so a covered message offers none while
+        it stays covered.
+        """
+        if kind is not None and kind not in model.ATTACHMENT_KINDS:
+            raise KamadoError(
+                ErrorCode.INVALID_REQUEST,
+                f"kind must be one of {', '.join(model.ATTACHMENT_KINDS)}",
+            )
+        selected, deleted = self._message_query()
+        text = _first_present(self.columns(MESSAGE_TABLE), _MESSAGE_TEXT_COLUMNS)
+        wanted: dict[str, tuple[int, ...]] = {
+            "photo": (model.PHOTO_MESSAGE, model.MULTI_PHOTO_MESSAGE),
+            "video": (model.VIDEO_MESSAGE,),
+            "file": (model.FILE_MESSAGE,),
+        }
+        types = _ATTACHMENT_TYPES if kind is None else wanted.get(kind, ())
+        clauses = []
+        if types:
+            clauses.append(f"type IN ({', '.join(str(code) for code in types)})")
+        if kind in (None, "link") and text is not None:
+            clauses.append(
+                f"(type IN ({', '.join(str(code) for code in _LINK_TYPES)}) "
+                f"AND {text} LIKE '%http%')"
+            )
+        if not clauses:
+            return []
+        sql = (
+            f"SELECT {selected} FROM {MESSAGE_TABLE} "
+            f"WHERE chatId = ? AND {deleted} AND ({' OR '.join(clauses)})"
+        )
+        parameters: list[object] = [room_id]
+        if before_id is not None:
+            sql += " AND logId < ?"
+            parameters.append(before_id)
+        sql += " ORDER BY logId DESC LIMIT ?"
+        parameters.append(limit)
+        rows = list(reversed(self.connection().execute(sql, parameters).fetchall()))
+        found: list[model.Attachment] = []
+        for row in rows:
+            for item in self._attachments_of(room_id, row):
+                if kind is None or item.kind == kind:
+                    found.append(item)
+        return found
+
+    def _attachments_of(
+        self, room_id: int, row: Sequence[Any], local_path: Optional[str] = None
+    ) -> list[model.Attachment]:
+        log_id, author, type_code, text, attachment, sent_at, *_rest = tuple(row)
+        sender_id = int(author or 0)
+        kind = int(type_code or 0)
+        extra = model.parse_attachment(attachment)
+        sender = self._sender_name(room_id, sender_id)
+        moment = None if sent_at is None else int(sent_at)
+
+        def item(
+            what: str,
+            url: str,
+            name: Optional[str] = None,
+            size: Optional[int] = None,
+            count: int = 1,
+            expires_at: Optional[int] = None,
+        ) -> model.Attachment:
+            return model.Attachment(
+                message_id=int(log_id),
+                kind=what,
+                sender_id=sender_id,
+                sender=sender,
+                sent_at=moment,
+                url=url,
+                name=name,
+                size=size,
+                count=count,
+                expires_at=expires_at,
+                local_path=local_path,
+            )
+
+        photo = model.photo_in(extra, kind)
+        if photo is not None:
+            return [item("photo", photo.url, count=photo.count)]
+        video = model.video_in(kind, extra)
+        if video is not None:
+            return [
+                item("video", video.url, size=video.size or None, expires_at=video.expires_at)
+            ]
+        carried = model.file_in(kind, extra)
+        if carried is not None:
+            url, name, size, expires = carried
+            return [item("file", url, name=name, size=size, expires_at=expires)]
+        if model.covered_in(extra) is not None and not self.reveal_covered:
+            return []
+        if kind in _LINK_TYPES and isinstance(text, str):
+            return [item("link", address) for address in model.links_in(text)]
+        return []
+
+    def file_at(self, room_id: int, log_id: int) -> model.Attachment:
+        """The file one message carries, with where the client saved it, or ``MESSAGE_NOT_FOUND``."""
+        row = self._live_row(room_id, log_id)
+        local: Optional[str] = None
+        if row is not None and _LOCAL_PATH_COLUMN in self.columns(MESSAGE_TABLE):
+            saved = self.connection().execute(
+                f"SELECT {_LOCAL_PATH_COLUMN} FROM {MESSAGE_TABLE} WHERE chatId = ? AND logId = ?",
+                (room_id, log_id),
+            ).fetchone()
+            if saved is not None and isinstance(saved[0], str) and saved[0].strip():
+                local = saved[0]
+        carried = [] if row is None else self._attachments_of(room_id, row, local)
+        if not carried or carried[0].kind != "file":
+            raise KamadoError(
+                ErrorCode.MESSAGE_NOT_FOUND,
+                f"message {log_id} in room {room_id} is not a readable file",
+            )
+        return carried[0]
 
     def feed_details(self, room_id: int, log_ids: Sequence[int]) -> dict[int, str]:
         """Describe each of these feeds from what its own row carries.
@@ -1077,7 +1326,12 @@ class Reader:
             (model.FEED_MESSAGE, f"%{keyword}%", limit),
         ).fetchall()
         for row in rows:
-            yield self._message(int(row[0]), row[1:])
+            found = self._message(int(row[0]), row[1:])
+            if found.covered and not self.reveal_covered:
+                # A match whose text is withheld would still say what it
+                # contained, which is the thing the covering hides.
+                continue
+            yield found
 
     def query(self, sql: str, room_id: Optional[int] = None) -> list[dict[str, object]]:
         """Run one read-only statement against the decrypted database."""

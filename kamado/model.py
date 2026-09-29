@@ -15,6 +15,7 @@ records they become, and neither needs a database open to be tested.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Final, Optional, Sequence
@@ -96,6 +97,40 @@ is the server's, not the platform's. Other codes stay numbers.
 
 ERASED_PLACEHOLDER: Final = "삭제된 메시지입니다"
 """What the client shows where a message deleted for everyone was."""
+FILE_MESSAGE: Final = 18
+"""A file somebody sent: ``{url, name, size|s, expire, cs, k}`` in the attachment.
+
+Measured on this client: 115 file rows, every one on ``talk.kakaocdn.net`` or
+``dn.talk.kakao.com``, the same keys the Windows build found.
+"""
+COVERED_PLACEHOLDER: Final = "세이프봇에 의해 가려진 메시지입니다."
+"""What stands where an open chat's SafeBot covered a message.
+
+The wording is the Windows build's label; it has not been read off this
+client's own screen, so it is a label, not a quote.
+"""
+SAFEBOT: Final = "safebot"
+"""The one kind of covering this build recognises.
+
+An open chat's SafeBot marks the message itself: ``{"safeBot": true}`` in the
+attachment, on 37 rows here (36 text, one since deleted for everyone) and
+never in ``supplement`` or ``extra``. The message keeps its text, which is why
+hiding it is this tool's decision and can be undone.
+"""
+EDIT_FEED: Final = 25
+"""The feed an edit writes, ``{"feedType": 25, "logId": …, "hidden": true, "targetRevision": …}``.
+
+Measured here: 146 of them, the shape the Windows build found. The edited
+message is marked where it stands, so the feed is bookkeeping and never shown.
+"""
+REACTION_META: Final = 2
+"""``NTChatLogMeta.type`` for a message's 공감, keyed by ``(logId, chatId, type)``.
+
+Measured: 4,582 rows, each ``{"rx": [{"k", "c", "o", "a": {"ko"}}]}`` with an
+``extra`` of ``{"myRx": [...]}``. ``c`` is how many people reacted with ``o``,
+a mini emoticon's code, and ``a.ko`` is the word the client shows for it. Who
+reacted is not stored.
+"""
 _FEED_NAMES_SHOWN: Final = 3
 
 
@@ -367,6 +402,23 @@ def video_in(type_code: int, attachment: dict[str, Any]) -> Optional[Video]:
 
 
 @dataclass(frozen=True)
+class Reaction:
+    """One kind of 공감 on a message, and how many people chose it."""
+
+    label: str
+    """The word the client shows for it, such as 사랑 or 엄지척."""
+    count: int
+    code: Optional[str] = None
+    """The mini emoticon it is drawn with, as the client addresses it."""
+
+    def as_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"label": self.label, "count": self.count}
+        if self.code:
+            payload["code"] = self.code
+        return payload
+
+
+@dataclass(frozen=True)
 class Message:
     """One message, already attributed to a named sender."""
 
@@ -396,6 +448,15 @@ class Message:
     here rather than at the screen. Only the interface asks for these rows, to
     say "삭제된 메시지입니다" where the client does; the commands leave them
     out, and ``as_json`` does not mention the field.
+    """
+    reactions: tuple[Reaction, ...] = ()
+    edited: bool = False
+    """Whether the sender rewrote it; the text is the newest version."""
+    covered: Optional[str] = None
+    """Who covered it (``safebot``), when something did.
+
+    The text is withheld unless the reader was asked to reveal covered
+    messages, the same way the client hides it until it is tapped.
     """
 
     @property
@@ -433,6 +494,12 @@ class Message:
             payload["photo"] = self.photo.as_json()
         if self.video is not None:
             payload["video"] = self.video.as_json()
+        if self.reactions:
+            payload["reactions"] = [reaction.as_json() for reaction in self.reactions]
+        if self.edited:
+            payload["edited"] = True
+        if self.covered is not None:
+            payload["covered"] = self.covered
         return payload
 
 
@@ -612,6 +679,211 @@ def _nth_size(values: object, index: int) -> int:
     if isinstance(values, list) and index < len(values):
         return _identifier(values[index]) or 0
     return 0
+
+
+def reactions_in(raw: object) -> tuple[Reaction, ...]:
+    """Read a message's 공감 out of its ``NTChatLogMeta`` row.
+
+    An entry without a positive count is nobody's reaction and is dropped;
+    one without a word keeps the client's generic name for the feature.
+    """
+    if not isinstance(raw, str) or not raw.startswith("{"):
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return ()
+    entries = parsed.get("rx") if isinstance(parsed, dict) else None
+    if not isinstance(entries, list):
+        return ()
+    found: list[Reaction] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        count = _identifier(entry.get("c"))
+        if count is None or count <= 0:
+            continue
+        words = entry.get("a")
+        label = words.get("ko") if isinstance(words, dict) else None
+        code = entry.get("o")
+        found.append(
+            Reaction(
+                label=label.strip() if isinstance(label, str) and label.strip() else "공감",
+                count=count,
+                code=code if isinstance(code, str) and code else None,
+            )
+        )
+    return tuple(found)
+
+
+def covered_in(attachment: dict[str, Any]) -> Optional[str]:
+    """Say who covered a message, or None when nothing did.
+
+    Only a literal ``true`` counts: the key is the client's own flag, and a
+    string or a number there is something this build has never seen.
+    """
+    return SAFEBOT if attachment.get("safeBot") is True else None
+
+
+LINK_PATTERN: Final = re.compile(r"https?://[^\s<>\"'()\[\]\x00-\x1f\x7f-\x9f]+")
+"""An address inside message text; ends at whitespace, a bracket or a control."""
+
+
+def links_in(text: str) -> tuple[str, ...]:
+    """Every address a message's text carries, in order, repeats dropped."""
+    seen: list[str] = []
+    for match in LINK_PATTERN.finditer(text or ""):
+        address = match.group().rstrip(".,!?;:")
+        if address not in seen:
+            seen.append(address)
+    return tuple(seen)
+
+
+def instant_of(value: object) -> Optional[int]:
+    """Read a client-written moment as epoch seconds, or None.
+
+    ``NTChatMeta.updatedAt`` is seconds; a number past 10^11 is taken as
+    milliseconds, and an ISO string is read as one.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if value <= 0:
+            return None
+        return value // 1000 if value > 10**11 else value
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.isdigit():
+            return instant_of(int(text))
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return int(moment.timestamp())
+    return None
+
+
+@dataclass(frozen=True)
+class Notice:
+    """The notice pinned at the top of a room.
+
+    The Windows client keeps two, a board post and an older meta row. This
+    database holds no board table: the notice is ``NTChatMeta`` type 1, whose
+    ``content`` and ``noticeText`` were the same plain text in all 8 rooms
+    carrying one, so it is reported with the meta row's ``source``.
+    """
+
+    text: str
+    kind: str
+    """``text``, ``image``, ``schedule`` or whatever else the board called it."""
+    author_id: Optional[int]
+    author: Optional[str]
+    posted_at: Optional[int]
+    source: str
+    """``board`` for a board post, ``legacy`` for the meta-table notice row."""
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "kind": self.kind,
+            "authorId": None if self.author_id is None else str(self.author_id),
+            "author": self.author,
+            "postedAt": to_iso(self.posted_at),
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One version of an edited message, as a history table kept it."""
+
+    revision: int
+    text: str
+    type: int
+
+    def as_json(self) -> dict[str, Any]:
+        return {"revision": self.revision, "text": self.text, "kind": message_kind(self.type)}
+
+
+ATTACHMENT_KINDS: Final = ("photo", "video", "file", "link")
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """Something a message carried that can be gathered in one list.
+
+    A photo, a video, a file or a link. What is stored is an address, never
+    the thing itself; a file's address stops answering once it expires.
+    """
+
+    message_id: int
+    kind: str
+    sender_id: int
+    sender: str
+    sent_at: Optional[int]
+    url: str
+    name: Optional[str] = None
+    """A file's name as it was sent. Somebody else wrote it."""
+    size: Optional[int] = None
+    """Bytes, for a file or a video."""
+    count: int = 1
+    """How many pictures an album carried; its first is ``url``."""
+    expires_at: Optional[int] = None
+    """Epoch milliseconds after which the address may no longer answer."""
+    local_path: Optional[str] = None
+    """Where the client says it saved this file, from ``NTChatMessage.localFilePath``.
+
+    Never rendered: it is a path on this machine, and a caller of ``/file``
+    gets the bytes rather than the place they were found.
+    """
+
+    def as_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "messageId": str(self.message_id),
+            "kind": self.kind,
+            "senderId": str(self.sender_id),
+            "sender": self.sender,
+            "sentAt": to_iso(self.sent_at),
+            "url": self.url,
+        }
+        if self.name is not None:
+            payload["name"] = self.name
+        if self.size is not None:
+            payload["size"] = self.size
+        if self.count > 1:
+            payload["count"] = self.count
+        if self.expires_at is not None:
+            try:
+                payload["expiresAt"] = datetime.fromtimestamp(
+                    self.expires_at / 1000, timezone.utc
+                ).isoformat()
+            except (OverflowError, OSError, ValueError):
+                pass
+        return payload
+
+
+def file_in(
+    type_code: int, attachment: dict[str, Any]
+) -> Optional[tuple[str, str, Optional[int], Optional[int]]]:
+    """Return a file message's ``(url, name, size, expires)``, or None."""
+    if type_code != FILE_MESSAGE:
+        return None
+    address = attachment.get("url")
+    name = attachment.get("name")
+    if not isinstance(address, str) or not address.startswith("http"):
+        return None
+    size = _identifier(attachment.get("size"))
+    if size is None:
+        size = _identifier(attachment.get("s"))
+    expire = _identifier(attachment.get("expire"))
+    return (
+        address,
+        name if isinstance(name, str) and name else "file",
+        size if size is not None and size >= 0 else None,
+        expire if expire is not None and expire > 0 else None,
+    )
 
 
 FRIEND_TYPE: Final = 1

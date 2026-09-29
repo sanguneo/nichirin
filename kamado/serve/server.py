@@ -67,6 +67,10 @@ def run(
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     max_streams: int = MAX_STREAMS,
+    notice_provider: Optional[Callable[[int], dict[str, Any]]] = None,
+    attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
+    revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
+    file_provider: Optional[Callable[[int, int], Any]] = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -81,6 +85,10 @@ def run(
         poll_interval=poll_interval,
         request_timeout=request_timeout,
         max_streams=max_streams,
+        notice_provider=notice_provider,
+        attachments_provider=attachments_provider,
+        revisions_provider=revisions_provider,
+        file_provider=file_provider,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kamado serve listening on {host}:{server.server_port}", flush=True)

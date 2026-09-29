@@ -143,6 +143,14 @@ names. Resolved names are current names, not necessarily the ones used when
 messages were sent; a mention's `name` can be null when unknown. `follow`
 carries the same optional message fields.
 
+Three more keys follow the same rule:
+
+| Key | Meaning |
+| --- | --- |
+| `reactions` | `[{label, count, code}]`: the 공감 on it, by kind. Who reacted is not stored. |
+| `edited` | The sender edited it; `text` is the newest version. This client keeps no earlier versions, so `revisions` answers with an empty list. |
+| `covered` | `"safebot"`: an open chat's SafeBot covered it, and `text` is empty the way the client hides it. Do not guess what it said. Pass `--show-covered` only when the user asks to see covered messages. |
+
 ## Commands and outputs
 
 The full parser surface is below. Positive limits and intervals are required.
@@ -159,6 +167,9 @@ The full parser surface is below. Positive limits and intervals are required.
 | `friends` | `[--favorites] [--with-phone]` | `friends`, `count`; favorites first, then name |
 | `names` | `(--room TITLE \| --room-id ID) [NAME] [--user-id ID]` | `room`, `users`, `count`, `note` |
 | `search` | `KEYWORD [--limit N]` | `matches`, `count`, `unsearchableRooms`, `note`; default 20, newest-first |
+| `notice` | `(--room TITLE \| --room-id ID)` | `room`, `notice` (`{text, kind, authorId, author, postedAt, source}` or null) |
+| `attachments` | `(--room TITLE \| --room-id ID) [--kind photo\|video\|file\|link] [--limit N] [--before-id ID]` | `room`, `attachments` (`messageId`, `kind`, `url`, `name`, `size`, `expiresAt` …), `count`; looks through the newest N (default 50) messages |
+| `revisions` | `(--room TITLE \| --room-id ID) --message-id ID` | `room`, `messageId`, `revisions`, `count`; always empty on macOS; `MESSAGE_NOT_FOUND` for a message that is gone |
 | `send` | `(--room TITLE \| --room-id ID) TEXT [--dry-run] [--open]` | `submitted`, `dryRun`, `room`, `roomId`, `length`, draft-clearing flag |
 | `follow` | `[--room-id ID ...] [--interval SECONDS]` | NDJSON; repeat `--room-id` for each room; default interval 1 second |
 | `query` | `SQL [--room-id ID]` | `rows`, `count` |
@@ -175,6 +186,8 @@ python3 "<skill-dir>/scripts/kamado-cli.py" search "meeting time" --limit 20
 python3 "<skill-dir>/scripts/kamado-cli.py" names --room-id 12345
 python3 "<skill-dir>/scripts/kamado-cli.py" names --room-id 12345 "Sample Nickname"
 python3 "<skill-dir>/scripts/kamado-cli.py" names --room-id 12345 --user-id 98765
+python3 "<skill-dir>/scripts/kamado-cli.py" notice --room-id 12345
+python3 "<skill-dir>/scripts/kamado-cli.py" attachments --room-id 12345 --kind file
 python3 "<skill-dir>/scripts/kamado-cli.py" status
 python3 "<skill-dir>/scripts/kamado-cli.py" verify
 python3 "<skill-dir>/scripts/kamado-cli.py" schema
@@ -286,7 +299,15 @@ curl -s -H "$H" "$T/digest?roomId=1&span=30m"
 curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
   -d '{"room": "Sample Room", "text": "hi"}' $T/send
 curl -N -H "$H" $T/stream      # SSE: event: ready / message / ping / error
+curl -s -H "$H" "$T/attachments?roomId=1&kind=file"
+curl -OJ -H "$H" "$T/file?roomId=1&messageId=9876"   # the file's bytes
 ```
+
+`/notice`, `/attachments` and `/revisions` answer like the commands of the
+same name. `/file` streams a file message's bytes: the copy KakaoTalk saved,
+when it is still where the client recorded it at the recorded size, otherwise
+fetched from the client's own CDN. An expired link with no saved copy is
+`410 FILE_EXPIRED`: tell the user to save the file in KakaoTalk; do not retry.
 
 Every route returns the same envelope and the same `error.code` values as the
 CLI, with two additions: `401 UNAUTHORIZED` for a missing or wrong bearer
@@ -325,6 +346,8 @@ than failing. Only when too many are already in line is one refused, and that
 | `NO_USER_DATA` | No usable local account data or machine identity was found. Ask the user to check their own Mac's KakaoTalk installation/account. |
 | `KEY_UNAVAILABLE` | Local data exists but no derived account key opens it. Report the mismatch; opening individual rooms does not load keys on macOS. |
 | `CHAT_NOT_FOUND` | Ask for the stored title or list rooms. Do not guess a contact's identity. |
+| `MESSAGE_NOT_FOUND` | No readable message has that id in that room, or it is not a file. List `attachments --kind file` for ids. |
+| `FILE_EXPIRED` | The file's link expired and no saved copy remains. Ask the user to save it in KakaoTalk; do not retry. |
 | `AMBIGUOUS_CHAT` | Show `candidates`; ask which room and retry with its id. Duplicate send-window titles require a unique title too. |
 | `KAKAO_NOT_RUNNING` | Sending needs the client: ask the user to start and sign in. Reading does not require this. |
 | `BUSY` | A read could not obtain a consistent snapshot. Retry a read once; never blindly repeat a send. |
