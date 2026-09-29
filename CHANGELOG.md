@@ -4,6 +4,36 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [0.22.0] — 2026-09-29
+
+맥 DB를 실측해 kanao-cli 0.22.0의 방 정보 읽기를 이 빌드에도 들였습니다(#44).
+`openapi.json`은 계약 0.16.0으로, 이 기능들의 `x-platform` 표시를 지웠습니다.
+
+### 추가
+
+- **공감이 보입니다.** 메시지 아래 `공감 사랑 3 · 엄지척 1`, JSON에는 `reactions`.
+  `NTChatLogMeta` type 2에서 읽고, 누가 눌렀는지는 저장되지 않아 종류별 개수만 있습니다.
+- **수정된 메시지에 `(수정됨)`이 붙습니다.** JSON에는 `edited: true`. 수정이 남기는
+  `feedType 25` 피드는 숨깁니다. 맥 클라이언트는 **수정 전 문장을 남기지 않아서**
+  `revisions`(명령·`/revisions`)는 늘 빈 목록이고, `tui`의 `/edits`는 수정된 메시지를 모아
+  보여주되 이전 버전이 없다고 적습니다.
+- **방 공지.** 대화 위 한 줄과 `/notice`, 명령 `notice`, `serve`의 `/notice`.
+  `NTChatMeta`의 공지 행이며 `source`는 `legacy`입니다.
+- **사진·동영상·파일·링크 모아보기.** `/files` `/links` `/photos` `/videos`,
+  명령 `attachments --kind`, `serve`의 `/attachments`.
+- **세이프봇이 가린 메시지는 카카오톡처럼 가리고, 켜고 끌 수 있습니다.** `tui`의
+  `/safebot`, 명령의 `--show-covered`. 가린 동안은 인용·검색·링크 목록에서도 가립니다.
+- **`serve`에서 파일을 내려받습니다.** `GET /file?roomId=…&messageId=…`. 카카오톡이 기록한
+  저장 위치(`localFilePath`)에 같은 크기의 파일이 아직 있으면 그걸, 없으면 클라이언트 CDN에서
+  받아 흘려보냅니다. 링크가 만료됐으면 요청 없이 `410 FILE_EXPIRED`.
+- 오류 코드 `MESSAGE_NOT_FOUND`(404), `FILE_EXPIRED`(410).
+
+### 고침
+
+- **데몬이 떠 있어도 `digest`·`search`·`names`가 동작합니다.** 제외 목록에 없는 명령을 모두
+  데몬에 넘겨서, 데몬이 모르는 명령은 `unknown daemon command`가 결과로 찍혔습니다. 이제
+  데몬이 답하는 일곱 명령만 넘깁니다.
+
 ## [0.21.2] — 2026-09-28
 
 `openapi.json`을 kanao-cli 0.22.0과 바이트 단위로 다시 같게 맞췄습니다. 명령과 이 빌드의 HTTP 동작은 그대로입니다.
