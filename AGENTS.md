@@ -351,10 +351,17 @@ crossed over.
   text would still say what it contained. The six `openchat_blind` cover feeds
   seen all pointed at rows already `is_encrypt_delete_msg = 1`, which show as
   deleted anyway.
-- **These reads are Windows-only in `openapi.json` for now.** Each new route,
-  message key and error code carries `x-platform`, because the macOS schema has
-  not been checked for these tables; the pinned set in `test_openapi.py` says
-  so. The macOS measurement and port are `kamado-cli#44`.
+- **Both builds answer these reads since contract 0.16.0.** They entered
+  `openapi.json` 0.15.0 marked `x-platform` Windows-only; `kamado-cli#44`
+  measured the macOS schema and ported them, and the marks came off in both
+  repositories (issue #5). Where the Mac stores less — no board table, so the
+  notice is always `legacy`; no edit history, so `/revisions` is empty — the
+  route's own description says so.
+- **A link in the received-files folder is not a copy.** `local_copy` refuses
+  a candidate that `is_symlink()`, because following one would stream whatever
+  it points at to a remote `/file` caller. kamado checks the same and opens
+  with `O_NOFOLLOW`; Windows has no such flag, and making a link here needs a
+  privilege, so the one check is the rule both builds share.
 
 ### Being addressed: mentions and replies
 
@@ -1054,7 +1061,7 @@ on a live client, newest 4,000 rows of each readable room.
   itself, and `patch` refuses an attribute that is not there. It does **not**
   model POSIX path comparison, which is the other half of what differs and is
   why the profile walk folds case itself. On Windows nothing is skipped:
-  the suite is 1032 tests with a skip count of zero, and that is the check that
+  the suite is 1033 tests with a skip count of zero, and that is the check that
   a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not

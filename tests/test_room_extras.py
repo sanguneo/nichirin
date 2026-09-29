@@ -9,6 +9,7 @@ import unittest
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from kanao import cli, files, model
 from kanao.errors import ErrorCode, KanaoError
@@ -242,6 +243,15 @@ class FileSourceTests(unittest.TestCase):
         (inner / "escape.pdf").write_bytes(b"save")
         self.assertEqual(files.local_copy(_attachment(name="..\\escape.pdf"), inner), inner / "escape.pdf")
         self.assertIsNone(files.safe_name(".."))
+
+    def test_a_link_in_the_folder_is_not_a_copy(self) -> None:
+        # Creating a real link needs a privilege on Windows, so the check is
+        # asked the way the file system would answer it for one.
+        (self.folder / FILE_NAME).write_bytes(b"save")
+        is_symlink = lambda path: path.name == FILE_NAME
+        with mock.patch.object(Path, "is_symlink", is_symlink):
+            self.assertIsNone(files.local_copy(_attachment(), self.folder))
+        self.assertEqual(files.local_copy(_attachment(), self.folder), self.folder / FILE_NAME)
 
     def test_without_a_copy_the_address_is_fetched(self) -> None:
         download = self.open(_attachment(), opener=self.opener)

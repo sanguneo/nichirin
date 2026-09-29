@@ -84,8 +84,7 @@ class DocumentTests(unittest.TestCase):
         """Another divergence has to be declared here, not discovered later.
 
         Two are macOS-only (a room key and an error code). The reads added
-        in 0.15.0 are Windows-only until the macOS schema is checked for the
-        tables they read, and each of their members says so.
+        in 0.15.0 are answered by both builds since contract 0.16.0.
         """
         marked = set()
         def walk(node, trail=()):
@@ -105,13 +104,6 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
-                "components/schemas/Message/properties/reactions",
-                "components/schemas/Message/properties/edited",
-                "components/schemas/Message/properties/covered",
-                "paths//notice",
-                "paths//attachments",
-                "paths//revisions",
-                "paths//file",
             },
         )
 

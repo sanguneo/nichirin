@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "KakaoTalk local bridge — serve",
-    "version": "0.15.0",
+    "version": "0.16.0",
     "summary": "The HTTP + SSE surface that kanao-cli (Windows) and kamado-cli (macOS) both answer.",
-    "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only, and the reads added in 0.15.0 — `/notice`, `/attachments`, `/revisions`, `/file`, the message keys `reactions`, `edited` and `covered`, and the codes `MESSAGE_NOT_FOUND` and `FILE_EXPIRED` — which are Windows-only until the macOS schema is checked for them. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
+    "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -264,11 +264,10 @@
       }
     },
     "/notice": {
-      "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet.",
       "get": {
         "tags": ["read"],
         "summary": "The notice pinned in a room",
-        "description": "Read from the catalog, so it needs no room key and never opens a room. `notice` is null when the room has none.",
+        "description": "Read from the catalog, so it needs no room key and never opens a room. `notice` is null when the room has none. The macOS database has no board table, so its notice is always `source: legacy`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RoomId"
@@ -304,7 +303,6 @@
       }
     },
     "/attachments": {
-      "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet.",
       "get": {
         "tags": ["read"],
         "summary": "The photos, videos, files and links a room's messages carried",
@@ -378,11 +376,10 @@
       }
     },
     "/revisions": {
-      "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet.",
       "get": {
         "tags": ["read"],
         "summary": "Every version of an edited message",
-        "description": "Asked only of a message that is still there: one deleted for everyone keeps its history, and reading it back would undo the deletion, so that is `MESSAGE_NOT_FOUND`.",
+        "description": "Asked only of a message that is still there: one deleted for everyone keeps its history, and reading it back would undo the deletion, so that is `MESSAGE_NOT_FOUND`. The macOS client keeps no earlier versions at all, so there an edited message answers with an empty list.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RoomId"
@@ -431,11 +428,10 @@
       }
     },
     "/file": {
-      "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet.",
       "get": {
         "tags": ["read"],
         "summary": "A file message's bytes",
-        "description": "The copy the client saved in `Documents\\카카오톡 받은 파일` when one matches by name and size; otherwise fetched from the address, and only from the client's own hosts. An expired address is `410 FILE_EXPIRED` without a request being made.",
+        "description": "The copy the client saved when one is still there at the recorded size — on Windows looked for by name in `Documents\\카카오톡 받은 파일`, on macOS at the path the client recorded for the save; otherwise fetched from the address, and only from the client's own hosts. An expired address is `410 FILE_EXPIRED` without a request being made.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RoomId"
@@ -934,9 +930,7 @@
           "FILE_EXPIRED": "The file's address has expired or no longer answers, and no copy saved by the client was found."
         },
         "x-platform": {
-          "PERMISSION_REQUIRED": "macOS (kamado-cli) only — this code does not exist in the Windows build.",
-          "MESSAGE_NOT_FOUND": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet.",
-          "FILE_EXPIRED": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet."
+          "PERMISSION_REQUIRED": "macOS (kamado-cli) only — this code does not exist in the Windows build."
         }
       },
       "ErrorEnvelope": {
@@ -1212,19 +1206,16 @@
             "description": "Present only when somebody reacted. Who reacted is not stored by the client, only how many chose each kind.",
             "items": {
               "$ref": "#/components/schemas/Reaction"
-            },
-            "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet."
+            }
           },
           "edited": {
             "const": true,
-            "description": "Present only when the sender edited the message; `text` is the newest version and `/revisions` lists the others.",
-            "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet."
+            "description": "Present only when the sender edited the message; `text` is the newest version and `/revisions` lists the others."
           },
           "covered": {
             "type": "string",
             "enum": ["safebot"],
-            "description": "Present when an open chat's SafeBot covered the message. Its `text` is empty, the way the client hides it, unless the caller asked for covered messages to be shown.",
-            "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet."
+            "description": "Present when an open chat's SafeBot covered the message. Its `text` is empty, the way the client hides it, unless the caller asked for covered messages to be shown."
           }
         }
       },

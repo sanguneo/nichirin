@@ -58,7 +58,8 @@ def local_copy(attachment: Attachment, directory: Optional[Path] = None) -> Opti
 
     The client names a second copy ``name (1).ext``, so those are tried after
     the plain name. Size has to agree exactly: a name alone is the easiest
-    thing for two different files to share.
+    thing for two different files to share. A link is never a copy: followed,
+    it would hand a remote ``/file`` caller whatever it points at.
     """
     base = safe_name(attachment.name)
     if base is None or attachment.size is None:
@@ -77,6 +78,7 @@ def local_copy(attachment: Attachment, directory: Optional[Path] = None) -> Opti
         try:
             if (
                 candidate.parent == folder
+                and not candidate.is_symlink()
                 and candidate.is_file()
                 and candidate.stat().st_size == attachment.size
             ):
