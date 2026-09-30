@@ -10,7 +10,7 @@ from tests.platform import require_posix_console
 require_posix_console()
 
 from kamado.tui.app import App
-from kamado.tui.console import Key
+from kamado.tui.console import Key, TOGGLE_TIMESTAMP
 from kamado.tui.layout import display_width, strip_ansi
 from kamado.tui.theme import Theme
 
@@ -95,6 +95,39 @@ class ExtrasScreenTests(unittest.TestCase):
         self.assertIn("enter", hints_line)
         self.assertIn("esc", hints_line)
         self.assertTrue(all(display_width(line) <= WIDTH for line in frame))
+
+    def test_timestamp_toggle_via_shortcut_and_command(self) -> None:
+        initial = self.transcript()
+        self.assertTrue(any("07:20" in line for line in initial))
+        self.assertTrue(self.app.show_timestamps)
+
+        # Toggle via Ctrl+T
+        self.app.handle("char", TOGGLE_TIMESTAMP)
+        self.assertFalse(self.app.show_timestamps)
+        self.assertEqual(self.chat().notice, "시간 표시 끔")
+        hidden = self.transcript()
+        # Header date might have 2023-11-15, but message line timestamps 07:20 should be gone
+        message_lines = [l for l in hidden if "Friend Nick" in l or "내가 남긴 줄" in l]
+        self.assertTrue(message_lines)
+        self.assertFalse(any("07:20" in l for l in message_lines))
+        # Speaker name should start directly at column 0 without leading space
+        friend_line = next(l for l in hidden if "Friend Nick" in l)
+        self.assertTrue(friend_line.startswith("Friend Nick"), f"Unexpected indentation: {repr(friend_line)}")
+
+        # Toggle via /time
+        self.command("/time")
+        self.assertTrue(self.app.show_timestamps)
+        self.assertEqual(self.chat().notice, "시간 표시 켬")
+        restored = self.transcript()
+        restored_messages = [l for l in restored if "Friend Nick" in l or "내가 남긴 줄" in l]
+        self.assertTrue(any("07:20" in l for l in restored_messages))
+
+    def test_help_panel_lists_timestamp_toggle(self) -> None:
+        self.command("/help")
+        frame = self.frame()
+        self.assertTrue(any("^T" in line and "타임스탬프" in line for line in frame))
+        self.assertTrue(any("/time" in line and "타임스탬프" in line for line in frame))
+        self.app.handle(Key.ESCAPE, "")
 
 
 if __name__ == "__main__":
