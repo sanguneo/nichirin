@@ -42,6 +42,21 @@ CREATE TABLE talkUser (
 CREATE TABLE Profile (userId INTEGER, nickname TEXT, hasMeBadge INTEGER);
 """
 
+PICTURE_COLUMNS = """
+ALTER TABLE talkUser ADD COLUMN profileImageUrl TEXT;
+ALTER TABLE Profile ADD COLUMN profileImageInfo TEXT;
+"""
+"""The two columns a live client keeps profile pictures in, added on request.
+
+Left out by default, so every other test also runs against a client whose
+tables have no picture at all — which must answer, not fail.
+"""
+
+PEER_PICTURE = "https://p.kakaocdn.net/synthetic/peer.jpg"
+FRIEND_PICTURE = "https://chat.kakaocdn.net/synthetic/friend.jpg"
+OWN_PICTURE = "https://p.kakaocdn.net/synthetic/own.jpg"
+"""Made-up addresses on the two hosts measured live."""
+
 FRIEND_TYPE = 1
 NON_FRIEND_TYPE = 1000
 SELF_STORED_TITLE = "계정본인이름"
@@ -142,10 +157,11 @@ def build_profile(
     *,
     with_self_room: bool = True,
     messages: Optional[list[tuple]] = None,
+    pictures: bool = False,
 ) -> tuple[StubCache, Keyring]:
     """Return a stub cache and key ring describing one synthetic profile."""
     users = _connect(
-        USER_SCHEMA,
+        USER_SCHEMA + (PICTURE_COLUMNS if pictures else ""),
         {
             "talkUser": [
                 # userId, type, nickName, friendNickName, phone, status, directChatId, favorite
@@ -161,6 +177,22 @@ def build_profile(
             ],
         },
     )
+    if pictures:
+        users.executemany(
+            "UPDATE talkUser SET profileImageUrl = ? WHERE userId = ?",
+            [
+                (PEER_PICTURE, PEER_ID),
+                (FRIEND_PICTURE, FRIEND_ID),
+                # Neither is the client's CDN over HTTPS, so neither is passed on.
+                ("http://p.kakaocdn.net/synthetic/plain.jpg", STRANGER_ID),
+                ("https://example.invalid/synthetic/elsewhere.jpg", HUGE_ID),
+            ],
+        )
+        users.execute(
+            "UPDATE Profile SET profileImageInfo = ? WHERE userId = ?",
+            (json.dumps({"thumbnailUrl": OWN_PICTURE, "originalUrl": ""}), OWN_ID),
+        )
+        users.commit()
 
     rooms = [
         (DIRECT_ROOM, "DirectChat", "", 0, 2, 0, 5003, 3000, PEER_ID),

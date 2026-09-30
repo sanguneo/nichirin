@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "KakaoTalk local bridge — serve",
-    "version": "0.16.0",
+    "version": "0.17.0",
     "summary": "The HTTP + SSE surface that kanao-cli (Windows) and kamado-cli (macOS) both answer.",
-    "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
+    "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only, and the profile pictures added in 0.17.0 — `Room.images` and `Message.senderImage` — which are Windows-only until the macOS schema is checked for them. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -1017,6 +1017,16 @@
             "type": "integer",
             "description": "The client's own integer type, passed through without interpretation.",
             "x-platform": "macOS (kamado-cli) only — absent from the Windows build, and additive, so a consumer must not require it."
+          },
+          "images": {
+            "type": "array",
+            "description": "Present only when the room has a picture to draw: the profile pictures its icon is made of, best first. A room with one counterpart (1:1, open 1:1, channel) is that counterpart's picture, the chat with oneself is the account's own, and any other room is up to four of its active members other than the account, in the catalog's order. The client's own room-picture columns were empty in every room measured, so there is no separate room picture. Addresses are HTTPS on the client's CDN (`*.kakaocdn.net`); the cores fetch nothing for them.",
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "format": "uri"
+            },
+            "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet."
           }
         }
       },
@@ -1216,6 +1226,12 @@
             "type": "string",
             "enum": ["safebot"],
             "description": "Present when an open chat's SafeBot covered the message. Its `text` is empty, the way the client hides it, unless the caller asked for covered messages to be shown."
+          },
+          "senderImage": {
+            "type": "string",
+            "format": "uri",
+            "description": "Present only when the client holds a profile picture for the sender: the small one, HTTPS on the client's CDN (`*.kakaocdn.net`). Like `sender`, it is the picture that account carries now, not the one it had when the message was sent. The cores fetch nothing for it.",
+            "x-platform": "Windows (kanao-cli) only for now: the macOS schema has not been checked for this yet."
           }
         }
       },

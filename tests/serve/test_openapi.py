@@ -84,7 +84,9 @@ class DocumentTests(unittest.TestCase):
         """Another divergence has to be declared here, not discovered later.
 
         Two are macOS-only (a room key and an error code). The reads added
-        in 0.15.0 are answered by both builds since contract 0.16.0.
+        in 0.15.0 are answered by both builds since contract 0.16.0. The
+        profile pictures added in 0.17.0 are Windows-only until the macOS
+        schema is checked for them.
         """
         marked = set()
         def walk(node, trail=()):
@@ -104,6 +106,8 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
+                "components/schemas/Room/properties/images",
+                "components/schemas/Message/properties/senderImage",
             },
         )
 

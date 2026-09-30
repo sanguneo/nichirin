@@ -207,13 +207,15 @@ class Room:
     last_updated_at: Optional[int]
     readable: bool
     """Whether this room's message database can be decrypted right now."""
+    images: tuple[str, ...] = ()
+    """The profile pictures its icon is drawn from, best first; up to four."""
 
     @property
     def kind(self) -> str:
         return ROOM_KINDS.get(self.type, self.type)
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "id": str(self.id),
             "title": self.title,
             "kind": self.kind,
@@ -224,6 +226,10 @@ class Room:
             "lastActivityAt": to_iso(self.last_updated_at),
             "readable": self.readable,
         }
+        # Only when there is one, like every other key that reports a presence.
+        if self.images:
+            payload["images"] = list(self.images)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -528,6 +534,8 @@ class Message:
     The text is withheld unless the reader was asked to reveal covered
     messages, the same way the client hides it until it is tapped.
     """
+    sender_image: Optional[str] = None
+    """The sender's small profile picture on the client's CDN, when known."""
 
     @property
     def has_text(self) -> bool:
@@ -570,6 +578,8 @@ class Message:
             payload["edited"] = True
         if self.covered is not None:
             payload["covered"] = self.covered
+        if self.sender_image is not None:
+            payload["senderImage"] = self.sender_image
         return payload
 
 

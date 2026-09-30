@@ -96,13 +96,18 @@ computer has never seen the account.
 `follow` carries the same keys on each streamed message, so a mention can be
 noticed as it arrives.
 
-Three more keys follow the same rule:
+Four more keys follow the same rule:
 
 | Key on a message | What it means |
 | --- | --- |
 | `reactions` | `[{label, count, code}]` — the 공감 on it, by kind. Who reacted is not stored. |
 | `edited` | The sender edited it; `text` is the newest version. `revisions --message-id` lists the others. |
 | `covered` | `"safebot"`: an open chat's SafeBot covered it, and `text` is empty the way the client hides it. Do not guess what it said. Only pass `--show-covered` when the user asks to see covered messages. |
+| `senderImage` | The sender's small profile picture, an HTTPS address on the client's CDN. Like `sender`, it is the one they carry now. |
+
+A room carries `images` the same way: up to four profile pictures its icon is
+made of — the counterpart's in a 1:1 or channel, your own in the chat with
+yourself, otherwise other members'.
 
 ## Following a conversation live
 

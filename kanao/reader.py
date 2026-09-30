@@ -91,6 +91,84 @@ _LINK_TYPES = (model.TEXT_MESSAGE, model.REPLY_MESSAGE)
 _IN_CHUNK = 500
 """How many ids one ``IN`` list carries, well inside SQLite's variable limit."""
 
+_ROOM_IMAGES = 4
+"""How many member pictures a room's icon is composed from, as the client does.
+
+``chatRoomList.chatRoomImageUrl`` and ``chatRoomFullImageUrl`` were empty in
+all 273 rooms of a live account, so a room's picture is its members'.
+"""
+_PEER_ROOMS = (model.DIRECT_CHAT, model.OPEN_DIRECT_CHAT, model.CHANNEL_CHAT)
+"""Rooms that are one counterpart, whose picture is that counterpart's."""
+_IMAGE_HOST_SUFFIX = ".kakaocdn.net"
+"""Measured hosts: ``chat.kakaocdn.net`` and ``p.kakaocdn.net``.
+
+A profile picture is an address the client wrote, and a remote caller's
+browser is what will fetch it; only the client's own CDN over HTTPS is passed
+on, so a row that says anything else is treated as no picture at all.
+"""
+
+
+def _image_address(value: object) -> Optional[str]:
+    """Return *value* when it is an HTTPS address on the client's CDN."""
+    if not isinstance(value, str) or not value.startswith("https://"):
+        return None
+    host = value[len("https://") :].split("/", 1)[0].split(":", 1)[0].lower()
+    return value if host.endswith(_IMAGE_HOST_SUFFIX) else None
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _profile_images(users: sqlite3.Connection) -> dict[int, str]:
+    """Map user ids to their small profile picture, where the client has one.
+
+    Read beside the name map and from the same snapshot, so a picture is the
+    one that account carries now, exactly like its name. ``talkUser`` holds
+    ``profileImageUrl`` (measured: 15,787 of 17,756 rows, ~7 KB each); the
+    ``Profile`` rows keep theirs as JSON under ``thumbnailUrl``. As with names,
+    ``talkUser`` wins. A client whose tables lack the columns has no pictures,
+    which is an answer, not an error.
+    """
+    found: dict[int, str] = {}
+    if "profileImageInfo" in _columns(users, "Profile"):
+        for user_id, info in users.execute("SELECT userId, profileImageInfo FROM Profile"):
+            parsed = model.parse_attachment(info)
+            address = _image_address(parsed.get("thumbnailUrl"))
+            if address is not None:
+                found[int(user_id)] = address
+    if "profileImageUrl" in _columns(users, "talkUser"):
+        for user_id, value in users.execute("SELECT userId, profileImageUrl FROM talkUser"):
+            address = _image_address(value)
+            if address is not None:
+                found[int(user_id)] = address
+    return found
+
+
+def _room_images(
+    room_type: str,
+    peer: object,
+    members: Sequence[int],
+    own: Optional[int],
+    images: dict[int, str],
+) -> tuple[str, ...]:
+    """The pictures a room's icon is drawn from, best first; empty for none.
+
+    One counterpart — a 1:1, an open 1:1, a channel — is that counterpart's
+    picture. The chat with oneself is the account's own. Any other room is its
+    active members' other than the account, in the catalog's order, up to
+    :data:`_ROOM_IMAGES`; a member without a picture is skipped, not padded.
+    """
+    if room_type == model.SELF_CHAT:
+        address = None if own is None else images.get(own)
+        return () if address is None else (address,)
+    if room_type in _PEER_ROOMS and isinstance(peer, int) and peer > 0:
+        address = images.get(peer)
+        return () if address is None else (address,)
+    return tuple(
+        images[member] for member in members if member != own and member in images
+    )[:_ROOM_IMAGES]
+
 
 def _version(row: "sqlite3.Row | tuple[Any, ...]") -> int:
     """A digest of the columns one message is built from.
@@ -127,6 +205,8 @@ class Reader:
         self._keyring: Optional[Keyring] = keyring
         self._ledger = ledger
         self._names: Optional[dict[int, str]] = None
+        self._images: dict[int, str] = {}
+        """Profile pictures, read with :attr:`_names` and replaced with it."""
         self._names_read_at = 0.0
         self._names_source: Optional[sqlite3.Connection] = None
         """The user database snapshot the name map was read from.
@@ -297,6 +377,7 @@ class Reader:
                     if friend or nick
                 }
             )
+            self._images = _profile_images(users)
             self._names = found
             self._names_source = users
             self._names_read_at = time.monotonic()
@@ -306,6 +387,11 @@ class Reader:
                 # last sighting is appended.
                 self._ledger.observe(found)
         return self._names
+
+    def _known_images(self) -> dict[int, str]:
+        """The profile pictures of the name map's snapshot, reading it if needed."""
+        self._known_names()
+        return self._images
 
     def unlock(
         self,
@@ -550,7 +636,12 @@ class Reader:
         # both evicts the catalog - closing the connection this loop would
         # still be reading from. Least recently used is not "no longer used".
         rows = self._catalog().execute(sql, parameters).fetchall()
+        # Memberships and the account are read from the catalog before the
+        # user database is opened for pictures, for the reason given above.
+        memberships = self.memberships(refresh=True)
+        own = self.own_user_id()
         self._revalidate_names()
+        images = self._known_images()
         found: list[Room] = []
         for row in rows:
             room_id, room_type, title, custom, members, unread, last_log, updated, peer = row
@@ -565,6 +656,9 @@ class Reader:
                     last_log_id=None if last_log is None else int(last_log),
                     last_updated_at=None if updated is None else int(updated),
                     readable=room_id in readable,
+                    images=_room_images(
+                        str(room_type or ""), peer, memberships.get(room_id, ()), own, images
+                    ),
                 )
             )
         return found
@@ -936,6 +1030,7 @@ class Reader:
                 sent_at=None if sent_at is None else int(sent_at),
                 from_me=self.own_user_id() is not None and sender_id == self.own_user_id(),
                 erased=True,
+                sender_image=self._known_images().get(sender_id),
             )
         known = self._known_names()
         own = self.own_user_id()
@@ -973,6 +1068,7 @@ class Reader:
             reactions=model.reactions_in(reacted),
             edited=bool(revision),
             covered=covered,
+            sender_image=self._known_images().get(sender_id),
         )
 
     def _threaded_quote(
