@@ -57,7 +57,7 @@ class ExtrasScreenTests(unittest.TestCase):
 
     def test_the_notice_takes_the_blank_row_and_nothing_moves(self) -> None:
         frame = self.frame()
-        self.assertTrue(frame[1].startswith("공지 " + NOTICE_TEXT), frame[:3])
+        self.assertTrue(frame[2].startswith("공지 " + NOTICE_TEXT), frame[:4])
         self.assertTrue(all(display_width(line) <= WIDTH for line in frame))
 
     def test_safebot_toggles_what_the_screen_shows(self) -> None:
@@ -89,7 +89,7 @@ class ExtrasScreenTests(unittest.TestCase):
 
     def test_chat_hints_include_help_and_essential_keys(self) -> None:
         frame = self.frame()
-        hints_line = frame[0]
+        hints_line = frame[1]
         self.assertIn("/help", hints_line)
         self.assertIn("도움말", hints_line)
         self.assertIn("enter", hints_line)
