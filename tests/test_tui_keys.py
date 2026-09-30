@@ -219,7 +219,7 @@ class MouseDecodingTests(unittest.TestCase):
         self.assertEqual(self.read(b"\x1b[<0;12;5M"), (Key.CLICK, "4,11"))
 
     def test_the_release_that_follows_is_not_a_second_click(self) -> None:
-        self.assertEqual(self.read(b"\x1b[<0;12;5m"), ("", ""))
+        self.assertEqual(self.read(b"\x1b[<0;12;5m"), (Key.RELEASE, "4,11"))
 
     def test_a_column_past_the_x10_limit_still_arrives(self) -> None:
         # This is the whole reason SGR reporting is asked for.

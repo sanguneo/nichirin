@@ -286,6 +286,46 @@ class ClickTests(TabCase):
         assert self.app.chat is not None
         self.assertEqual(self.app.chat.room.id, GROUP_ROOM)
 
+    def test_dragging_tab_reorders_tabs(self) -> None:
+        self.open(DIRECT_ROOM, GROUP_ROOM, NAMED_ROOM)
+        self.assertEqual([c.room.id for c in self.app.chats], [DIRECT_ROOM, GROUP_ROOM, NAMED_ROOM])
+        col0 = self.tab_columns(0)
+        col2 = self.tab_columns(2)
+
+        # Drag from Tab 0 to Tab 2
+        self.app.handle(Key.CLICK, f"0,{col0}")
+        self.app.handle(Key.RELEASE, f"0,{col2}")
+
+        self.assertEqual([c.room.id for c in self.app.chats], [GROUP_ROOM, NAMED_ROOM, DIRECT_ROOM])
+        assert self.app.chat is not None
+        self.assertEqual(self.app.chat.room.id, DIRECT_ROOM)
+        self.assertEqual(self.app.focus, 2)
+
+    def test_dragging_tab_to_earlier_position(self) -> None:
+        self.open(DIRECT_ROOM, GROUP_ROOM, NAMED_ROOM)
+        col0 = self.tab_columns(0)
+        col2 = self.tab_columns(2)
+
+        # Drag from Tab 2 to Tab 0
+        self.app.handle(Key.CLICK, f"0,{col2}")
+        self.app.handle(Key.RELEASE, f"0,{col0}")
+
+        self.assertEqual([c.room.id for c in self.app.chats], [NAMED_ROOM, DIRECT_ROOM, GROUP_ROOM])
+        assert self.app.chat is not None
+        self.assertEqual(self.app.chat.room.id, NAMED_ROOM)
+        self.assertEqual(self.app.focus, 0)
+
+    def test_drag_release_outside_tab_strip_does_not_reorder(self) -> None:
+        self.open(DIRECT_ROOM, GROUP_ROOM, NAMED_ROOM)
+        col0 = self.tab_columns(0)
+        col2 = self.tab_columns(2)
+
+        # Press on Tab 0, release in body row 5
+        self.app.handle(Key.CLICK, f"0,{col0}")
+        self.app.handle(Key.RELEASE, f"5,{col2}")
+
+        self.assertEqual([c.room.id for c in self.app.chats], [DIRECT_ROOM, GROUP_ROOM, NAMED_ROOM])
+
 
 class ClosingTests(TabCase):
     def test_escape_closes_one_tab_and_keeps_the_rest(self) -> None:

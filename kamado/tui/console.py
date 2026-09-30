@@ -105,6 +105,8 @@ class Key:
     INTERRUPT: Final = "interrupt"
     CLICK: Final = "click"
     """A left-button press, carrying ``"row,column"`` as its text."""
+    RELEASE: Final = "release"
+    """A left-button release, carrying ``"row,column"`` as its text."""
     WHEEL_UP: Final = "wheelup"
     WHEEL_DOWN: Final = "wheeldown"
     """One wheel notch.
@@ -517,7 +519,11 @@ class Console:
             return KeyEvent(True, 0, "\x00wheel:up")
         if bare == _WHEEL_DOWN_BUTTON:
             return KeyEvent(True, 0, "\x00wheel:down")
-        if bare != _LEFT_BUTTON or text[-1] != "M":
+        if bare != _LEFT_BUTTON:
+            return ignored
+        if text[-1] == "m":
+            return KeyEvent(True, 0, f"\x00release:{row - 1},{column - 1}")
+        if text[-1] != "M":
             return ignored
         return KeyEvent(True, 0, f"\x00click:{row - 1},{column - 1}")
 
@@ -625,6 +631,9 @@ class Console:
             if character.startswith("\x00click:"):
                 self._pending_surrogate = ""
                 return Key.CLICK, character[len("\x00click:"):]
+            if character.startswith("\x00release:"):
+                self._pending_surrogate = ""
+                return Key.RELEASE, character[len("\x00release:"):]
             if character == "\x00wheel:up":
                 self._pending_surrogate = ""
                 return Key.WHEEL_UP, ""

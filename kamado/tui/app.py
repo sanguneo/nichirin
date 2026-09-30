@@ -383,6 +383,8 @@ class App:
         """Where each drawn tab starts and ends, for a click that lands on one."""
         self._tab_row: Optional[int] = None
         """Which row the strip was painted on, or None when there is no strip."""
+        self._tab_drag_start: Optional[int] = None
+        """Column where mouse button went down on the tab strip."""
 
     @property
     def watcher(self) -> Optional[Watcher]:
@@ -2557,6 +2559,8 @@ class App:
             self.running = False
         elif kind == Key.CLICK:
             self._click(text)
+        elif kind == Key.RELEASE:
+            self._release(text)
         elif kind == Key.WHEEL_UP:
             chat.offset += WHEEL_LINES
         elif kind == Key.WHEEL_DOWN:
@@ -2655,8 +2659,10 @@ class App:
         except ValueError:
             return
         if self._tab_row is not None and row == self._tab_row:
+            self._tab_drag_start = column
             self._tab_click(column)
             return
+        self._tab_drag_start = None
         found = self._cell_at(row, column)
         if found is None:
             return
@@ -2682,6 +2688,37 @@ class App:
         if chat is not None and chat.offset == 0:
             chat.unseen = 0
 
+    def _release(self, position: str) -> None:
+        """Act on mouse release: reorder tabs if dragged across the tab strip."""
+        start_col = self._tab_drag_start
+        self._tab_drag_start = None
+        if start_col is None:
+            return
+        try:
+            row, column = (int(part) for part in position.split(","))
+        except ValueError:
+            return
+        if self._tab_row is not None and row == self._tab_row:
+            src = self._tab_index_at(start_col)
+            dest = self._tab_index_at(column)
+            if src is not None and dest is not None and src != dest:
+                self._reorder_tab(src, dest)
+
+    def _tab_index_at(self, column: int) -> Optional[int]:
+        """Return the tab index under a column, or None."""
+        for index, start, columns in self._tab_geometry:
+            if start <= column < start + columns:
+                return index
+        return None
+
+    def _reorder_tab(self, src: int, dest: int) -> None:
+        """Move the tab at index *src* to index *dest*."""
+        if not (0 <= src < len(self.chats) and 0 <= dest < len(self.chats)):
+            return
+        chat = self.chats.pop(src)
+        self.chats.insert(dest, chat)
+        self.focus = dest
+
     def _tab_click(self, column: int) -> None:
         """Switch to the tab under a clicked column, if one was under it.
 
@@ -2689,10 +2726,9 @@ class App:
         edge, belong to nobody: the strip is where a reader points at a room
         they can see, and a near miss is not a choice.
         """
-        for index, start, columns in self._tab_geometry:
-            if start <= column < start + columns:
-                self._focus_tab(index)
-                return
+        index = self._tab_index_at(column)
+        if index is not None:
+            self._focus_tab(index)
 
     def _cell_at(
         self, screen_row: int, screen_column: int
