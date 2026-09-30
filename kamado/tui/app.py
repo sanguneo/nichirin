@@ -1084,14 +1084,8 @@ class App:
                 self._hints(
                     [
                         ("enter", "전송"),
-                        ("↑↓", "scroll"),
-                        ("tab/⇧tab", "탭 전환"),
-                        ("^P", "사진"),
-                        ("^G", CLICK_HINT if self.mouse_clicks else SELECT_HINT),
-                        ("/open", "방 추가"),
-                        ("/sum 30m", "요약"),
-                        ("/older", "이전"),
                         ("esc", "닫기"),
+                        ("/help", "도움말"),
                     ],
                     width,
                 ),
@@ -2078,6 +2072,38 @@ class App:
             Job(REVISIONS, room_id=chat.room.id, token=chat.token, payload=(tuple(edited[-EDITS_SHOWN:]),))
         )
 
+    def _show_help(self, chat: ChatState) -> None:
+        """Show keyboard shortcuts and slash commands in a help panel."""
+        rows: list[tuple[str, str]] = [
+            ("head", "키보드 단축키"),
+            ("body", "enter          메시지 전송 (슬래시로 시작하면 명령어 실행)"),
+            ("body", "esc            패널 닫기 / 대화방 닫기 / 방 목록으로 복귀"),
+            ("body", "↑ / ↓          메시지 스크롤 (또는 입력창 커서 줄 이동)"),
+            ("body", "page up / down 반 화면 스크롤"),
+            ("body", "tab / ⇧tab     열린 대화방 탭 전환"),
+            ("body", "^P             최신 사진 미리보기 토글"),
+            ("body", "^G             마우스 클릭 / 텍스트 선택 모드 전환"),
+            ("", ""),
+            ("head", "슬래시 명령어"),
+            ("body", "/help          이 도움말 화면 표시"),
+            ("body", "/open <이름>   대화방을 새 탭으로 열기"),
+            ("body", "/close         현재 대화방 탭 닫기"),
+            ("body", "/sum <구간>    최근 대화 요약 (예: /sum 30m, /sum 2h)"),
+            ("body", "/export        요약(다이제스트) 텍스트 파일로 저장"),
+            ("body", "/older         이전 대화 500개 더 불러오기"),
+            ("body", "/notice        대화방 공지사항 보기"),
+            ("body", "/files         파일 첨부 목록 보기"),
+            ("body", "/links         링크 첨부 목록 보기"),
+            ("body", "/photos        사진 첨부 목록 보기"),
+            ("body", "/videos        동영상 첨부 목록 보기"),
+            ("body", "/photo         최신 사진 인라인 열기 / 닫기"),
+            ("body", "/edits         수정된 메시지 이력 보기"),
+            ("body", "/safebot       SafeBot 가림 메시지 해제 / 설정"),
+            ("body", "/real <닉네임> 친구 실명/본명 확인"),
+            ("body", "/quit          종료"),
+        ]
+        self._show_panel(chat, "도움말", rows)
+
     def _toggle_covered(self, chat: ChatState) -> None:
         """Show what SafeBot covered, or cover it again, in every open tab.
 
@@ -2364,7 +2390,8 @@ class App:
                 Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
             ]
         mode = "digest" if chat.slices else ("list" if chat.panel else "transcript")
-        tail = Segment(mode, self.theme.fg("dim", mode))
+        mouse = CLICK_HINT if self.mouse_clicks else SELECT_HINT
+        tail = Segment(f"{mode} · {mouse}", self.theme.fg("dim", f"{mode} · {mouse}"))
         right = Segment(f"v{__version__}", self.theme.fg("muted", f"v{__version__}"))
         return self._compose_footer(anchor, middle, tail, right, width)
 
@@ -2935,6 +2962,8 @@ class App:
             self._show_edits(chat)
         elif name == "safebot":
             self._toggle_covered(chat)
+        elif name in ("help", "?"):
+            self._show_help(chat)
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name in ("back", "close"):
@@ -2944,7 +2973,7 @@ class App:
         else:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
-                "(사용 가능: /open 방 · /close · /sum 30m · /older · "
+                "(사용 가능: /help · /open 방 · /close · /sum 30m · /older · "
                 "/real 닉 · /photo · /notice · /files · /links · /photos · /videos · "
                 "/edits · /safebot · /export · /quit)"
             )

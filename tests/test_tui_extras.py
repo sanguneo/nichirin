@@ -74,6 +74,8 @@ class ExtrasScreenTests(unittest.TestCase):
             ("/links", "https://example.com/a"),
             ("/photos", "https://talk.kakaocdn.net/synthetic-full.jpg"),
             ("/edits", "이전 버전이 기록되지 않았습니다"),
+            ("/help", "키보드 단축키"),
+            ("/?", "슬래시 명령어"),
         ):
             with self.subTest(command=text):
                 self.command(text)
@@ -84,6 +86,15 @@ class ExtrasScreenTests(unittest.TestCase):
                 self.app.handle(Key.ESCAPE, "")
                 self.assertEqual(self.chat().panel, [])
                 self.assertIsNotNone(self.app.chat)
+
+    def test_chat_hints_include_help_and_essential_keys(self) -> None:
+        frame = self.frame()
+        hints_line = frame[0]
+        self.assertIn("/help", hints_line)
+        self.assertIn("도움말", hints_line)
+        self.assertIn("enter", hints_line)
+        self.assertIn("esc", hints_line)
+        self.assertTrue(all(display_width(line) <= WIDTH for line in frame))
 
 
 if __name__ == "__main__":
