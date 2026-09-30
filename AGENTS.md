@@ -460,8 +460,11 @@ on a live client, newest 4,000 rows of each readable room.
   the macOS-only `PERMISSION_REQUIRED` — and `tests/serve/test_openapi.py`
   pins *which* members may carry it, so a third divergence has to be declared
   rather than discovered. The same tests ask the running handler whether each
-  documented route is routed and read the limits back out of `serve/config`,
-  because a specification nobody checks is a rumour. Writing it is what turned
+  documented route is routed and read the limits back out of `serve/config`
+  and the room kinds out of `model.ROOM_KINDS`, because a specification
+  nobody checks is a rumour: until contract 0.19.0 `Room.kind` listed
+  `open`, `plus` and `unknown`, which no build sent, and missed `channel`,
+  `open-group` and `open-direct`, which the builds do send. Writing it is what turned
   up `INPUT_NOT_FOUND` and `NO_USER_DATA` answering 500 here and 404/503
   there.
 - **The send path keeps its snapshot cache and key ring; the read paths do

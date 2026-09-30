@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "KakaoTalk local bridge — serve",
-    "version": "0.18.1",
+    "version": "0.19.0",
     "summary": "The HTTP + SSE surface that kanao-cli (Windows) and kamado-cli (macOS) both answer.",
     "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only, and a cut-off board notice's whole text added in 0.18.0 — `Notice.truncated`, `fullText`, `fullTextMessageId`, `fullTextTruncated` and `fullTextCandidates` — which is Windows-only, because the macOS client keeps no board. The profile pictures added in 0.17.0 — `Room.images` and `Message.senderImage` — are answered by both builds since 0.18.1. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
     "license": {
@@ -987,8 +987,8 @@
           },
           "kind": {
             "type": "string",
-            "description": "A stable name an agent can branch on.",
-            "enum": ["direct", "group", "self", "open", "plus", "unknown"]
+            "description": "A stable name an agent can branch on. Every client type either build has seen maps to one of these. `channel` (the client's `PlusChat`) comes from the Windows build only: the macOS build decides a room's kind from its shape and has no channel room to name. A type neither build has seen would be passed through as the client's own word, the same string as `type`, so branch with a default rather than rejecting the room. Until 0.19.0 this listed `open`, `plus` and `unknown`, which neither build ever sent, and left out `channel`, `open-group` and `open-direct`, which they do.",
+            "enum": ["direct", "group", "self", "channel", "open-group", "open-direct"]
           },
           "type": {
             "type": "string",

@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 from kanao.errors import ErrorCode
+from kanao.model import ROOM_KINDS
 from kanao.serve import config
 
 from tests.serve.helpers import StubSender, ServedCase, _request, _start_server
@@ -114,6 +115,16 @@ class DocumentTests(unittest.TestCase):
                 "components/schemas/Notice/properties/fullTextCandidates",
             },
         )
+
+    def test_the_room_kinds_are_the_ones_this_build_sends(self) -> None:
+        """Every name the map can yield is listed, and nothing else is.
+
+        The list once named `open`, `plus` and `unknown`, which no build sent,
+        and missed three the builds do send - a validating client refused
+        every open chat and channel.
+        """
+        listed = self.spec["components"]["schemas"]["Room"]["properties"]["kind"]["enum"]
+        self.assertEqual(set(listed), set(ROOM_KINDS.values()))
 
     def test_every_documented_code_says_what_it_means(self) -> None:
         schema = self.spec["components"]["schemas"]["ErrorCode"]
