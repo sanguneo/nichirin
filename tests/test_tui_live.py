@@ -192,6 +192,65 @@ class RoomListTests(LiveTests):
         self.assertTrue(self.app.refresh(WIDTH))
         self.assertIn("7 unread", self.body())
 
+    def test_viewing_room_clears_unread_in_room_list(self) -> None:
+        catalog = self.cache.database
+        catalog.execute("UPDATE NTChatRoom SET countOfNewMessage = 5 WHERE chatId = ?", (DIRECT_ROOM,))
+        catalog.commit()
+
+        self.assertTrue(self.app.refresh(WIDTH))
+        direct_line = next(line for line in self.body().splitlines() if "Peer Renamed" in line and "Friend Nick" not in line)
+        self.assertIn("5 unread", direct_line)
+
+        # Now user opens the room in kamado
+        room = next(r for r in self.app.rooms if r.id == DIRECT_ROOM)
+        self.app.open_room(room)
+        self.app.refresh(WIDTH)
+        self.assertIsNotNone(self.app.chat)
+
+        # Switch back to room list
+        self.app.picking = True
+        direct_line = next(line for line in self.body().splitlines() if "Peer Renamed" in line and "Friend Nick" not in line)
+        self.assertNotIn("unread", direct_line)
+
+    def test_new_messages_after_viewing_increment_unread(self) -> None:
+        catalog = self.cache.database
+        catalog.execute("UPDATE NTChatRoom SET countOfNewMessage = 5 WHERE chatId = ?", (DIRECT_ROOM,))
+        catalog.commit()
+        self.app.refresh(WIDTH)
+
+        # Open and view the room
+        room = next(r for r in self.app.rooms if r.id == DIRECT_ROOM)
+        self.app.open_room(room)
+        self.app.refresh(WIDTH)
+
+        # Close the tab
+        chat = self.app.chat
+        assert chat is not None
+        self.app._leave_room(chat)
+        self.assertEqual(len(self.app.chats), 0)
+
+        # 2 new messages arrive while outside the room
+        catalog.execute("UPDATE NTChatRoom SET countOfNewMessage = 7 WHERE chatId = ?", (DIRECT_ROOM,))
+        catalog.commit()
+        self.app.refresh(WIDTH)
+
+        direct_line = next(line for line in self.body().splitlines() if "Peer Renamed" in line and "Friend Nick" not in line)
+        self.assertIn("2 unread", direct_line)
+
+    def test_arrival_while_picking_shows_in_room_list(self) -> None:
+        # Open and view the room
+        room = next(r for r in self.app.rooms if r.id == DIRECT_ROOM)
+        self.app.open_room(room)
+        self.app.refresh(WIDTH)
+
+        # Enter room picker
+        self.app.picking = True
+        self.arrive(9300, "NEW_MESSAGE")
+        self.app.refresh(WIDTH)
+
+        direct_line = next(line for line in self.body().splitlines() if "Peer Renamed" in line and "Friend Nick" not in line)
+        self.assertIn("1 unread", direct_line)
+
 
 class DigestTests(LiveTests):
     def test_arrivals_do_not_disturb_an_open_digest(self) -> None:
