@@ -20,7 +20,7 @@ from tests.platform import require_windows_console
 
 require_windows_console()
 
-from kanao.tui.console import SHOW_PHOTO, Console, Key, KeyEvent
+from kanao.tui.console import SHOW_PHOTO, TOGGLE_TIMESTAMP, Console, Key, KeyEvent
 
 VK_BACK = 0x08
 VK_TAB = 0x09
@@ -163,6 +163,11 @@ class NewlineDecodingTests(unittest.TestCase):
     def test_control_p_reaches_the_screen(self) -> None:
         """Dropped as unprintable until it was read through the decoder."""
         self.assertEqual(self.read(down(0x50, SHOW_PHOTO)), ("char", SHOW_PHOTO))
+
+    def test_control_t_reaches_the_screen(self) -> None:
+        self.assertEqual(
+            self.read(down(0x54, TOGGLE_TIMESTAMP)), ("char", TOGGLE_TIMESTAMP)
+        )
 
 
 if __name__ == "__main__":

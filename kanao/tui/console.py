@@ -78,7 +78,16 @@ and link handling. The composer holds the keyboard the whole time a room is
 open, so a plain letter is not free — a control character is.
 """
 
-_SHORTCUTS: Final = frozenset({CLEAR_BOX, SHOW_PHOTO})
+TOGGLE_TIMESTAMP: Final = "\x14"
+"""Ctrl+T, which shows each message's time or gives its columns to the text.
+
+A terminal that binds Ctrl+T to something of its own keeps it, and ``/time``
+does the same thing. The Windows Terminal settings this was written against
+bind nothing to it. That a live console hands it over as ``\\x14`` was not
+measured; the decoder's test feeds it the record a console builds for it.
+"""
+
+_SHORTCUTS: Final = frozenset({CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP})
 """Control characters handed to the screen as themselves.
 
 Everything else unprintable is dropped, which is what happened to Ctrl+P for

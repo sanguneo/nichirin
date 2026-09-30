@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from kanao.model import COVERED_PLACEHOLDER
 from tests.platform import require_windows_console
@@ -10,7 +11,7 @@ from tests.platform import require_windows_console
 require_windows_console()
 
 from kanao.tui.app import HELP_KEY_WIDTH, App
-from kanao.tui.console import Key
+from kanao.tui.console import TOGGLE_TIMESTAMP, Key
 from kanao.tui.layout import display_width, strip_ansi
 from kanao.tui.theme import Theme
 
@@ -83,6 +84,43 @@ class ExtrasScreenTests(unittest.TestCase):
                 chat = self.app.chat
                 assert chat is not None
                 self.assertEqual(chat.panel, [])
+
+    def test_ctrl_t_and_time_give_the_seven_columns_back(self) -> None:
+        def line() -> str:
+            return next(one for one in self.transcript() if "고친 문장" in one)
+
+        def column(one: str) -> int:
+            return display_width(one[: one.index("고친 문장")])
+
+        shown = line()
+        self.assertRegex(shown, r"^\d\d:\d\d ")
+        self.app.handle("char", TOGGLE_TIMESTAMP)
+        self.assertFalse(self.app.show_timestamps)
+        hidden = line()
+        self.assertNotRegex(hidden, r"^\d\d:\d\d")
+        self.assertEqual(column(shown) - column(hidden), 7)
+        self.command("/time")
+        self.assertTrue(self.app.show_timestamps)
+        self.assertEqual(line(), shown)
+
+    def test_a_mention_mark_moves_no_text_with_or_without_the_time(self) -> None:
+        chat = self.app.chat
+        assert chat is not None
+        plain = next(one for one in chat.messages if one.text == "고친 문장")
+        chat.messages.append(
+            replace(plain, id=plain.id + 10_000, text="불린 문장", mentions_me=True, edited=False)
+        )
+        for shown in (True, False):
+            with self.subTest(timestamps=shown):
+                self.app.show_timestamps = shown
+                lines = self.transcript()
+                marked = next(one for one in lines if "불린 문장" in one)
+                unmarked = next(one for one in lines if "고친 문장" in one)
+                self.assertIn("@", marked)
+                self.assertEqual(
+                    display_width(marked[: marked.index("불린 문장")]),
+                    display_width(unmarked[: unmarked.index("고친 문장")]),
+                )
 
     def test_the_hint_row_still_reaches_help_on_a_narrow_screen(self) -> None:
         """Eight hints were cut off here; three leave /help on the row."""

@@ -39,7 +39,7 @@ from ..model import (
 )
 from ..reader import UNLOCK_SECONDS, Reader
 from . import digest, images
-from .console import CLEAR_BOX, SHOW_PHOTO, Console, Key, force_size
+from .console import CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP, Console, Key, force_size
 from .layout import (
     ELLIPSIS,
     TAB_SEPARATOR,
@@ -146,7 +146,7 @@ class ChatState:
     """
     feeds: dict[int, str] = field(default_factory=dict)
     """What each feed row in this window says about itself, asked once."""
-    rendered: Optional[tuple[tuple[int, int, int, frozenset[int]], list[str]]] = None
+    rendered: Optional[tuple[tuple[int, int, int, frozenset[int], bool], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
     versions: dict[int, int] = field(default_factory=dict)
     """What each loaded row held when its message was built, by id.
@@ -204,6 +204,8 @@ class App:
         """Which of them the composer and the footer belong to."""
         self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
+        self.show_timestamps = True
+        """Whether each message carries its time; the screen's, not one tab's."""
         self.running = True
         self.zone = KST
         self.drafts: dict[int, str] = {}
@@ -1048,8 +1050,15 @@ class App:
         """The same, for one named conversation rather than the focused one."""
         # Opening a picture reserves rows, so it changes the transcript as
         # surely as a new message does and has to change the key with it;
-        # the revision is what a message changed in place changes.
-        key = (width, len(chat.messages), chat.revision, frozenset(chat.opened_photos))
+        # the revision is what a message changed in place changes. Hiding the
+        # times moves every line's text, so that is part of the key too.
+        key = (
+            width,
+            len(chat.messages),
+            chat.revision,
+            frozenset(chat.opened_photos),
+            self.show_timestamps,
+        )
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
         lines = self._build_transcript(chat, width)
@@ -1079,10 +1088,20 @@ class App:
         detail = chat.feeds.get(message.id, "")
         return f" {detail}" if detail else ""
 
-    def _build_transcript(self, chat: ChatState, width: int) -> list[str]:
-        stamp_width = 5
+    def _columns(self, width: int) -> tuple[int, int]:
+        """How wide a name is drawn, and the column a message's text starts at.
+
+        The transcript reserves a picture's rows at this indent and the
+        placement draws it there, so both ask here: two copies of the sum
+        would put the picture beside its rows the moment one of them changed.
+        """
         name_width = min(14, max(8, width // 6))
-        indent = stamp_width + 2 + name_width + 1
+        # "HH:MM" and the two columns after it, which also hold a mention mark.
+        stamp = 7 if self.show_timestamps else 0
+        return name_width, stamp + name_width + 1
+
+    def _build_transcript(self, chat: ChatState, width: int) -> list[str]:
+        name_width, indent = self._columns(width)
         body_width = max(12, width - indent)
 
         lines: list[str] = []
@@ -1147,12 +1166,23 @@ class App:
             else:
                 wrapped = wrap_to_width(said, body_width)
 
-            head = (
-                self.theme.fg("dim", stamp)
-                + self._mention_mark(message)
-                + self.theme.fg(self.palette.name_colour(speaker), pad_to_width(name, name_width))
-                + " "
-            )
+            mark = self._mention_mark(message)
+            tint = self.palette.name_colour(speaker)
+            if self.show_timestamps:
+                head = (
+                    self.theme.fg("dim", stamp)
+                    + " "
+                    + (mark or " ")
+                    + self.theme.fg(tint, pad_to_width(name, name_width))
+                    + " "
+                )
+            elif mark:
+                # No time, so no gap to borrow: the mark takes the name's
+                # first column and the text still starts where it always does.
+                short = truncate_to_width(clean(speaker), name_width - 1, ELLIPSIS)
+                head = mark + self.theme.fg(tint, pad_to_width(short, name_width - 1)) + " "
+            else:
+                head = self.theme.fg(tint, pad_to_width(name, name_width)) + " "
             body_colour = self.palette.body_colour(speaker)
             opening = head
             chat.message_rows[message.id] = len(lines)
@@ -1241,9 +1271,7 @@ class App:
         offset = min(chat.offset, scrollable) if scrollable > 0 else chat.offset
         end = max(1, len(body) - max(0, offset))
         start = max(0, end - rows)
-        stamp_width = 5
-        name_width = min(14, max(8, width // 6))
-        indent = stamp_width + 2 + name_width + 1
+        _name_width, indent = self._columns(width)
         for row, message_id in chat.photo_rows.items():
             message = next((one for one in chat.messages if one.id == message_id), None)
             if message is None or message.photo is None:
@@ -1412,17 +1440,19 @@ class App:
         return self.theme.fg("dim", truncate_to_width(f"{who}: {said}", body_width, ELLIPSIS))
 
     def _mention_mark(self, message: Message) -> str:
-        """Mark a message that named somebody, in the head's own two columns.
+        """Mark a message that named somebody, one column wide, or nothing.
 
-        The gap between the time and the name is already there, so a marked
-        line starts its text exactly where every other line does; a mark with
-        a column of its own would move the whole conversation sideways.
+        The mark borrows a column the head already has - the gap after the
+        time, or the name's first column when the time is hidden - so a
+        marked line starts its text exactly where every other line does; a
+        mark with a column of its own would move the whole conversation
+        sideways.
         """
         if message.mentions_me:
-            return " " + self.theme.fg("warning", "@")
+            return self.theme.fg("warning", "@")
         if message.mentions_all:
-            return " " + self.theme.fg("muted", "@")
-        return "  "
+            return self.theme.fg("muted", "@")
+        return ""
 
     def _message_marks(self, message: Message, shows_text: bool) -> str:
         """The words that follow a message: edited, or shown despite a cover."""
@@ -1572,6 +1602,7 @@ class App:
             row("↑↓  pgup pgdn", "한 줄 · 열 줄 스크롤"),
             row("home  end", "맨 위 · 맨 아래 (작성 중이면 입력창 처음 · 끝)"),
             row("ctrl+p", "최근 사진 열기 · 닫기"),
+            row("ctrl+t", "메시지 앞 시각 보이기 · 숨기기"),
             row("ctrl+u", "입력창 비우기"),
             row("ctrl+c", "종료"),
             ("", ""),
@@ -1584,6 +1615,7 @@ class App:
             row("/back", "탭을 모두 닫고 목록으로"),
             row("/real 닉네임", "그 이름을 쓴 계정과 각자의 이름 이력"),
             row("/photo", "최근 사진 열기 · 닫기"),
+            row("/time", "메시지 앞 시각 보이기 · 숨기기"),
             row("/notice", "방 공지 전체"),
             row("/files", f"{recent} 파일"),
             row("/links", f"{recent} 링크"),
@@ -1595,6 +1627,16 @@ class App:
             row("/quit", "종료"),
         ]
         self._show_panel(chat, "도움말", rows)
+
+    def _toggle_timestamps(self, chat: ChatState) -> None:
+        """Show each message's time, or give its seven columns to the text.
+
+        One setting for every tab, like the theme. Nothing needs clearing:
+        the transcript key carries the setting, so each tab rebuilds the next
+        time it is drawn and not before.
+        """
+        self.show_timestamps = not self.show_timestamps
+        chat.notice = "시간 표시 켬" if self.show_timestamps else "시간 표시 끔"
 
     def _toggle_covered(self, chat: ChatState) -> None:
         """Show what SafeBot covered, or cover it again, in every open tab.
@@ -1900,6 +1942,8 @@ class App:
                 chat.caret = 0
             elif text == SHOW_PHOTO:
                 self._toggle_newest_photo(chat)
+            elif text == TOGGLE_TIMESTAMP:
+                self._toggle_timestamps(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -2137,6 +2181,8 @@ class App:
             self._toggle_covered(chat)
         elif name in ("help", "?"):
             self._show_help(chat)
+        elif name in ("time", "timestamp", "timestamps"):
+            self._toggle_timestamps(chat)
         elif name == "open":
             self._open_beside(chat, " ".join(arguments))
         elif name == "close":
