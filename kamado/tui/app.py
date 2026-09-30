@@ -298,6 +298,8 @@ class App:
         """
         self.show_timestamps = True
         """Whether timestamps are shown on each message in the transcript."""
+        self.seen_db_unreads: dict[int, int] = {}
+        """Last observed DB unread count when each room was viewed in kamado."""
         self.running = True
         self.zone = KST
         self.drafts: dict[int, str] = {}
@@ -515,8 +517,10 @@ class App:
         catalogued = done.value
         self.titles = [room.title for room in catalogued]
         rooms = [room for room in catalogued if room.readable]
-        changed = [(room.id, room.unread, room.last_log_id) for room in rooms] != [
-            (room.id, room.unread, room.last_log_id) for room in self.rooms
+        if self.chat is not None and self.chat.offset == 0:
+            self._mark_room_seen(self.chat.room.id)
+        changed = [(room.id, self._effective_unread(room), room.last_log_id) for room in rooms] != [
+            (room.id, self._effective_unread(room), room.last_log_id) for room in self.rooms
         ]
         selected_id = self.rooms[self.selected].id if self.rooms else None
         self.rooms = rooms
@@ -542,6 +546,25 @@ class App:
             return self.rooms
         needle = self.filter.casefold()
         return [room for room in self.rooms if needle in room.title.casefold()]
+
+    def _effective_unread(self, room: Room) -> int:
+        """Unread count for a room, honoring what has been viewed in this interface."""
+        chat = next((c for c in self.chats if c.room.id == room.id), None)
+        if chat is not None:
+            return chat.unseen
+        if room.id in self.seen_db_unreads:
+            seen = self.seen_db_unreads[room.id]
+            if room.unread < seen:
+                self.seen_db_unreads[room.id] = room.unread
+                return room.unread
+            return max(0, room.unread - seen)
+        return room.unread
+
+    def _mark_room_seen(self, room_id: int) -> None:
+        """Mark a room's current unread messages as viewed in this interface."""
+        room = next((r for r in self.rooms if r.id == room_id), None)
+        if room is not None:
+            self.seen_db_unreads[room_id] = room.unread
 
     def visible_friends(self) -> list[Friend]:
         """The friends the filter leaves, or all of them.
@@ -623,6 +646,10 @@ class App:
         )
         if already is not None:
             self.focus = already
+            chat = self.chats[already]
+            if chat.offset == 0:
+                chat.unseen = 0
+                self._mark_room_seen(room.id)
             return
         if room.id in self._opening.values():
             # Already on its way; asking twice would read the room twice.
@@ -684,6 +711,7 @@ class App:
         self.picking = False
         self._forget_filter()
         self.status = ""
+        self._mark_room_seen(room.id)
         return True
 
     def refresh(self, width: int) -> bool:
@@ -839,13 +867,14 @@ class App:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
             chat.offset += len(self._transcript_of(chat, width)) - before
-        if chat.offset > 0 or chat is not self.chat:
+        if chat.offset > 0 or chat is not self.chat or self.picking:
             # Arrivals nobody has seen: the viewport is up in this
             # conversation's history, or this is a tab the reader is not on,
-            # and the strip is where that second case gets said.
+            # or the reader is in the room list picking a room.
             chat.unseen += len(fresh)
         else:
             chat.unseen = 0
+            self._mark_room_seen(chat.room.id)
         return True
 
     def _confirm_delivery(self, chat: ChatState, arrived: Sequence[Message]) -> None:
@@ -967,15 +996,16 @@ class App:
             selected = index == self.selected
             cursor = self.theme.fg("accent", "› ") if selected else "  "
             meta = f"{room.member_count}명"
-            if room.unread:
-                meta += f" · {room.unread} unread"
+            unread = self._effective_unread(room)
+            if unread:
+                meta += f" · {unread} unread"
             stamp = _stamp(room.last_updated_at, self.zone)
             right_part = f"{meta}  {stamp}"
 
             room_width = max(10, width - 2 - display_width(right_part) - 2)
             title = truncate_to_width(clean(room.title), room_width, ELLIPSIS)
             styled = self.theme.bold(title) if selected else title
-            if room.unread:
+            if unread:
                 styled = self.theme.fg("warning", styled)
 
             left = cursor + styled
@@ -1499,6 +1529,7 @@ class App:
         chat.offset = max(0, min(chat.offset, max(0, len(body) - height)))
         if chat.offset == 0:
             chat.unseen = 0
+            self._mark_room_seen(chat.room.id)
 
     def _keep_photo_in_view(self, message_id: int) -> None:
         """Scroll only as far as it takes to bring a just-opened picture into view.
@@ -2624,6 +2655,7 @@ class App:
                 chat.offset = 0
         if chat.offset == 0:
             chat.unseen = 0
+            self._mark_room_seen(chat.room.id)
 
     def _toggle_mouse(self) -> None:
         """Switch between clicking photos and selecting text with the mouse.
@@ -2681,6 +2713,7 @@ class App:
         chat = self.chat
         if chat is not None and chat.offset == 0:
             chat.unseen = 0
+            self._mark_room_seen(chat.room.id)
 
     def _tab_click(self, column: int) -> None:
         """Switch to the tab under a clicked column, if one was under it.
@@ -2825,6 +2858,8 @@ class App:
             self.drafts.pop(chat.room.id, None)
         chat.opened_photos.clear()
         self.placements = []
+        if chat.unseen == 0:
+            self._mark_room_seen(chat.room.id)
         if chat in self.chats:
             index = self.chats.index(chat)
             self.chats.pop(index)
