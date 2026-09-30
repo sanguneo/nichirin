@@ -124,6 +124,62 @@ _ATTACHMENT_TYPES = (
 )
 _LINK_TYPES = (model.TEXT_MESSAGE, model.REPLY_MESSAGE)
 
+_ROOM_PICTURE_META = 4
+"""The meta row holding a photo a member set for the room, ``{imageUrl, …}``.
+
+Measured on 2026-09-30: 3 group rooms carried one, all on ``p.kakaocdn.net``.
+Type 8 is a chat background (``{…ImageUrl}`` on ``k.kakaocdn.net``, 25 rooms)
+and is not the room's icon. ``NTChatRoom.imageUrl`` was set on one room, as a
+plain-HTTP address off the CDN, so it is not read.
+"""
+_ROOM_IMAGES = 4
+"""The most member pictures a room's icon is composed of."""
+_PEER_ROOMS = (model.DIRECT_CHAT, model.OPEN_DIRECT_CHAT, model.CHANNEL_CHAT)
+"""Rooms that are one counterpart, whose picture is that counterpart's."""
+_IMAGE_HOST_SUFFIX = ".kakaocdn.net"
+"""Measured hosts: ``open.``, ``p.``, ``iopen.`` and ``chat.kakaocdn.net``.
+
+Each answered an unauthenticated GET with ``200 image/jpeg``. A picture is an
+address the client wrote and a remote caller's browser will fetch, so only the
+client's own CDN over HTTPS is passed on; anything else is no picture at all.
+"""
+
+
+def _image_address(value: object) -> Optional[str]:
+    """Return *value* when it is an HTTPS address on the client's CDN."""
+    if not isinstance(value, str) or not value.startswith("https://"):
+        return None
+    host = value[len("https://") :].split("/", 1)[0].split(":", 1)[0].lower()
+    return value if host.endswith(_IMAGE_HOST_SUFFIX) else None
+
+
+def _room_images(
+    kind: str,
+    peer_id: int,
+    member_ids: Sequence[int],
+    own: Optional[int],
+    images: dict[int, str],
+    picture: Optional[str],
+) -> tuple[str, ...]:
+    """The pictures a room's icon is drawn from, best first; empty for none.
+
+    A room with a *picture* of its own is that picture alone. Otherwise one
+    counterpart is that counterpart's picture, the chat with oneself is the
+    account's own, and any other room is its listed members other than the
+    account, in the order the room row keeps them, skipping those without one.
+    """
+    if picture is not None:
+        return (picture,)
+    if kind == model.SELF_CHAT:
+        address = None if own is None else images.get(own)
+        return () if address is None else (address,)
+    if kind in _PEER_ROOMS and peer_id > 0:
+        address = images.get(peer_id)
+        return () if address is None else (address,)
+    return tuple(
+        images[member] for member in member_ids if member != own and member in images
+    )[:_ROOM_IMAGES]
+
 
 def _first_present(available: set[str], candidates: Iterable[str]) -> Optional[str]:
     """Return the first candidate this table actually has."""
@@ -182,6 +238,8 @@ class Reader:
         self._ledger = ledger
         self._connection = connection
         self._names: Optional[dict[int, str]] = None
+        self._images: dict[int, str] = {}
+        """Profile pictures, read with :attr:`_names` and replaced with it."""
         self._names_read_at = 0.0
         self._feed_names: dict[int, dict[int, str]] = {}
         self._feeds_lack: dict[int, set[int]] = {}
@@ -420,6 +478,8 @@ class Reader:
                     )
                     if name:
                         found[int(user_id)] = name
+        # Read before either map is kept, so a failed read leaves neither.
+        self._images = self._read_profile_images(columns)
         self._names = found
         self._names_read_at = time.monotonic()
         if self._ledger is not None:
@@ -427,6 +487,32 @@ class Reader:
             # and only a name that differs from its last sighting is appended.
             self._ledger.observe(found)
         return found
+
+    def _read_profile_images(self, columns: set[str]) -> dict[int, str]:
+        """Map user ids to their small profile picture, where the client has one.
+
+        ``profileImageUrl`` is the small one (``C110x110``) beside
+        ``fullProfileImageUrl`` (``U640x640``); measured on 1,058 of 1,342 rows.
+        The account keeps a row per open-chat profile as well as its own, so
+        the ``linkId = 0`` row is read last and wins. A table without the
+        column has no pictures, which is an answer rather than an error.
+        """
+        if not {"userId", "profileImageUrl"} <= columns:
+            return {}
+        order = " ORDER BY COALESCE(linkId, 0) = 0" if "linkId" in columns else ""
+        found: dict[int, str] = {}
+        for user_id, value in self.connection().execute(
+            f"SELECT userId, profileImageUrl FROM {USER_TABLE}{order}"
+        ):
+            address = _image_address(value)
+            if user_id is not None and address is not None:
+                found[int(user_id)] = address
+        return found
+
+    def profile_images(self) -> dict[int, str]:
+        """The profile pictures of the name map's snapshot, reading it if needed."""
+        self.names()
+        return self._images
 
     def own_user_id(self) -> Optional[int]:
         """Identify the signed-in account, or None when it cannot be proven.
@@ -559,6 +645,35 @@ class Reader:
             if link_id and str(name or "").strip()
         }
 
+    def _room_pictures(self) -> dict[int, str]:
+        """Rooms a member gave a photo of their own, by room id."""
+        columns = self.columns(META_TABLE)
+        if not {"chatId", "type", "content"} <= columns:
+            return {}
+        order = " ORDER BY revision" if "revision" in columns else ""
+        found: dict[int, str] = {}
+        for chat_id, content in self.connection().execute(
+            f"SELECT chatId, content FROM {META_TABLE} WHERE type = ?{order}",
+            (_ROOM_PICTURE_META,),
+        ):
+            address = _image_address(model.parse_attachment(content).get("imageUrl"))
+            if chat_id and address is not None:
+                found[int(chat_id)] = address
+        return found
+
+    def _link_pictures(self) -> dict[int, str]:
+        """Open-chat links' own pictures, by link id; measured on 5 of 6 links."""
+        columns = self.columns(LINK_TABLE)
+        if not {"linkId", "linkImageUrl"} <= columns:
+            return {}
+        return {
+            int(link_id): address
+            for link_id, value in self.connection().execute(
+                f"SELECT linkId, linkImageUrl FROM {LINK_TABLE}"
+            )
+            if link_id and (address := _image_address(value)) is not None
+        }
+
     def member_ids(self, room_id: int) -> set[int]:
         """Return the users this room lists, as far as the client records them.
 
@@ -620,6 +735,9 @@ class Reader:
         links = self._link_names()
         metas = self._meta_names()
         known = self.names()
+        images = self.profile_images()
+        room_pictures = self._room_pictures()
+        link_pictures = self._link_pictures()
 
         found: list[Room] = []
         for row in self.connection().execute(sql, parameters):
@@ -632,6 +750,9 @@ class Reader:
             link = int(link_id or 0)
             member_ids = _plist_user_ids(raw_members)
             kind = self._kind_of(link, peer_id, member_ids, own)
+            picture = room_pictures.get(room_id)
+            if picture is None and kind == model.OPEN_GROUP_CHAT:
+                picture = link_pictures.get(link)
             found.append(
                 Room(
                     id=room_id,
@@ -646,6 +767,7 @@ class Reader:
                     last_updated_at=None if updated is None else int(updated),
                     readable=True,
                     type_code=None if type_code is None else int(type_code),
+                    images=_room_images(kind, peer_id, member_ids, own, images, picture),
                 )
             )
         return found
@@ -976,6 +1098,7 @@ class Reader:
             type=kind,
             sent_at=None if sent_at is None else int(sent_at),
             from_me=own is not None and sender_id == own,
+            sender_image=self._images.get(sender_id),
             mentions=mentions,
             mentions_all=model.everyone_mentioned(extra),
             mentions_me=own is not None and any(one.user_id == own for one in mentions),

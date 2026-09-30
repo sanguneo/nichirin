@@ -236,6 +236,8 @@ class Room:
     number's meaning has not been confirmed against a live client and a room
     branded from a guess is worse than a room left unbranded.
     """
+    images: tuple[str, ...] = ()
+    """The pictures the room's icon is drawn from, best first; empty for none."""
 
     @property
     def kind(self) -> str:
@@ -255,6 +257,8 @@ class Room:
         }
         if self.type_code is not None:
             payload["typeCode"] = self.type_code
+        if self.images:
+            payload["images"] = list(self.images)
         return payload
 
 
@@ -430,6 +434,8 @@ class Message:
     type: int
     sent_at: Optional[int]
     from_me: bool
+    sender_image: Optional[str] = None
+    """The sender's small profile picture as that account carries it now."""
     mentions: tuple[Mention, ...] = ()
     mentions_all: bool = False
     """Whether the message carried an @전체 rather than naming anybody."""
@@ -480,6 +486,8 @@ class Message:
             "sentAt": to_iso(self.sent_at),
             "fromMe": self.from_me,
         }
+        if self.sender_image is not None:
+            payload["senderImage"] = self.sender_image
         if self.mentions:
             payload["mentions"] = [mention.as_json() for mention in self.mentions]
         if self.mentions_all:

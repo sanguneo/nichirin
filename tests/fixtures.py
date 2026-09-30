@@ -134,6 +134,50 @@ REPLY_TO_OWNER = json.dumps(
 """A reply carrying its own copy of the message it answers."""
 
 
+PEER_PICTURE = "https://p.kakaocdn.net/synthetic/peer.jpg?type=thumb&opt=C110x110"
+FRIEND_PICTURE = "https://chat.kakaocdn.net/synthetic/friend.jpg?type=thumb&opt=C110x110"
+OWN_PICTURE = "https://open.kakaocdn.net/synthetic/own.jpg"
+OWN_OPEN_PICTURE = "https://iopen.kakaocdn.net/synthetic/own-open.jpg"
+"""The account's open-chat profile, a second row that must not replace its own."""
+ROOM_PICTURE = "https://p.kakaocdn.net/synthetic/room.jpg"
+LINK_PICTURE = "https://open.kakaocdn.net/synthetic/link.jpg"
+BACKGROUND_PICTURE = "https://k.kakaocdn.net/synthetic/background.jpg"
+OFF_CDN_PICTURE = "https://pictures.example.com/synthetic/stranger.jpg"
+PLAIN_HTTP_PICTURE = "http://p.kakaocdn.net/synthetic/huge.jpg"
+
+
+def _add_pictures(connection: sqlite3.Connection) -> None:
+    """Give the tables the picture columns a live client has, and fill them."""
+    connection.executescript(
+        "ALTER TABLE NTUser ADD COLUMN profileImageUrl TEXT;"
+        "ALTER TABLE NTOpenLink ADD COLUMN linkImageUrl TEXT;"
+    )
+    for user_id, address in (
+        (PEER_ID, PEER_PICTURE),
+        (FRIEND_ID, FRIEND_PICTURE),
+        (OWN_ID, OWN_PICTURE),
+        (STRANGER_ID, OFF_CDN_PICTURE),
+        (HUGE_ID, PLAIN_HTTP_PICTURE),
+    ):
+        connection.execute(
+            "UPDATE NTUser SET profileImageUrl = ? WHERE userId = ?", (address, user_id)
+        )
+    connection.execute(
+        "INSERT INTO NTUser (userId, linkId, type, nickName, profileImageUrl) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (OWN_ID, OPEN_LINK_ID, NON_FRIEND_TYPE, "My Open Name", OWN_OPEN_PICTURE),
+    )
+    connection.execute("UPDATE NTOpenLink SET linkImageUrl = ?", (LINK_PICTURE,))
+    connection.executemany(
+        "INSERT INTO NTChatMeta (chatId, type, revision, content) VALUES (?, ?, ?, ?)",
+        [
+            (NAMED_ROOM, 4, 1, json.dumps({"imageUrl": ROOM_PICTURE, "fullImageUrl": ROOM_PICTURE})),
+            (GROUP_ROOM, 8, 1, json.dumps({"chatBackgroundImageUrl": BACKGROUND_PICTURE})),
+        ],
+    )
+    connection.commit()
+
+
 def members_blob(user_ids: list[int]) -> bytes:
     """Archive a member list the way the client stores one: a binary plist."""
     return plistlib.dumps(user_ids, fmt=plistlib.FMT_BINARY)
@@ -189,8 +233,13 @@ def build_database(
     with_self_room: bool = True,
     messages: Optional[list[tuple]] = None,
     metas: Optional[list[tuple]] = None,
+    pictures: bool = False,
 ) -> sqlite3.Connection:
-    """Return one synthetic database holding every room and message."""
+    """Return one synthetic database holding every room and message.
+
+    *pictures* adds the profile, room and link picture columns; without it the
+    schema has none, like a client that keeps no pictures.
+    """
     users = [
         # userId, linkId, type, nickName, displayName, friendNickName,
         # phone, status, directChatId, favorite
@@ -251,7 +300,7 @@ def build_database(
     if with_self_room:
         messages.append((8001, SELF_ROOM, OWN_ID, 1, "메모", None, 1_700_000_600, 0))
 
-    return _connect(
+    connection = _connect(
         {
             "NTUser": users,
             "NTChatRoom": rooms,
@@ -263,6 +312,9 @@ def build_database(
             "NTChatContext": [(OWN_ID,)],
         }
     )
+    if pictures:
+        _add_pictures(connection)
+    return connection
 
 
 def build_keyring(database: Path = DATABASE) -> Keyring:

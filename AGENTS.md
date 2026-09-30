@@ -520,6 +520,20 @@ keep rather than one to rediscover.
   carried `photo: {url, width, height, count}` on a message with a picture,
   and `openapi.json` now documents it as `Photo`. kanao-cli answers with the
   same shape from 0.19.0. It is the address the client stored, not the image.
+- **Profile pictures are read with the names, and follow the same snapshot.**
+  Measured 2026-09-30 (#45): `NTUser.profileImageUrl` is the small picture
+  (`C110x110`) on 1,058 of 1,342 rows, beside `fullProfileImageUrl`. The
+  account keeps one row per open-chat profile as well as its own, so the
+  `linkId = 0` row wins. A room's own photo is `NTChatMeta` type 4
+  `imageUrl` (3 groups); an open group's is `NTOpenLink.linkImageUrl`; type 8
+  is a chat background and `NTChatRoom.imageUrl` held one plain-HTTP address
+  off the CDN, so neither is read. Only HTTPS `*.kakaocdn.net` passes; the
+  four hosts seen (`open.`, `p.`, `iopen.`, `chat.`) each answered an
+  unauthenticated GET with `200 image/jpeg`. A group is composed from
+  `displayMemberIds`, the display list, not a full roll. Contract 0.18.1
+  dropped the two keys' `x-platform`; the board-notice full text stays
+  Windows-only, since this client keeps no board and its one 100-character
+  notice row matched no message.
 
 ## Conventions
 

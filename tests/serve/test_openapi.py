@@ -105,6 +105,11 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
+                "components/schemas/Notice/properties/truncated",
+                "components/schemas/Notice/properties/fullText",
+                "components/schemas/Notice/properties/fullTextMessageId",
+                "components/schemas/Notice/properties/fullTextTruncated",
+                "components/schemas/Notice/properties/fullTextCandidates",
             },
         )
 
