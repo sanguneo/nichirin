@@ -66,6 +66,7 @@ from .console import (
     CLEAR_BOX,
     SELECT_MODE,
     SHOW_PHOTO,
+    TOGGLE_TIMESTAMP,
     Console,
     Key,
     force_size,
@@ -295,6 +296,8 @@ class App:
         carries it to the terminal and the frame that says which mode is on —
         reads one answer, and a test can drive the switch without a terminal.
         """
+        self.show_timestamps = True
+        """Whether timestamps are shown on each message in the transcript."""
         self.running = True
         self.zone = KST
         self.drafts: dict[int, str] = {}
@@ -1231,7 +1234,13 @@ class App:
         if missing:
             self._ask(Job(FEEDS, room_id=chat.room.id, token=chat.token, payload=(missing,)))
         # The revision is what a message changed in place changes.
-        key = (width, len(chat.messages), chat.revision, frozenset(chat.opened_photos))
+        key = (
+            width,
+            len(chat.messages),
+            chat.revision,
+            frozenset(chat.opened_photos),
+            self.show_timestamps,
+        )
         if chat.rendered is not None and chat.rendered[0] == key:
             return chat.rendered[1]
         lines = self._build_transcript(chat, width)
@@ -1239,9 +1248,8 @@ class App:
         return lines
 
     def _build_transcript(self, chat: ChatState, width: int) -> list[str]:
-        stamp_width = 5
         name_width = min(14, max(8, width // 6))
-        indent = stamp_width + 2 + name_width + 1
+        indent = (7 if self.show_timestamps else 0) + name_width + 1
         body_width = max(12, width - indent)
 
         lines: list[str] = []
@@ -1298,12 +1306,29 @@ class App:
                     label = message_kind(message.type) + detail
                     wrapped = [self.theme.fg("dim", f"[{label}]")]
 
-            head = (
-                self.theme.fg("dim", stamp)
-                + self._mention_mark(message)
-                + self.theme.fg(self.palette.name_colour(speaker), pad_to_width(name, name_width))
-                + " "
-            )
+            if self.show_timestamps:
+                head = (
+                    self.theme.fg("dim", stamp)
+                    + self._mention_mark(message)
+                    + self.theme.fg(self.palette.name_colour(speaker), pad_to_width(name, name_width))
+                    + " "
+                )
+            else:
+                mention = ""
+                if message.mentions_me:
+                    mention = self.theme.fg("warning", "@")
+                elif message.mentions_all:
+                    mention = self.theme.fg("muted", "@")
+                if mention:
+                    clean_name = truncate_to_width(clean(speaker), name_width - 1, ELLIPSIS)
+                    name_str = mention + self.theme.fg(
+                        self.palette.name_colour(speaker), pad_to_width(clean_name, name_width - 1)
+                    )
+                else:
+                    name_str = self.theme.fg(
+                        self.palette.name_colour(speaker), pad_to_width(name, name_width)
+                    )
+                head = name_str + " "
             body_colour = self.palette.body_colour(speaker)
             opening = head
             chat.message_rows[message.id] = len(lines)
@@ -2082,10 +2107,12 @@ class App:
             ("body", "page up / down 반 화면 스크롤"),
             ("body", "tab / ⇧tab     열린 대화방 탭 전환"),
             ("body", "^P             최신 사진 미리보기 토글"),
+            ("body", "^T             타임스탬프 표시 / 숨기기 토글"),
             ("body", "^G             마우스 클릭 / 텍스트 선택 모드 전환"),
             ("", ""),
             ("head", "슬래시 명령어"),
             ("body", "/help          이 도움말 화면 표시"),
+            ("body", "/time          타임스탬프 표시 / 숨기기 토글"),
             ("body", "/open <이름>   대화방을 새 탭으로 열기"),
             ("body", "/close         현재 대화방 탭 닫기"),
             ("body", "/sum <구간>    최근 대화 요약 (예: /sum 30m, /sum 2h)"),
@@ -2103,6 +2130,17 @@ class App:
             ("body", "/quit          종료"),
         ]
         self._show_panel(chat, "도움말", rows)
+
+    def _toggle_timestamps(self, chat: Optional[ChatState] = None) -> None:
+        """Toggle timestamp visibility across chat transcripts."""
+        self.show_timestamps = not self.show_timestamps
+        for tab in self.chats:
+            tab.rendered = None
+        notice = "시간 표시 켬" if self.show_timestamps else "시간 표시 끔"
+        self.status = notice
+        target = chat or self.chat
+        if target is not None:
+            self._passing_notice(target, notice)
 
     def _toggle_covered(self, chat: ChatState) -> None:
         """Show what SafeBot covered, or cover it again, in every open tab.
@@ -2529,6 +2567,8 @@ class App:
                 chat.caret = 0
             elif text == SHOW_PHOTO:
                 self._toggle_newest_photo(chat)
+            elif text == TOGGLE_TIMESTAMP:
+                self._toggle_timestamps(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -2962,6 +3002,8 @@ class App:
             self._show_edits(chat)
         elif name == "safebot":
             self._toggle_covered(chat)
+        elif name in ("time", "timestamp", "timestamps"):
+            self._toggle_timestamps(chat)
         elif name in ("help", "?"):
             self._show_help(chat)
         elif name in ("q", "quit", "exit"):
@@ -2974,7 +3016,7 @@ class App:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
                 "(사용 가능: /help · /open 방 · /close · /sum 30m · /older · "
-                "/real 닉 · /photo · /notice · /files · /links · /photos · /videos · "
+                "/real 닉 · /time · /photo · /notice · /files · /links · /photos · /videos · "
                 "/edits · /safebot · /export · /quit)"
             )
 

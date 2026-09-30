@@ -59,6 +59,8 @@ letter cannot carry a shortcut -- it would simply be typed. A control character
 can, and this is the key the Windows branch settled on, where there is no click
 to offer instead.
 """
+TOGGLE_TIMESTAMP: Final = "\x14"
+"""Ctrl+T, which toggles timestamp visibility in the chat transcript."""
 SELECT_MODE: Final = "\x07"
 """Ctrl+G, which hands the mouse to the terminal and takes it back.
 
