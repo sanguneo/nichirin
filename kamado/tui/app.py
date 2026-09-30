@@ -202,7 +202,7 @@ class ChatState:
     A room closed and reopened is a different tab holding the same room, and
     a read the first one asked for must not land in the second.
     """
-    rendered: Optional[tuple[tuple[int, int, int, frozenset], list[str]]] = None
+    rendered: Optional[tuple[tuple[int, int, int, frozenset, bool], list[str]]] = None
     """Transcript lines and what they were built from, so typing costs nothing."""
     versions: dict[int, int] = field(default_factory=dict)
     """What each held row contained when its message was last read, by id.
@@ -2117,7 +2117,7 @@ class App:
             ("body", "/close         현재 대화방 탭 닫기"),
             ("body", "/sum <구간>    최근 대화 요약 (예: /sum 30m, /sum 2h)"),
             ("body", "/export        요약(다이제스트) 텍스트 파일로 저장"),
-            ("body", "/older         이전 대화 500개 더 불러오기"),
+            ("body", f"/older         이전 대화 {LOAD_MORE_STEP}개 더 불러오기"),
             ("body", "/notice        대화방 공지사항 보기"),
             ("body", "/files         파일 첨부 목록 보기"),
             ("body", "/links         링크 첨부 목록 보기"),
