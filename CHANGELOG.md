@@ -4,6 +4,21 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [0.24.1] — 2026-09-30
+
+`openapi.json`을 kanao-cli 0.25.0과 바이트 단위로 다시 같게 맞췄습니다(#56). 명령과 이
+빌드의 HTTP 동작은 그대로입니다.
+
+### 바뀜
+
+- **계약 0.19.0.** `Room.kind`의 enum이 두 빌드가 실제로 내는 값이 됐습니다:
+  `direct, group, self, channel, open-group, open-direct`. 전에는 어느 빌드도 내지 않는
+  `open`, `plus`, `unknown`이 있었고, 실제로 나가는 `open-group`, `open-direct`가 빠져서,
+  값을 검증하는 클라이언트는 오픈채팅방을 모두 거부했습니다. `channel`은 Windows 빌드에서만
+  나옵니다.
+- `tests/serve/test_openapi.py`: enum이 `kamado.model.ROOM_KINDS`가 낼 수 있는 값과 정확히
+  같은지 검사합니다. kanao-cli 쪽과 같은 테스트입니다.
+
 ## [0.24.0] — 2026-09-30
 
 `tui`의 탭과 방 목록을 다듬었습니다(#50–#55, @ayden94). 명령, `serve`, `openapi.json`은
