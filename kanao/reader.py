@@ -91,6 +91,9 @@ _LINK_TYPES = (model.TEXT_MESSAGE, model.REPLY_MESSAGE)
 _IN_CHUNK = 500
 """How many ids one ``IN`` list carries, well inside SQLite's variable limit."""
 
+_FULL_TEXT_CANDIDATES = 5
+"""At most this many messages are named when several begin with a notice's preview."""
+
 _ROOM_IMAGES = 4
 """How many member pictures a room's icon is composed from, as the client does.
 
@@ -1241,6 +1244,56 @@ class Reader:
             )
         ]
 
+    def _full_text(
+        self, room_id: int, preview: str
+    ) -> tuple[Optional[tuple[int, str, bool]], tuple[int, ...]]:
+        """The message a cut-off board post was pinned from, by its words.
+
+        The post records no message id, so the only link is the text: a live
+        text or reply message beginning with the whole stored preview. Exactly
+        one such message is the answer; two or more are returned as candidates
+        and none is picked. A covered message is not offered unless covered
+        messages are shown.
+
+        Asked only of a room whose key is already in memory. The notice is a
+        catalog read that never opens a room, and finding its text must not
+        start doing so — a room that cannot be read answers with nothing.
+        """
+        name = paths.chat_log_name(room_id)
+        try:
+            if not self.keyring.has(name):
+                return None, ()
+            connection = self._logs(room_id)
+            rows = connection.execute(
+                f"SELECT logId, message, attachement FROM chatLogs "
+                f"WHERE {self._live(room_id, connection)} AND type IN (?, ?) "
+                "AND length(message) >= ? AND substr(message, 1, ?) = ? "
+                "ORDER BY logId DESC LIMIT ?",
+                (
+                    model.TEXT_MESSAGE,
+                    model.REPLY_MESSAGE,
+                    len(preview),
+                    len(preview),
+                    preview,
+                    _FULL_TEXT_CANDIDATES + 1,
+                ),
+            ).fetchall()
+        except (KanaoError, sqlite3.DatabaseError):
+            return None, ()
+        usable = []
+        for log_id, message, attachment in rows:
+            extra = model.parse_attachment(attachment)
+            if not isinstance(message, str):
+                continue
+            if not self.reveal_covered and model.covered_in(extra) is not None:
+                continue
+            # A long message keeps only its first 3,999 characters in the row.
+            cut = len(message) >= model.LONG_MESSAGE_CHARACTERS and "path" in extra
+            usable.append((int(log_id), message, cut))
+        if len(usable) == 1:
+            return usable[0], ()
+        return None, tuple(sorted(log_id for log_id, _message, _cut in usable))
+
     def notice(self, room_id: int) -> Optional[model.Notice]:
         """The notice pinned in a room, or None when it has none.
 
@@ -1261,14 +1314,25 @@ class Reader:
             if post.get("notice") is True:
                 kind = str(post.get("type") or "text").lower()
                 words = post.get("content") if kind != "schedule" else post.get("subject")
+                text = words if isinstance(words, str) else ""
                 author = model._identifier(post.get("owner_id"))
+                # The client keeps only a post's first 100 characters; a longer
+                # one is cut there, and its whole text may still be the message
+                # that was pinned.
+                truncated = kind == "text" and len(text) >= model.BOARD_PREVIEW_CHARACTERS
+                found, candidates = self._full_text(room_id, text) if truncated else (None, ())
                 return model.Notice(
-                    text=words if isinstance(words, str) else "",
+                    text=text,
                     kind=kind,
                     author_id=author,
                     author=None if author is None else known.get(author),
                     posted_at=model.instant_of(post.get("created_at")),
                     source="board",
+                    truncated=truncated,
+                    full_text=None if found is None else found[1],
+                    full_text_message_id=None if found is None else found[0],
+                    full_text_truncated=found is not None and found[2],
+                    full_text_candidates=candidates,
                 )
         if "chatMetas" in tables:
             row = catalog.execute(

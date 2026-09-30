@@ -783,9 +783,28 @@ class Notice:
     posted_at: Optional[int]
     source: str
     """``board`` for a board post, ``legacy`` for the older notice row."""
+    truncated: bool = False
+    """The client stored only the post's first :data:`BOARD_PREVIEW_CHARACTERS`."""
+    full_text: Optional[str] = None
+    """The one message in the room that begins with the whole stored preview.
+
+    Found by its words, not by any id — the post records none — and only when
+    exactly one message qualifies.
+    """
+    full_text_message_id: Optional[int] = None
+    full_text_truncated: bool = False
+    """The message itself stopped at :data:`LONG_MESSAGE_CHARACTERS`.
+
+    A longer message keeps its first 3,999 characters in the row and the whole
+    text in a file named by its attachment's ``path``. That file is not on this
+    machine and the CDN refuses it (403) without the client's own protocol, so
+    what is here is all this tool can read.
+    """
+    full_text_candidates: tuple[int, ...] = ()
+    """Messages that each begin with the preview, when more than one does; none is picked."""
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "text": self.text,
             "kind": self.kind,
             "authorId": None if self.author_id is None else str(self.author_id),
@@ -793,6 +812,35 @@ class Notice:
             "postedAt": to_iso(self.posted_at),
             "source": self.source,
         }
+        # Only when they say something, like every key that reports a presence.
+        if self.truncated:
+            payload["truncated"] = True
+        if self.full_text is not None and self.full_text_message_id is not None:
+            payload["fullText"] = self.full_text
+            payload["fullTextMessageId"] = str(self.full_text_message_id)
+            if self.full_text_truncated:
+                payload["fullTextTruncated"] = True
+        if self.full_text_candidates:
+            payload["fullTextCandidates"] = [str(one) for one in self.full_text_candidates]
+        return payload
+
+
+BOARD_PREVIEW_CHARACTERS: Final = 100
+"""How much of a board post the client keeps on this machine.
+
+Measured: the eleven board notices on a live account were 0, 23, 28, 33, 48,
+52 and 100 characters long, and both ``content`` and ``json_content`` stopped
+at exactly 100 in the posts that were longer. The rest of the post is not on
+disk anywhere; a message that was pinned as the notice still is.
+"""
+
+LONG_MESSAGE_CHARACTERS: Final = 3999
+"""How much of a long message the client keeps in its row.
+
+Measured over six readable rooms: 23 messages were exactly 3,999 characters,
+none longer, and every one carried a ``{k, path, s, sd}`` attachment naming the
+whole text as a ``.txt`` file; no shorter message carried one.
+"""
 
 
 @dataclass(frozen=True)
