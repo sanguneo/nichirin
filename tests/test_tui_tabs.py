@@ -109,20 +109,22 @@ class WidthTests(TabCase):
 
 
 class StripTests(TabCase):
-    def test_the_strip_appears_once_there_is_something_to_switch_to(self) -> None:
+    def test_the_strip_is_always_shown_at_the_top(self) -> None:
         self.open(DIRECT_ROOM)
-        self.assertNotIn(DIRECT_TITLE, self.frame()[0], "a strip with one tab says nothing")
-        self.open(GROUP_ROOM)
         first = self.frame()[0]
         self.assertIn(DIRECT_TITLE, first)
-        self.assertIn(GROUP_LABEL, first)
+        self.open(GROUP_ROOM)
+        first_after = self.frame()[0]
+        self.assertIn(DIRECT_TITLE, first_after)
+        self.assertIn(GROUP_LABEL, first_after)
 
-    def test_one_room_draws_the_screen_it_always_did(self) -> None:
-        """A single conversation still names itself in the footer, not above it."""
+    def test_one_room_shows_tab_strip_above_hints(self) -> None:
+        """A single conversation shows its tab at the top and hints on the second row."""
         self.open(DIRECT_ROOM)
         frame = self.frame()
-        self.assertTrue(frame[0].startswith("enter"), "the hints row lost its place")
-        self.assertIn(DIRECT_TITLE, frame[-1])
+        self.assertIn(DIRECT_TITLE, frame[0])
+        self.assertTrue(frame[1].startswith("enter"), "the hints row sits beneath the tab strip")
+        self.assertNotIn(DIRECT_TITLE, frame[-1], "footer avoids duplicating tab title")
 
     def test_only_the_focused_tab_is_lit(self) -> None:
         self.open(DIRECT_ROOM, GROUP_ROOM, NAMED_ROOM)

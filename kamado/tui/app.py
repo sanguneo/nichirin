@@ -1111,24 +1111,20 @@ class App:
         """
         chat = self.chat
         assert chat is not None
-        lines: list[str] = []
-        if len(self.chats) > 1:
-            lines.append(self._tab_strip(width))
-        lines.extend(
-            [
-                self._hints(
-                    [
-                        ("enter", "전송"),
-                        ("esc", "닫기"),
-                        ("/help", "도움말"),
-                    ],
-                    width,
-                ),
-                # The row under the hints was blank; a pinned notice takes
-                # it, so the conversation starts where it always did.
-                self._notice_row(chat, width),
-            ]
-        )
+        lines: list[str] = [
+            self._tab_strip(width),
+            self._hints(
+                [
+                    ("enter", "전송"),
+                    ("esc", "닫기"),
+                    ("/help", "도움말"),
+                ],
+                width,
+            ),
+            # The row under the hints was blank; a pinned notice takes
+            # it, so the conversation starts where it always did.
+            self._notice_row(chat, width),
+        ]
 
         composer, (caret_row, caret_col) = self._composer_lines(width)
         body_height = max(1, height - len(lines) - len(composer) - 1)
@@ -2442,24 +2438,13 @@ class App:
         room = chat.room
         loaded = f"{len(chat.messages)} loaded"
         people = f"{room.kind} · {room.member_count}명"
-        if len(self.chats) > 1:
-            # The strip above already names this room, and a footer that says
-            # it again is the third place a title would appear on one screen.
-            # What is left is what the strip cannot say: how big the room is,
-            # how much of it is loaded, and what the body is showing.
-            anchor = [Segment(people, self.theme.fg("muted", people))]
-            middle = [
-                Segment(loaded, self.theme.fg("muted", loaded)),
-                Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
-            ]
-        else:
-            title = clean(room.title)
-            anchor = [Segment(title, self.theme.fg("accent", title))]
-            middle = [
-                Segment(people, self.theme.fg("muted", people)),
-                Segment(loaded, self.theme.fg("muted", loaded)),
-                Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
-            ]
+        # The strip above already names this room, and a footer that says
+        # it again is the third place a title would appear on one screen.
+        anchor = [Segment(people, self.theme.fg("muted", people))]
+        middle = [
+            Segment(loaded, self.theme.fg("muted", loaded)),
+            Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines")),
+        ]
         mode = "digest" if chat.slices else ("list" if chat.panel else "transcript")
         mouse = CLICK_HINT if self.mouse_clicks else SELECT_HINT
         tail = Segment(f"{mode} · {mouse}", self.theme.fg("dim", f"{mode} · {mouse}"))
