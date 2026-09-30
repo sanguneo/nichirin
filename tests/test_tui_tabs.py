@@ -182,7 +182,7 @@ class SwitchingTests(TabCase):
 
 
 class LoneRoomTests(unittest.TestCase):
-    def test_a_lone_conversation_ignores_tab_and_draws_no_strip(self) -> None:
+    def test_a_lone_conversation_ignores_tab_and_still_draws_its_tab(self) -> None:
         reader = build_reader()
         self.addCleanup(reader.close)
         app = App(reader, theme=Theme(truecolor=True, enabled=False))
@@ -194,11 +194,20 @@ class LoneRoomTests(unittest.TestCase):
         assert chat is not None
         self.assertEqual(chat.draft, "", "tab must not be swallowed as text")
         frame = [strip_ansi(line) for line in app.render(WIDTH, HEIGHT)]
-        self.assertNotIn(FOCUS_MARK, "\n".join(frame))
-        self.assertIn("Peer Renamed", frame[-1], "the footer still names the room")
+        self.assertTrue(frame[0].startswith(FOCUS_MARK + "Peer Renamed"), frame[0])
+        self.assertTrue(frame[1].startswith("enter"), "the hints sit under the strip")
+        self.assertNotIn("Peer Renamed", frame[-1], "the strip names it; the footer need not")
 
 
 class StripTests(TabCase):
+    def test_a_second_tab_moves_nothing_below_the_strip(self) -> None:
+        """The strip was added with the second room, pushing all of it down a row."""
+        before = self.frame()
+        self.open(GROUP_ROOM, beside=True)
+        self.app.handle(Key.TAB, "")
+        self.assertEqual(self.focused().room.id, DIRECT_ROOM)
+        self.assertEqual(self.frame()[1:], before[1:])
+
     def test_the_strip_names_every_room_and_marks_one(self) -> None:
         self.open(GROUP_ROOM, beside=True)
         strip = self.frame()[0]

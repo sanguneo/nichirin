@@ -707,9 +707,14 @@ on a live client, newest 4,000 rows of each readable room.
   Side-by-side panes gave each conversation half the screen from 89 columns,
   and half a width is where Hangul sentences break into fragments, so from
   `kamado-cli#43` the conversation in front is drawn across the screen and a
-  strip of tabs (`layout.plan_tabs`) sits above it once more than one is
-  open. The tab in front carries `FOCUS_MARK` as well as the highlight,
-  because a plain terminal has no highlight; the others carry `+N` for what
+  strip of tabs (`layout.plan_tabs`) sits above it. The strip is drawn for a
+  single room as well (`kamado-cli#55`): leaving it out moved the hints, the
+  notice and the conversation down a row when a second room opened, and the
+  title from the footer to the top, so the footer never names the room now.
+  Tab and shift+tab still ask for a second tab, because they ask whether
+  there is anywhere to go, not whether the strip is shown. The tab in front
+  carries `FOCUS_MARK` as well as the highlight, because a plain terminal
+  has no highlight; the others carry `+N` for what
   arrived behind them, and tabs that do not fit are counted at their edge.
   `tab` and `shift+tab` walk the ring — the console reports Shift+Tab as the
   `VK_TAB` record with `SHIFT_PRESSED`, decoded as `Key.BACKTAB` — and `esc`

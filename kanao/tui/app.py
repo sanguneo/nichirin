@@ -989,18 +989,18 @@ class App:
         One conversation at a time, across the whole width. Two side by side
         gave each half of it, and half a width is where Hangul sentences break
         into fragments; the room that is not in front is one tab away, and
-        the strip is what says so. A single open room draws the screen it
-        always did, with no strip, because there is nothing to switch to.
+        the strip is what says so. The strip is drawn for a single room too:
+        leaving it out moved the hints, the notice and the whole conversation
+        down a row the moment a second room opened, and moved the title from
+        the footer to the top.
 
         The composer, the status line and the footer belong to the tab in
         front: a second box would need a second caret and a terminal has one.
         """
         chat = self.chat
         assert chat is not None
-        lines: list[str] = []
-        if len(self.chats) > 1:
-            lines.append(self._tab_strip(width))
-        # The room is named in the footer or the strip; repeating it here
+        lines: list[str] = [self._tab_strip(width)]
+        # The room is named in the strip; repeating it here
         # spent a row on something the reader already knows. Eight hints
         # were cut off a narrow window, and /files, /notice and the rest were
         # named nowhere, so the row keeps three and /help lists the whole.
@@ -1056,8 +1056,8 @@ class App:
     def _tab_strip(self, width: int) -> str:
         """Draw every open conversation as a tab, the one in front marked.
 
-        Once more than one room is open this is the only place a title is
-        drawn; the footer keeps what the strip cannot say. Tabs that do not
+        This is the only place a title is drawn, one room or several; the
+        footer keeps what the strip cannot say. Tabs that do not
         fit are counted at the edge they went off, and the count is tinted
         when arrivals are waiting in one of them.
         """
@@ -1853,20 +1853,11 @@ class App:
         loaded = f"{len(chat.messages)} loaded"
         people = f"{room.kind} · {room.member_count}명"
         lines = Segment(f"{body_lines} lines", self.theme.fg("dim", f"{body_lines} lines"))
-        if len(self.chats) > 1:
-            # The strip already names this room; a footer saying it again is
-            # a second title on one screen. What is left is what the strip
-            # cannot say: how big the room is and how much of it is loaded.
-            anchor = [Segment(people, self.theme.fg("muted", people))]
-            middle = [Segment(loaded, self.theme.fg("muted", loaded)), lines]
-        else:
-            title = clean(room.title)
-            anchor = [Segment(title, self.theme.fg("accent", title))]
-            middle = [
-                Segment(people, self.theme.fg("muted", people)),
-                Segment(loaded, self.theme.fg("muted", loaded)),
-                lines,
-            ]
+        # The strip always names this room; a footer saying it again is a
+        # second title on one screen. What is left is what the strip cannot
+        # say: how big the room is and how much of it is loaded.
+        anchor = [Segment(people, self.theme.fg("muted", people))]
+        middle = [Segment(loaded, self.theme.fg("muted", loaded)), lines]
         mode = "digest" if chat.slices else ("list" if chat.panel else "transcript")
         tail = Segment(mode, self.theme.fg("dim", mode))
         right = Segment(f"v{__version__}", self.theme.fg("muted", f"v{__version__}"))

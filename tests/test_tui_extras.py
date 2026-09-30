@@ -54,7 +54,7 @@ class ExtrasScreenTests(unittest.TestCase):
 
     def test_the_notice_takes_the_blank_row_and_nothing_moves(self) -> None:
         frame = self.frame()
-        self.assertTrue(frame[1].startswith("공지 " + BOARD_NOTICE))
+        self.assertTrue(frame[2].startswith("공지 " + BOARD_NOTICE), frame[:4])
         self.assertTrue(all(display_width(line) <= WIDTH for line in frame))
 
     def test_safebot_toggles_what_the_screen_shows(self) -> None:
@@ -124,7 +124,7 @@ class ExtrasScreenTests(unittest.TestCase):
 
     def test_the_hint_row_still_reaches_help_on_a_narrow_screen(self) -> None:
         """Eight hints were cut off here; three leave /help on the row."""
-        hints = strip_ansi(self.app.render(40, 24)[0])
+        hints = strip_ansi(self.app.render(40, 24)[1])
         self.assertIn("/help", hints)
         self.assertLessEqual(display_width(hints), 40)
 
