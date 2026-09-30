@@ -20,7 +20,7 @@ from tests.platform import require_windows_console
 
 require_windows_console()
 
-from kanao.tui.console import Console, Key, KeyEvent
+from kanao.tui.console import SHOW_PHOTO, Console, Key, KeyEvent
 
 VK_BACK = 0x08
 VK_TAB = 0x09
@@ -159,6 +159,10 @@ class NewlineDecodingTests(unittest.TestCase):
 
     def test_control_u_asks_for_a_clear_box(self) -> None:
         self.assertEqual(self.read(down(0, "\x15")), ("char", "\x15"))
+
+    def test_control_p_reaches_the_screen(self) -> None:
+        """Dropped as unprintable until it was read through the decoder."""
+        self.assertEqual(self.read(down(0x50, SHOW_PHOTO)), ("char", SHOW_PHOTO))
 
 
 if __name__ == "__main__":

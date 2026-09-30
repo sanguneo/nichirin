@@ -78,6 +78,14 @@ and link handling. The composer holds the keyboard the whole time a room is
 open, so a plain letter is not free — a control character is.
 """
 
+_SHORTCUTS: Final = frozenset({CLEAR_BOX, SHOW_PHOTO})
+"""Control characters handed to the screen as themselves.
+
+Everything else unprintable is dropped, which is what happened to Ctrl+P for
+as long as it existed: the screen answered it, and the decoder never let it
+through. Only the tests that handed the character straight to the app saw it.
+"""
+
 _HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
 _LOW_SURROGATE: Final = range(0xDC00, 0xE000)
 
@@ -552,7 +560,7 @@ class Console:
         """Turn one key press into a keystroke, or nothing at all."""
         character = event.character
         if character:
-            if character == CLEAR_BOX:
+            if character in _SHORTCUTS:
                 self._pending_surrogate = ""
                 return "char", character
             named = _BY_CHARACTER.get(character)
