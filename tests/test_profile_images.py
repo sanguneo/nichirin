@@ -12,10 +12,13 @@ from tests.fixtures import (
     FRIEND_PICTURE,
     GROUP_ROOM,
     HUGE_ROOM,
+    LINK_PICTURE,
+    OPEN_ROOM,
     OWN_ID,
     OWN_PICTURE,
     PEER_ID,
     PEER_PICTURE,
+    ROOM_PICTURE,
     SELF_ROOM,
     UNREADABLE_ROOM,
     build_reader,
@@ -44,8 +47,16 @@ class RoomPictureTests(unittest.TestCase):
         self.assertEqual(self.rooms[HUGE_ROOM].images, ())
         self.assertNotIn("images", self.rooms[HUGE_ROOM].as_json())
 
-    def test_a_room_with_nobody_else_has_none(self) -> None:
-        self.assertEqual(self.rooms[UNREADABLE_ROOM].images, ())
+    def test_a_room_with_its_own_photo_is_that_photo_alone(self) -> None:
+        # The named group has nobody else in it, and still has the photo a member set.
+        self.assertEqual(self.rooms[UNREADABLE_ROOM].images, (ROOM_PICTURE,))
+
+    def test_an_open_group_is_its_link_picture_not_its_members(self) -> None:
+        self.assertEqual(self.rooms[OPEN_ROOM].images, (LINK_PICTURE,))
+
+    def test_a_chat_background_is_not_the_icon(self) -> None:
+        # The group carries a type-8 background and no photo of its own.
+        self.assertEqual(self.rooms[GROUP_ROOM].images, (PEER_PICTURE, FRIEND_PICTURE))
 
     def test_the_answer_carries_the_list_only_when_there_is_one(self) -> None:
         self.assertEqual(self.rooms[GROUP_ROOM].as_json()["images"], [PEER_PICTURE, FRIEND_PICTURE])

@@ -94,8 +94,16 @@ _IN_CHUNK = 500
 _ROOM_IMAGES = 4
 """How many member pictures a room's icon is composed from, as the client does.
 
-``chatRoomList.chatRoomImageUrl`` and ``chatRoomFullImageUrl`` were empty in
-all 273 rooms of a live account, so a room's picture is its members'.
+Only for a room without a picture of its own: ``chatRoomList``'s
+``chatRoomImageUrl`` and ``chatRoomFullImageUrl`` were empty in all 273 rooms
+of a live account, but a room a member gave a photo keeps it in ``chatMetas``
+(:data:`_ROOM_PICTURE_META`), and an open chat in its link.
+"""
+_ROOM_PICTURE_META = 4
+"""The ``chatMetas`` type holding a room's own photo, ``{imageUrl, fullImageUrl}``.
+
+Measured: 3 group rooms carried one. Type 8 is a channel's chat background
+(``chatBackgroundImageUrl``, 22 rows) and is not the room's icon.
 """
 _PEER_ROOMS = (model.DIRECT_CHAT, model.OPEN_DIRECT_CHAT, model.CHANNEL_CHAT)
 """Rooms that are one counterpart, whose picture is that counterpart's."""
@@ -145,20 +153,56 @@ def _profile_images(users: sqlite3.Connection) -> dict[int, str]:
     return found
 
 
+def _room_pictures(catalog: sqlite3.Connection) -> dict[int, str]:
+    """Rooms a member gave a photo of their own, by room id."""
+    tables = {
+        str(name)
+        for (name,) in catalog.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "chatMetas" not in tables:
+        return {}
+    found: dict[int, str] = {}
+    for room_id, content in catalog.execute(
+        "SELECT chatId, content FROM chatMetas WHERE type = ?", (_ROOM_PICTURE_META,)
+    ).fetchall():
+        address = _image_address(model.parse_attachment(content).get("imageUrl"))
+        if address is not None:
+            found[int(room_id)] = address
+    return found
+
+
+def _link_pictures(links: sqlite3.Connection) -> dict[int, str]:
+    """Open chat links' own pictures, by link id."""
+    if "linkImageUrl" not in _columns(links, "openLinkList"):
+        return {}
+    return {
+        int(link_id): address
+        for link_id, value in links.execute(
+            "SELECT linkId, linkImageUrl FROM openLinkList"
+        ).fetchall()
+        if link_id is not None and (address := _image_address(value)) is not None
+    }
+
+
 def _room_images(
     room_type: str,
     peer: object,
     members: Sequence[int],
     own: Optional[int],
     images: dict[int, str],
+    picture: Optional[str] = None,
 ) -> tuple[str, ...]:
     """The pictures a room's icon is drawn from, best first; empty for none.
 
-    One counterpart — a 1:1, an open 1:1, a channel — is that counterpart's
-    picture. The chat with oneself is the account's own. Any other room is its
-    active members' other than the account, in the catalog's order, up to
-    :data:`_ROOM_IMAGES`; a member without a picture is skipped, not padded.
+    A room with a *picture* of its own — a photo a member set, or an open
+    chat's link picture — is that picture alone, as the client shows it.
+    Otherwise one counterpart — a 1:1, an open 1:1, a channel — is that
+    counterpart's picture, the chat with oneself is the account's own, and any
+    other room is its active members' other than the account, in the catalog's
+    order, up to :data:`_ROOM_IMAGES`; a member without a picture is skipped.
     """
+    if picture is not None:
+        return (picture,)
     if room_type == model.SELF_CHAT:
         address = None if own is None else images.get(own)
         return () if address is None else (address,)
@@ -392,6 +436,22 @@ class Reader:
         """The profile pictures of the name map's snapshot, reading it if needed."""
         self._known_names()
         return self._images
+
+    def _link_pictures(self) -> dict[int, str]:
+        """Open chat links' pictures; none when that database cannot be read.
+
+        The client opens this database on its own schedule, so its key may not
+        be in memory yet. A missing key costs the open rooms their picture —
+        they fall back to their members' — and never the room list.
+        """
+        name = paths.OPEN_LINK_DATABASE
+        try:
+            if not self.keyring.has(name):
+                return {}
+            links = self._cache.connect(self.keyring.path_for(name), self._key_for(name))
+            return _link_pictures(links)
+        except (KanaoError, sqlite3.DatabaseError):
+            return {}
 
     def unlock(
         self,
@@ -635,17 +695,33 @@ class Reader:
         # can open the user database, and a cache whose budget cannot hold
         # both evicts the catalog - closing the connection this loop would
         # still be reading from. Least recently used is not "no longer used".
-        rows = self._catalog().execute(sql, parameters).fetchall()
+        catalog = self._catalog()
+        rows = catalog.execute(sql, parameters).fetchall()
+        # An open room's picture is its link's; an older catalog has no link column.
+        links_of: dict[int, int] = {}
+        if "linkId" in _columns(catalog, "chatRoomList"):
+            links_of = {
+                int(room_id): int(link_id)
+                for room_id, link_id in catalog.execute(
+                    "SELECT chatId, linkId FROM chatRoomList WHERE linkId > 0"
+                ).fetchall()
+            }
+        room_pictures = _room_pictures(catalog)
         # Memberships and the account are read from the catalog before the
-        # user database is opened for pictures, for the reason given above.
+        # other databases are opened for pictures, for the reason given above.
         memberships = self.memberships(refresh=True)
         own = self.own_user_id()
+        link_pictures = self._link_pictures() if links_of else {}
         self._revalidate_names()
         images = self._known_images()
         found: list[Room] = []
         for row in rows:
             room_id, room_type, title, custom, members, unread, last_log, updated, peer = row
             room_id = int(room_id)
+            picture = room_pictures.get(room_id)
+            if picture is None and str(room_type or "") == model.OPEN_GROUP_CHAT:
+                link = links_of.get(room_id)
+                picture = None if link is None else link_pictures.get(link)
             found.append(
                 Room(
                     id=room_id,
@@ -657,7 +733,12 @@ class Reader:
                     last_updated_at=None if updated is None else int(updated),
                     readable=room_id in readable,
                     images=_room_images(
-                        str(room_type or ""), peer, memberships.get(room_id, ()), own, images
+                        str(room_type or ""),
+                        peer,
+                        memberships.get(room_id, ()),
+                        own,
+                        images,
+                        picture,
                     ),
                 )
             )

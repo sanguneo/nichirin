@@ -55,7 +55,22 @@ tables have no picture at all — which must answer, not fail.
 PEER_PICTURE = "https://p.kakaocdn.net/synthetic/peer.jpg"
 FRIEND_PICTURE = "https://chat.kakaocdn.net/synthetic/friend.jpg"
 OWN_PICTURE = "https://p.kakaocdn.net/synthetic/own.jpg"
-"""Made-up addresses on the two hosts measured live."""
+ROOM_PICTURE = "https://chat.kakaocdn.net/synthetic/room.jpg"
+LINK_PICTURE = "https://open.kakaocdn.net/synthetic/link.jpg"
+"""Made-up addresses on the hosts measured live."""
+
+OPEN_ROOM = 1005
+OPEN_LINK = 900
+PICTURE_CATALOG = """
+ALTER TABLE chatRoomList ADD COLUMN linkId INTEGER;
+CREATE TABLE chatMetas (
+    chatId INTEGER, type INTEGER, revision INTEGER, authorId INTEGER,
+    content TEXT, updateAt INTEGER, extra TEXT, noticeRevision INTEGER
+);
+"""
+OPEN_LINK_SCHEMA = """
+CREATE TABLE openLinkList (linkId INTEGER, linkName TEXT, linkImageUrl TEXT);
+"""
 
 FRIEND_TYPE = 1
 NON_FRIEND_TYPE = 1000
@@ -216,7 +231,25 @@ def build_profile(
         rooms.append((SELF_ROOM, "MemoChat", SELF_STORED_TITLE, 0, 1, 0, 8001, 500, 0))
         members.append((SELF_ROOM, OWN_ID, 1))
 
-    catalog = _connect(CATALOG_SCHEMA, {"chatRoomList": rooms, "chatMembers": members})
+    if pictures:
+        # An open group whose picture is its link's, not its members'.
+        rooms.append((OPEN_ROOM, "OM", "Open Room", 1, 3, 0, 9001, 400, 0, OPEN_LINK))
+        members.extend([(OPEN_ROOM, OWN_ID, 1), (OPEN_ROOM, FRIEND_ID, 1)])
+    catalog = _connect(
+        CATALOG_SCHEMA + (PICTURE_CATALOG if pictures else ""),
+        {"chatRoomList": rooms, "chatMembers": members},
+    )
+    if pictures:
+        catalog.executemany(
+            "INSERT INTO chatMetas (chatId, type, content) VALUES (?, ?, ?)",
+            [
+                # A photo a member set for the named group.
+                (UNREADABLE_ROOM, 4, json.dumps({"imageUrl": ROOM_PICTURE, "fullImageUrl": ROOM_PICTURE})),
+                # A chat background is not the room's icon.
+                (GROUP_ROOM, 8, json.dumps({"chatBackgroundImageUrl": ROOM_PICTURE})),
+            ],
+        )
+        catalog.commit()
 
     if messages is None:
         messages = [
@@ -259,6 +292,10 @@ def build_profile(
         paths.chat_log_name(HUGE_ROOM): huge_log,
         paths.chat_log_name(SELF_ROOM): self_log,
     }
+    if pictures:
+        databases[paths.OPEN_LINK_DATABASE] = _connect(
+            OPEN_LINK_SCHEMA, {"openLinkList": [(OPEN_LINK, "Open Room", LINK_PICTURE)]}
+        )
     key = bytes(32)
     keyring = Keyring(
         user_directory=PROFILE,

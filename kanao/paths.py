@@ -15,6 +15,8 @@ from .errors import ErrorCode, KanaoError
 CHAT_DATA_DIRECTORY: Final = "chat_data"
 USER_DATABASE: Final = "TalkUserDB.edb"
 CATALOG_DATABASE: Final = f"{CHAT_DATA_DIRECTORY}/chatListInfo.edb"
+OPEN_LINK_DATABASE: Final = f"{CHAT_DATA_DIRECTORY}/openLinkListInfo.edb"
+"""Open chat links: ``openLinkList(linkId, linkImageUrl, …)``, the open room's own picture."""
 DATABASE_SUFFIX: Final = ".edb"
 
 _STATE_FILE: Final = "appstate.dat"
