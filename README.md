@@ -162,6 +162,7 @@ python -m kanao tui
 | `shift+enter` | 줄바꿈. 붙여넣은 줄바꿈도 전송되지 않고 들어갑니다 |
 | `ctrl+u` | 입력창 비우기 |
 | `enter` | 전송. `/`로 시작하면 명령 |
+| `/help`, `/?` | 키와 명령 전체. 대화 위 힌트 줄에는 `enter`·`esc`·`/help`만 적혀 있습니다 |
 | `↑` `↓` `pgup` `pgdn` | 스크롤 |
 | `/sum 30m`, `/sum 2h` | 구간별 다이제스트 (최대 12h) |
 | `/older` `/export` `/back` `/quit` | 이전 기록 · 원문 내보내기 · 뒤로 · 종료 |

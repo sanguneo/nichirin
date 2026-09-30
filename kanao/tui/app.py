@@ -96,6 +96,8 @@ ATTACHMENT_LIST_LIMIT = 200
 """How many of the newest messages ``/files``, ``/links`` and ``/photos`` look through."""
 EDITS_SHOWN = 20
 """How many edited messages ``/edits`` lists, newest first."""
+HELP_KEY_WIDTH = 16
+"""The columns ``/help`` gives a key before saying what it does."""
 
 
 INLINE_CACHE_ENTRIES = 64
@@ -942,19 +944,16 @@ class App:
         if len(self.chats) > 1:
             lines.append(self._tab_strip(width))
         # The room is named in the footer or the strip; repeating it here
-        # spent a row on something the reader already knows.
+        # spent a row on something the reader already knows. Eight hints
+        # were cut off a narrow window, and /files, /notice and the rest were
+        # named nowhere, so the row keeps three and /help lists the whole.
         lines.extend(
             [
                 self._hints(
                     [
                         ("enter", "전송"),
-                        ("↑↓", "scroll"),
-                        ("tab/⇧tab", "탭 전환"),
-                        ("^P", "사진"),
-                        ("/open", "탭 추가"),
-                        ("/sum 30m", "요약"),
-                        ("/older", "이전"),
                         ("esc", "닫기"),
+                        ("/help", "도움말"),
                     ],
                     width,
                 ),
@@ -1552,6 +1551,51 @@ class App:
             rows.append(("", ""))
         self._show_panel(chat, f"수정된 메시지 {len(edited)}개", rows)
 
+    def _show_help(self, chat: ChatState) -> None:
+        """List every key and command a conversation takes, where it was drawn.
+
+        Read off `_handle_chat` and `_run_command`, so each line is something
+        the screen really answers; escape closes it like any other list.
+        """
+
+        def row(key: str, what: str) -> tuple[str, str]:
+            return ("body", pad_to_width(key, HELP_KEY_WIDTH) + what)
+
+        hours = int(digest.MAX_SPAN.total_seconds() // 3600)
+        recent = f"최근 {ATTACHMENT_LIST_LIMIT}개 메시지의"
+        rows: list[tuple[str, str]] = [
+            ("head", "키"),
+            row("enter", "전송. /로 시작하면 명령"),
+            row("shift+enter", "줄바꿈"),
+            row("esc", "요약·목록 닫기, 그다음 이 탭 닫기 (초안은 방별로 남습니다)"),
+            row("tab  ⇧tab", "다음 · 이전 탭"),
+            row("↑↓  pgup pgdn", "한 줄 · 열 줄 스크롤"),
+            row("home  end", "맨 위 · 맨 아래 (작성 중이면 입력창 처음 · 끝)"),
+            row("ctrl+p", "최근 사진 열기 · 닫기"),
+            row("ctrl+u", "입력창 비우기"),
+            row("ctrl+c", "종료"),
+            ("", ""),
+            ("head", "명령"),
+            row("/sum 30m", f"구간별 다이제스트 (최대 {hours}h)"),
+            row("/export", "다이제스트 원문을 파일로"),
+            row("/older", f"이전 기록 {LOAD_MORE_STEP}개 더"),
+            row("/open [방이름]", "탭 하나 더 열기. 이름이 없으면 목록에서 고르기"),
+            row("/close", "이 탭 닫기"),
+            row("/back", "탭을 모두 닫고 목록으로"),
+            row("/real 닉네임", "그 이름을 쓴 계정과 각자의 이름 이력"),
+            row("/photo", "최근 사진 열기 · 닫기"),
+            row("/notice", "방 공지 전체"),
+            row("/files", f"{recent} 파일"),
+            row("/links", f"{recent} 링크"),
+            row("/photos", f"{recent} 사진"),
+            row("/videos", f"{recent} 동영상"),
+            row("/edits", "수정된 메시지와 각 버전"),
+            row("/safebot", "세이프봇이 가린 메시지 보이기 · 다시 가리기"),
+            row("/help  /?", "이 도움말"),
+            row("/quit", "종료"),
+        ]
+        self._show_panel(chat, "도움말", rows)
+
     def _toggle_covered(self, chat: ChatState) -> None:
         """Show what SafeBot covered, or cover it again, in every open tab.
 
@@ -2091,6 +2135,8 @@ class App:
             self._show_edits(chat)
         elif name == "safebot":
             self._toggle_covered(chat)
+        elif name in ("help", "?"):
+            self._show_help(chat)
         elif name == "open":
             self._open_beside(chat, " ".join(arguments))
         elif name == "close":
@@ -2100,11 +2146,9 @@ class App:
         elif name == "back":
             self.chat = None
         else:
-            chat.notice = (
-                f"알 수 없는 명령: /{name}  "
-                "(사용 가능: /sum 30m · /older · /real 닉 · /photo · /notice · /files · "
-                "/links · /photos · /edits · /safebot · /export · /back · /quit)"
-            )
+            # The list lives in one place: this line used to carry its own
+            # copy, and it had already lost /open, /close and /videos.
+            chat.notice = f"알 수 없는 명령: /{name}  (/help 에 전체 목록이 있습니다)"
 
     def _toggle_newest_photo(self, chat: ChatState) -> None:
         """Open the newest picture in this conversation, or close it again.

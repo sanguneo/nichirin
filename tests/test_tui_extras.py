@@ -9,7 +9,7 @@ from tests.platform import require_windows_console
 
 require_windows_console()
 
-from kanao.tui.app import App
+from kanao.tui.app import HELP_KEY_WIDTH, App
 from kanao.tui.console import Key
 from kanao.tui.layout import display_width, strip_ansi
 from kanao.tui.theme import Theme
@@ -71,6 +71,8 @@ class ExtrasScreenTests(unittest.TestCase):
             ("/links", "https://example.com/a"),
             ("/photos", "https://talk.kakaocdn.net/synthetic/full.jpg"),
             ("/edits", "0. 처음 문장"),
+            ("/help", "/safebot"),
+            ("/?", "/safebot"),
         ):
             with self.subTest(command=text):
                 self.command(text)
@@ -81,6 +83,35 @@ class ExtrasScreenTests(unittest.TestCase):
                 chat = self.app.chat
                 assert chat is not None
                 self.assertEqual(chat.panel, [])
+
+    def test_the_hint_row_still_reaches_help_on_a_narrow_screen(self) -> None:
+        """Eight hints were cut off here; three leave /help on the row."""
+        hints = strip_ansi(self.app.render(40, 24)[0])
+        self.assertIn("/help", hints)
+        self.assertLessEqual(display_width(hints), 40)
+
+    def test_every_command_help_names_is_one_the_screen_answers(self) -> None:
+        """The help is read off the router, so a name in it must route."""
+        self.command("/help")
+        chat = self.app.chat
+        assert chat is not None
+        named = [
+            word
+            for style, text in chat.panel
+            if style == "body" and text.startswith("/")
+            for word in text[:HELP_KEY_WIDTH].split()
+            if word.startswith("/")
+        ]
+        self.assertIn("/safebot", named)
+        group = next(room for room in self.app.rooms if room.id == GROUP_ROOM)
+        for word in named:
+            with self.subTest(command=word):
+                self.app.adding = False
+                if self.app.chat is None:
+                    self.app.open_room(group)
+                self.command(word)
+                chat = self.app.chat
+                self.assertNotIn("알 수 없는 명령", chat.notice if chat is not None else "")
 
 
 if __name__ == "__main__":
