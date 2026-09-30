@@ -192,6 +192,89 @@ class RoomListTests(LiveTests):
         self.assertIn("7 unread", self.body())
 
 
+class SeenUnreadTests(LiveTests):
+    """The room list counts what this screen has not shown, like a tab's +N.
+
+    Reading here never lowers the client's own count, so a room read to its
+    last line used to come back to the list still saying "5 unread".
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.app.chat = None
+        self.set_unread(5)
+        self.app.refresh(WIDTH)
+
+    def set_unread(self, count: int) -> None:
+        catalog = self.cache.databases[paths.CATALOG_DATABASE]
+        catalog.execute(
+            "UPDATE chatRoomList SET newMessageCount = ? WHERE chatId = ?", (count, DIRECT_ROOM)
+        )
+        catalog.commit()
+
+    def unread(self) -> int:
+        room = next(room for room in self.app.rooms if room.id == DIRECT_ROOM)
+        return self.app._effective_unread(room)
+
+    def view_and_close(self) -> None:
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.app.handle(Key.ESCAPE, "")
+        self.assertIsNone(self.app.chat)
+
+    def test_a_room_seen_to_its_newest_line_is_not_unread_any_more(self) -> None:
+        self.assertIn("5 unread", self.body())
+        self.view_and_close()
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 0)
+        self.assertNotIn("5 unread", self.body())
+
+    def test_what_arrives_after_it_was_seen_is_counted(self) -> None:
+        self.view_and_close()
+        self.set_unread(7)
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 2)
+        self.assertIn("2 unread", self.body())
+
+    def test_what_the_tab_showed_is_not_counted_again(self) -> None:
+        """The catalog is not re-read while a tab is open, so the tab keeps count."""
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.arrive(5200, "SHOWN_IN_THE_TAB")
+        self.app.refresh(WIDTH)
+        self.set_unread(6)
+        self.app.handle(Key.ESCAPE, "")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 0)
+
+    def test_what_the_reader_never_scrolled_down_to_stays_unread(self) -> None:
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.chat().offset = 5
+        self.arrive(5200, "BELOW_THE_FOLD")
+        self.app.refresh(WIDTH)
+        self.set_unread(6)
+        self.app.handle(Key.ESCAPE, "")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 1)
+
+    def test_a_room_read_in_the_client_follows_its_count_again(self) -> None:
+        self.view_and_close()
+        self.set_unread(0)
+        self.app.refresh(WIDTH)
+        self.set_unread(2)
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 2, "what arrived after the client read it")
+
+    def test_an_arrival_behind_the_room_list_is_counted_there(self) -> None:
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.app._run_command("/open")
+        self.assertTrue(self.app.adding)
+        self.arrive(5200, "BEHIND_THE_LIST")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 1)
+        self.assertIn("1 unread", self.body())
+        self.app.handle(Key.ESCAPE, "")
+        self.assertEqual(self.chat().unseen, 0, "back in front at its newest line")
+
+
 class DigestTests(LiveTests):
     def test_arrivals_do_not_disturb_an_open_digest(self) -> None:
         for index in range(6):

@@ -721,6 +721,21 @@ on a live client, newest 4,000 rows of each readable room.
   its own database and a poll is one stat of its log, so tabs cost exactly
   what they read — and a tab behind is still followed, or its count of
   arrivals would start from whenever it was brought forward.
+- **The room list counts what this screen has not shown.** Reading here
+  never lowers the client's `newMessageCount`, so a room read to its last
+  line came back to the list still saying "5 unread" while its tab had said
+  nothing. `App.seen_unreads` holds the count a room had reached when it was
+  last seen here and the list subtracts it; an open tab answers with its own
+  `unseen`, the `+N` the strip shows, and arrivals behind the list count
+  there too. The catalog is not re-read while a tab is open, so closing one
+  records the count it opened at plus `ChatState.arrived`, less the arrivals
+  the reader never scrolled down to. A count that falls below the record is
+  the client reading the room, and the record is dropped. Not measured here:
+  whether the Windows client lowers the count when it reads a room, and
+  whether it counts feed rows (`_counts_as_unread` assumes it does not).
+  From `kamado-cli#51` (`03b6449`), whose catalog refresh marks the room in
+  front as seen; here that refresh does not run while a tab is open, hence
+  the arrival count.
 - **A message belongs to the room it arrived in.** `_confirm_delivery` takes
   the conversation as an argument rather than reading the focused one, or a
   tick would land in whichever tab the keyboard was in when the client wrote

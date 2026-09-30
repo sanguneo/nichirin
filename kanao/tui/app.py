@@ -130,6 +130,12 @@ class ChatState:
     """Follows this room so arrivals show up without reopening it."""
     unseen: int = 0
     """Arrivals that landed below the viewport while the reader was scrolled up."""
+    arrived: int = 0
+    """Messages from others that arrived while this tab was open.
+
+    The catalog counts each of them as unread and is not re-read while a tab
+    is open, so this is what closing the tab adds to the count it opened at.
+    """
     anchor_top: bool = True
     """Show the body from its first line once, when its height is known."""
     outbox: Optional[str] = None
@@ -222,6 +228,13 @@ class App:
         """Whether typing goes to the filter instead of the shortcuts."""
         self.adding = False
         """Whether the room list is in front of conversations that stay open."""
+        self.seen_unreads: dict[int, int] = {}
+        """The catalog's unread count each room had reached when it was last seen here.
+
+        This screen only reads, so the client's count never falls for what
+        was read here; the room list subtracts this instead, the way a tab
+        counts only what arrived behind it.
+        """
         self.pending_send: Optional[str] = None
         self.pending_unlock: Optional[tuple[Room, bool]] = None
         """A room to open in the client, held for one frame like a send."""
@@ -289,6 +302,7 @@ class App:
         # Every room, not only the readable ones: a room whose key is not
         # loaded can be opened in the client from here, which loads it.
         self.rooms = list(catalogued)
+        self._forget_read_elsewhere(self.rooms)
         self._remember_members()
 
     def _remember_members(self) -> None:
@@ -301,6 +315,42 @@ class App:
             self.reader.memberships(refresh=True)
         except KanaoError:
             pass
+
+    def _effective_unread(self, room: Room) -> int:
+        """How many of a room's messages this screen has not shown.
+
+        An open tab answers with its own count, the one its tab carries as
+        ``+N``. A room seen here before answers with what the catalog counted
+        since; one never seen, locked rooms included, with the catalog's.
+        """
+        tab = next((chat for chat in self.chats if chat.room.id == room.id), None)
+        if tab is not None:
+            return tab.unseen
+        seen = self.seen_unreads.get(room.id)
+        return room.unread if seen is None else max(0, room.unread - seen)
+
+    def _remember_seen(self, chat: ChatState) -> None:
+        """Note how far the catalog's count had reached when this tab closes.
+
+        The catalog was read when the tab opened and not since, so its count
+        now is the one it opened at plus whatever arrived from others - less
+        the arrivals the reader never scrolled down to, which stay unread.
+        """
+        waiting = chat.messages[max(0, len(chat.messages) - chat.unseen) :] if chat.unseen else []
+        unshown = sum(1 for message in waiting if _counts_as_unread(message))
+        self.seen_unreads[chat.room.id] = chat.room.unread + max(0, chat.arrived - unshown)
+
+    def _forget_read_elsewhere(self, rooms: Sequence[Room]) -> None:
+        """Hand a room back to the catalog's count once the client read it.
+
+        A count below what was seen here can only have fallen, which is the
+        client marking the room read; from then on its number is the truth
+        again, including whatever arrived after it was read.
+        """
+        for room in rooms:
+            seen = self.seen_unreads.get(room.id)
+            if seen is not None and room.unread < seen:
+                del self.seen_unreads[room.id]
 
     def visible_rooms(self) -> list[Room]:
         """The rooms the filter leaves, or all of them."""
@@ -523,6 +573,7 @@ class App:
         """
         if chat not in self.chats:
             return
+        self._remember_seen(chat)
         index = self.chats.index(chat)
         self.chats.pop(index)
         if index <= self.focus:
@@ -568,6 +619,7 @@ class App:
         if not fresh:
             return False
         self._confirm_delivery(chat, fresh)
+        chat.arrived += sum(1 for message in fresh if _counts_as_unread(message))
 
         before = len(self._transcript_of(chat, width))
         for message in fresh:
@@ -578,9 +630,10 @@ class App:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
             chat.offset += len(self._transcript_of(chat, width)) - before
-        if chat.offset > 0 or chat is not self.chat:
-            # Arrivals nobody has seen: the viewport is up in the history, or
-            # this is a tab the reader is not on, and the strip says so.
+        if chat.offset > 0 or chat is not self.chat or self.adding:
+            # Arrivals nobody has seen: the viewport is up in the history,
+            # this is a tab the reader is not on, or the room list is in
+            # front of every tab - and the strip or the list says so.
             chat.unseen += len(fresh)
         else:
             chat.unseen = 0
@@ -718,6 +771,7 @@ class App:
             return False
         self.titles = [room.title for room in catalogued]
         rooms = list(catalogued)
+        self._forget_read_elsewhere(rooms)
         self._remember_members()
         changed = [
             (room.id, room.unread, room.last_log_id, room.readable) for room in rooms
@@ -827,8 +881,9 @@ class App:
             meta = f"{room.member_count}명"
             if not room.readable:
                 meta = "잠김 · " + meta
-            if room.unread:
-                meta += f" · {room.unread} unread"
+            unread = self._effective_unread(room)
+            if unread:
+                meta += f" · {unread} unread"
             stamp = _stamp(room.last_updated_at, self.zone)
             right_part = f"{meta}  {stamp}"
 
@@ -838,7 +893,7 @@ class App:
             if not room.readable:
                 # Openable, not readable yet: enter has the client load it.
                 styled = self.theme.fg("muted", styled)
-            elif room.unread:
+            elif unread:
                 styled = self.theme.fg("warning", styled)
 
             left = cursor + styled
@@ -1868,6 +1923,11 @@ class App:
                 # The list was asked for from inside a conversation, so
                 # leaving it goes back there rather than out of the program.
                 self.adding = False
+                back = self.chat
+                if back is not None and back.offset == 0:
+                    # In front at its newest line again: what arrived behind
+                    # the list has been seen.
+                    back.unseen = 0
             else:
                 self.running = False
         elif kind == Key.UP:
@@ -2190,6 +2250,8 @@ class App:
         elif name in ("q", "quit", "exit"):
             self.running = False
         elif name == "back":
+            for tab in self.chats:
+                self._remember_seen(tab)
             self.chat = None
         else:
             # The list lives in one place: this line used to carry its own
@@ -2354,6 +2416,15 @@ def _said(messages: Sequence[Message]) -> list[Message]:
     a digest counts and quotes what was said, and that was unsaid.
     """
     return [message for message in messages if not message.erased]
+
+
+def _counts_as_unread(message: Message) -> bool:
+    """Whether the client would count this arrival as unread.
+
+    Assumed rather than measured: somebody else's message, not the client's
+    own membership bookkeeping.
+    """
+    return not message.from_me and message.type != FEED_MESSAGE
 
 
 def _same_words(text: str) -> str:
