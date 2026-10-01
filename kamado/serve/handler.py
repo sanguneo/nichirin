@@ -22,6 +22,8 @@ from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    LINGER_BYTES,
+    LINGER_SECONDS,
     MAX_BODY_BYTES,
     MAX_HIGHLIGHTS,
     MAX_LIMIT,
@@ -220,9 +222,59 @@ def build_handler(
     class Handler(BaseHTTPRequestHandler):
         server_version = "kamado-serve"
         timeout = patience
+        _body_read = False
+        """Whether this request's body was read to its declared end."""
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib name
             pass
+
+        def finish(self) -> None:
+            try:
+                if self._body_left_unread():
+                    self._linger()
+            finally:
+                super().finish()
+
+        def _body_left_unread(self) -> bool:
+            """Whether the caller may still be sending a body nothing here read.
+
+            A refusal is written before the body is read whenever the body is
+            what was wrong - no length, a bad one, too much - and so is a 401
+            or 404 for a POST. A GET without a length leaves nothing behind.
+            """
+            headers = getattr(self, "headers", None)
+            if self._body_read or headers is None:
+                return False
+            if headers.get("Transfer-Encoding") is not None:
+                return True
+            declared = headers.get("Content-Length")
+            if declared is None:
+                return self.command not in ("GET", "HEAD")
+            return declared.strip() != "0"
+
+        def _linger(self) -> None:
+            """Read what the caller is still sending, so the close is not a reset.
+
+            See ``LINGER_SECONDS``. Writing is finished first, so the caller
+            sees the whole answer and then its end, and closes in turn.
+            """
+            connection = self.connection
+            try:
+                connection.shutdown(socket.SHUT_WR)
+                deadline = time.monotonic() + LINGER_SECONDS
+                discarded = 0
+                while discarded < LINGER_BYTES:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    connection.settimeout(remaining)
+                    chunk = connection.recv(65536)
+                    if not chunk:
+                        return
+                    discarded += len(chunk)
+            except OSError:
+                # Hung up or reset first: there is no answer left to save.
+                return
 
         # -- small helpers ------------------------------------------------
 
@@ -254,6 +306,7 @@ def build_handler(
                 raise KamadoError(
                     ErrorCode.INVALID_REQUEST, "request body ended before Content-Length"
                 )
+            self._body_read = True
             if not raw:
                 return {}
             try:

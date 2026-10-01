@@ -493,6 +493,23 @@ keep rather than one to rediscover.
   ninth is `503 BUSY`. `QuietDisconnects` swallows the four ordinary
   disconnect errors, because a reader closing `curl -N` is SSE's success case
   and `socketserver` would print a traceback for each one.
+- **A body refused unread is read anyway, or the refusal is lost.** The
+  handler answers before reading the body whenever the body is what is wrong
+  — no `Content-Length`, a bad one, too large, chunked — and for a POST's 401
+  and 404, and HTTP/1.0 closes the connection after every answer. Closing a
+  socket the caller is still writing to resets the connection, and the reset
+  destroys the 400 the caller has not read: measured here on macOS 15,
+  `ConnectionResetError` on every try when the body landed after the close,
+  whatever its size, and from 32 KB up when it had landed before. Windows
+  showed the same as `WinError 10053`, which is how it was found — its
+  `test_post_without_content_length_is_rejected` failed once in a full run.
+  So `Handler.finish` half-closes and reads what is still coming until the
+  caller closes, for at most `LINGER_SECONDS` and `LINGER_BYTES`, and only
+  when a body may be left (`_body_left_unread`): a lingering read on every
+  request would hold the single-threaded test server until each client hung
+  up. Ported from kanao-cli `a1906b0` onto `e074d49` unchanged; the regression
+  test reads the server's side of the socket at its close rather than waiting
+  for a reset, and failed 20 of 20 here before the fix.
 - **The status map carries the macOS-only codes, which the Windows table had
   no reason to.** `PERMISSION_REQUIRED`, `NO_USER_DATA` and `INPUT_NOT_FOUND`
   all left as a 500 when this arrived. The first is the one that mattered: it

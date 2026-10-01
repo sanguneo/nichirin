@@ -29,6 +29,20 @@ likes. Thirty seconds is far more than a request over a tunnel needs and far
 less than forever.
 """
 
+LINGER_SECONDS = 2.0
+"""How long a body that was refused unread is read and thrown away before closing.
+
+Closing a socket the caller is still writing to resets the connection, and the
+reset destroys the answer the caller has not read yet: measured on macOS 15,
+``ConnectionResetError`` on every try when the body landed after the close,
+whatever its size, and from 32 KB up when it had landed before. So after a
+refusal the server says it is done writing, reads whatever is still coming
+until the caller closes, and gives up after this long.
+"""
+
+LINGER_BYTES = MAX_BODY_BYTES
+"""The most of a refused body that is read and thrown away."""
+
 MAX_STREAMS = 8
 """How many SSE connections may be open at once.
 
