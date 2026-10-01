@@ -186,6 +186,14 @@ def _first_present(available: set[str], candidates: Iterable[str]) -> Optional[s
     return next((name for name in candidates if name in available), None)
 
 
+def _room_filter(columns: set[str]) -> str:
+    """Filter out pseudo-rooms (such as thread notifications with chatId < 0) and hidden rooms."""
+    conditions = ["chatId > 0"]
+    if "hidden" in columns:
+        conditions.append("(hidden IS NULL OR hidden = 0)")
+    return f" WHERE {' AND '.join(conditions)}"
+
+
 def _plist_user_ids(raw: object) -> list[int]:
     """Read the user ids out of a binary-plist member list.
 
@@ -434,8 +442,9 @@ class Reader:
             pass
 
     def count_rooms(self) -> int:
-        self._require_table(ROOM_TABLE)
-        row = self.connection().execute(f"SELECT COUNT(*) FROM {ROOM_TABLE}").fetchone()
+        columns = self._require_table(ROOM_TABLE)
+        sql = f"SELECT COUNT(*) FROM {ROOM_TABLE}{_room_filter(columns)}"
+        row = self.connection().execute(sql).fetchone()
         return int(row[0])
 
     def verify(self) -> dict[str, object]:
@@ -722,7 +731,7 @@ class Reader:
             "linkId" if "linkId" in columns else "NULL",
             members_column or "NULL",
         ]
-        sql = f"SELECT {', '.join(selected)} FROM {ROOM_TABLE}"
+        sql = f"SELECT {', '.join(selected)} FROM {ROOM_TABLE}{_room_filter(columns)}"
         order = _first_present(columns, ("lastUpdatedAt", "updatedAt"))
         if order:
             sql += f" ORDER BY {order} IS NULL, {order} DESC"

@@ -234,6 +234,38 @@ class RoomTests(unittest.TestCase):
         with build_reader() as reader:
             self.assertIsNone(reader.room(424242))
 
+    def test_pseudo_rooms_with_negative_id_are_excluded(self) -> None:
+        """KakaoTalk keeps internal pseudo-rooms (such as Room -2 for thread notifications) in NTChatRoom."""
+        with build_reader() as reader:
+            before_count = reader.count_rooms()
+            reader.connection().execute(
+                "INSERT INTO NTChatRoom (chatId, type, chatName, activeMembersCount, lastUpdatedAt) "
+                "VALUES (-2, 10001, NULL, 0, 9999999)"
+            )
+            rooms = reader.rooms()
+            self.assertNotIn(-2, [r.id for r in rooms])
+            self.assertIsNone(reader.room(-2))
+            self.assertEqual(reader.count_rooms(), before_count)
+
+    def test_hidden_rooms_are_excluded_when_column_present(self) -> None:
+        with build_reader() as reader:
+            reader.connection().execute("ALTER TABLE NTChatRoom ADD COLUMN hidden INTEGER")
+            reader.connection().execute(
+                "INSERT INTO NTChatRoom (chatId, type, chatName, activeMembersCount, lastUpdatedAt, hidden) "
+                "VALUES (9999, 1, 'Hidden Room', 2, 8888888, 1)"
+            )
+            before_count = reader.count_rooms()
+            reader.connection().execute(
+                "INSERT INTO NTChatRoom (chatId, type, chatName, activeMembersCount, lastUpdatedAt, hidden) "
+                "VALUES (9998, 1, 'Normal Room', 2, 8888889, 0)"
+            )
+            rooms = reader.rooms()
+            self.assertNotIn(9999, [r.id for r in rooms])
+            self.assertIn(9998, [r.id for r in rooms])
+            self.assertIsNone(reader.room(9999))
+            self.assertIsNotNone(reader.room(9998))
+            self.assertEqual(reader.count_rooms(), before_count + 1)
+
 
 class ResolutionTests(unittest.TestCase):
     def test_an_exact_title_wins_over_a_longer_one_containing_it(self) -> None:
