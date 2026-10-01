@@ -29,6 +29,19 @@ likes. Thirty seconds is far more than a request over a tunnel needs and far
 less than forever.
 """
 
+LINGER_SECONDS = 2.0
+"""How long a body that was refused unread is read and thrown away before closing.
+
+A body that lands on a socket already closed is answered with a reset, and on
+Windows the reset destroys the answer the caller has not read yet: it saw
+``WinError 10053`` where it was owed a 400. So after a refusal the server says
+it is done writing, reads whatever is still coming until the caller closes,
+and gives up after this long.
+"""
+
+LINGER_BYTES = MAX_BODY_BYTES
+"""The most of a refused body that is read and thrown away."""
+
 MAX_STREAMS = 8
 """How many SSE connections may be open at once.
 

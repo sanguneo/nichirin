@@ -2,14 +2,17 @@
 
 import itertools
 import json
+import socket
 import threading
 import unittest
 from http.client import HTTPConnection
+from typing import cast
 
 from kanao.errors import ErrorCode, KanaoError
 from kanao.serve.handler import _SendQueue, _ShuttingDown
 from tests.serve.helpers import (
     TOKEN,
+    QuietHTTPServer,
     ServedCase,
     StubSender,
     _raw_request,
@@ -47,8 +50,88 @@ class _JumpingQueue(_SendQueue):
         self.now += remaining
 
 
+class _ClosingServer(QuietHTTPServer):
+    """Notes, as it closes a connection, what the caller had left in it.
+
+    ``"end"`` means everything the caller sent was read, up to its close;
+    ``"data"`` means bytes were still unread, which is what turns a close
+    into a reset.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.closed = threading.Event()
+        self.left = ""
+        super().__init__(*args, **kwargs)
+
+    def close_request(self, request) -> None:
+        connection = cast(socket.socket, request)
+        connection.setblocking(False)
+        try:
+            self.left = "data" if connection.recv(1, socket.MSG_PEEK) else "end"
+        except BlockingIOError:
+            self.left = "nothing yet"
+        except OSError as error:
+            self.left = type(error).__name__
+        super().close_request(request)
+        self.closed.set()
+
+
+def _read_answer(sock: socket.socket) -> "tuple[int, dict]":
+    """Read one response by its ``Content-Length``, leaving the socket open."""
+    raw = b""
+    while b"\r\n\r\n" not in raw:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        raw += chunk
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    length = next(
+        int(value)
+        for name, _, value in (line.partition(b":") for line in lines[1:])
+        if name.strip().lower() == b"content-length"
+    )
+    while len(body) < length:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        body += chunk
+    return int(lines[0].split(b" ", 2)[1]), json.loads(body)
+
+
 class SendTests(ServedCase):
     # ---- body framing --------------------------------------------------
+
+    def test_a_refused_body_is_read_to_its_end_before_the_connection_closes(self) -> None:
+        # A body that lands on a socket the server has already closed is
+        # answered with a reset, and the reset destroys the 400 the caller had
+        # not read yet: the test below failed that way now and then, when its
+        # body arrived after the close. Here the body is sent only once the
+        # answer is in, which is that order on purpose, so the server must
+        # still be reading. What it had left at its close is the evidence,
+        # and no ordering of the two threads can make it "end" unless the
+        # server read the body and the caller's close.
+        self.serve(_start_server(StubSender()), server_class=_ClosingServer)
+        server = self.server
+        assert isinstance(server, _ClosingServer)
+        host, _, port = self.base.partition("://")[2].partition(":")
+        sock = socket.create_connection((host, int(port)), timeout=5)
+        try:
+            sock.sendall(
+                f"POST /send HTTP/1.1\r\n"
+                f"Host: x\r\n"
+                f"Authorization: Bearer {TOKEN}\r\n"
+                f"Content-Type: application/json\r\n\r\n".encode("ascii")
+            )
+            status, body = _read_answer(sock)
+            sock.sendall(b'{"room": "r", "text": "t"}')
+            sock.shutdown(socket.SHUT_WR)
+            self.assertTrue(server.closed.wait(timeout=5))
+        finally:
+            sock.close()
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(server.left, "end")
 
     def test_post_without_content_length_is_rejected(self) -> None:
         self.serve(_start_server(StubSender()))
@@ -102,8 +185,6 @@ class SendTests(ServedCase):
 
     def test_truncated_body_is_rejected(self) -> None:
         self.serve(_start_server(StubSender()))
-        import socket
-
         host, _, port = self.base.partition("://")[2].partition(":")
         sock = socket.create_connection((host, int(port)), timeout=5)
         try:

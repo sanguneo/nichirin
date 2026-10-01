@@ -139,8 +139,8 @@ class ServedCase(unittest.TestCase):
     thread: threading.Thread
     base: str
 
-    def serve(self, handler) -> str:
-        self.server = QuietHTTPServer(("127.0.0.1", 0), handler)
+    def serve(self, handler, server_class=QuietHTTPServer) -> str:
+        self.server = server_class(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"

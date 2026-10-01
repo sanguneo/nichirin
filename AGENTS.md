@@ -541,6 +541,22 @@ on a live client, newest 4,000 rows of each readable room.
   hold a thread for as long as it liked; it now answers `408` after 30 s. Each
   SSE connection owns a reader and a watcher for its whole life, so eight is
   the most that may be open and the ninth is `503 BUSY`.
+- **A body refused unread is read anyway, or the refusal is lost.** The
+  handler answers before reading the body whenever the body is what is wrong
+  — no `Content-Length`, a bad one, too large, chunked — and for a POST's
+  401 and 404, and HTTP/1.0 closes the connection after every answer. A body
+  that lands on a socket already closed is answered with a reset, and on
+  Windows the reset destroys the 400 the caller has not read yet: measured,
+  `WinError 10053` on every try, for a 26-byte body as for a 300 KB one, and
+  a body still arriving when the server closes was reset at 300 KB.
+  `test_post_without_content_length_is_rejected` failed that way once in a
+  full run. So `Handler.finish` half-closes and reads what is still coming
+  until the caller closes, for at most `LINGER_SECONDS` and `LINGER_BYTES`.
+  It does so only when a body may be left (`_body_left_unread`), because a
+  lingering read on every request would hold the single-threaded test server
+  until each client hung up. The regression test reads the server's side of
+  the socket at its close rather than waiting for a reset: before the fix it
+  failed 20 of 20, in all three ways the order of two threads allows.
 - **A reader hanging up is SSE's success case.** `socketserver` prints a whole
   traceback for the `ConnectionResetError` that a closed `curl -N` raises on
   the next write, so `QuietDisconnects` swallows exactly the four ordinary
@@ -1085,7 +1101,7 @@ on a live client, newest 4,000 rows of each readable room.
   itself, and `patch` refuses an attribute that is not there. It does **not**
   model POSIX path comparison, which is the other half of what differs and is
   why the profile walk folds case itself. On Windows nothing is skipped:
-  the suite is 1082 tests with a skip count of zero, and that is the check that
+  the suite is 1083 tests with a skip count of zero, and that is the check that
   a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not
