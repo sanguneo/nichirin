@@ -42,6 +42,7 @@ from ..model import (
 from ..reader import Reader
 from . import digest
 from . import images
+from .session import TuiSessionState, current_user_id, load_session, save_session
 from .worker import (
     ATTACHMENTS,
     DatabaseWorker,
@@ -254,6 +255,9 @@ class App:
         theme: Optional[Theme] = None,
         sender: Optional["MessageSender"] = None,
         db: Optional[DatabaseOwner] = None,
+        restore: bool = False,
+        user_id: Optional[int] = None,
+        environment: Optional[dict[str, str]] = None,
     ) -> None:
         self.reader = reader
         """Kept for a caller that owns one; nothing here ever queries it."""
@@ -289,15 +293,22 @@ class App:
         """Which of them the keyboard and the composer belong to."""
         self.palette = SpeakerPalette(dark=self.theme.dark)
         self.status = ""
-        self.mouse_clicks = mouse_default()
-        """Whether the terminal reports buttons here instead of selecting text.
-
-        Held rather than asked of the console, so every caller — the loop that
-        carries it to the terminal and the frame that says which mode is on —
-        reads one answer, and a test can drive the switch without a terminal.
-        """
-        self.show_timestamps = True
-        """Whether timestamps are shown on each message in the transcript."""
+        self.restore = restore
+        self.environment = environment
+        self.user_id = user_id if user_id is not None else current_user_id(environment)
+        if self.restore:
+            saved = load_session(user_id=self.user_id, environment=self.environment)
+            self.mouse_clicks = saved.mouse_clicks
+            self.show_timestamps = saved.show_timestamps
+            self.reveal_covered = saved.reveal_covered
+            self._pending_restore_room_ids: list[int] = list(saved.open_room_ids)
+            self._pending_restore_focus_id: Optional[int] = saved.focused_room_id
+        else:
+            self.mouse_clicks = mouse_default()
+            self.show_timestamps = True
+            self.reveal_covered = False
+            self._pending_restore_room_ids = []
+            self._pending_restore_focus_id = None
         self.seen_db_unreads: dict[int, int] = {}
         """Last observed DB unread count when each room was viewed in kamado."""
         self.running = True
@@ -321,8 +332,6 @@ class App:
         the list otherwise closes the conversation standing in front of it.
         """
         self.pending_send: Optional[str] = None
-        self.reveal_covered = False
-        """Whether the owner's reader was last told to show what SafeBot covered."""
         self._clock = time.monotonic
         """Read rather than called directly, so a test can hold time still."""
         """Text the last keystroke asked to send, not sent yet.
@@ -496,6 +505,20 @@ class App:
             raise ValueError(f"nothing on screen is waiting for {kind!r}")
         self._dirty = drawn or self._dirty
 
+    def save_session(self) -> None:
+        if not self.restore:
+            return
+        focused_id = self.chat.room.id if self.chat is not None else None
+        open_ids = [chat.room.id for chat in self.chats]
+        state = TuiSessionState(
+            show_timestamps=self.show_timestamps,
+            mouse_clicks=self.mouse_clicks,
+            reveal_covered=self.reveal_covered,
+            open_room_ids=open_ids,
+            focused_room_id=focused_id,
+        )
+        save_session(state, user_id=self.user_id, environment=self.environment)
+
     # -- data ---------------------------------------------------------------
 
     def load_rooms(self) -> None:
@@ -540,6 +563,14 @@ class App:
                 if self.rooms
                 else "읽을 수 있는 대화방이 없습니다. 카카오톡에서 대화를 열어주세요."
             )
+            if self._pending_restore_room_ids:
+                room_by_id = {room.id: room for room in self.rooms}
+                restore_ids = list(self._pending_restore_room_ids)
+                self._pending_restore_room_ids.clear()
+                for rid in restore_ids:
+                    target_room = room_by_id.get(rid)
+                    if target_room is not None:
+                        self.open_room(target_room)
         return changed or first
 
     def visible_rooms(self) -> list[Room]:
@@ -710,10 +741,18 @@ class App:
             )
         )
         self.focus = len(self.chats) - 1
+        if self._pending_restore_focus_id is not None:
+            for idx, c in enumerate(self.chats):
+                if c.room.id == self._pending_restore_focus_id:
+                    self.focus = idx
+                    break
+            if not self._opening:
+                self._pending_restore_focus_id = None
         self.picking = False
         self._forget_filter()
         self.status = ""
         self._mark_room_seen(room.id)
+        self.save_session()
         return True
 
     def refresh(self, width: int) -> bool:
@@ -2170,6 +2209,7 @@ class App:
         target = chat or self.chat
         if target is not None:
             self._passing_notice(target, notice)
+        self.save_session()
 
     def _toggle_covered(self, chat: ChatState) -> None:
         """Show what SafeBot covered, or cover it again, in every open tab.
@@ -2192,6 +2232,7 @@ class App:
                 chat.notice = f"다시 읽지 못했습니다: {_said(done.error)}"
             return True
         self.reveal_covered = wanted
+        self.save_session()
         for tab in self.chats:
             answer = done.value.get(tab.room.id)
             if answer is None:
@@ -2659,6 +2700,7 @@ class App:
         chat = self.chat
         if chat is not None:
             self._passing_notice(chat, said)
+        self.save_session()
 
     def _click(self, position: str) -> None:
         """Act on the clicked cell: a tab to switch to, a photo, or a link.
@@ -2701,6 +2743,7 @@ class App:
         with the move rather than waiting for the next keystroke.
         """
         self.focus = index % len(self.chats)
+        self.save_session()
         chat = self.chat
         if chat is not None and chat.offset == 0:
             chat.unseen = 0
@@ -2736,6 +2779,7 @@ class App:
         chat = self.chats.pop(src)
         self.chats.insert(dest, chat)
         self.focus = dest
+        self.save_session()
 
     def _tab_click(self, column: int) -> None:
         """Switch to the tab under a clicked column, if one was under it.
@@ -2886,6 +2930,7 @@ class App:
             self.chats.pop(index)
             self.focus = max(0, min(self.focus if index > self.focus else self.focus - 1,
                                     len(self.chats) - 1))
+            self.save_session()
         self._queue_cleanup(Job(UNWATCH, room_id=chat.room.id))
         if not self.chats:
             # Nothing is left to follow, so the watcher is given up rather
@@ -3191,6 +3236,7 @@ class App:
                 continue
             self.refresh(width)
             due_at = _next_poll_at(time.monotonic(), time.monotonic() - now)
+        self.save_session()
 
 
 def _osc8_segments(line: str) -> list[tuple[str, Optional[str]]]:
@@ -3304,7 +3350,7 @@ def _said(error: BaseException) -> str:
     return error.message if isinstance(error, KamadoError) else str(error)
 
 
-def launch() -> int:
+def launch(restore: bool = True) -> int:
     """Run the browser, restoring the terminal whatever happens.
 
     The reader is opened by the worker on the worker's thread and closed by it
@@ -3314,5 +3360,5 @@ def launch() -> int:
     terminal has been handed back to a shell that then appears to hang.
     """
     with Console() as console, DatabaseWorker(open_reader=Reader) as owner:
-        App(db=owner).run(console)
+        App(db=owner, restore=restore).run(console)
     return 0

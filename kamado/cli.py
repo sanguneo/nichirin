@@ -205,7 +205,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_sub.add_parser("stop", help="Stop background daemon")
     daemon_sub.add_parser("status", help="Check daemon status")
 
-    commands.add_parser("tui", help="Browse conversations in a terminal interface")
+    tui_cmd = commands.add_parser("tui", help="Browse conversations in a terminal interface")
+    tui_cmd.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Start fresh without restoring previous session tabs or preferences",
+    )
 
     serve = commands.add_parser(
         "serve",
@@ -431,7 +436,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "tui":
         # Deliberately not handed this reader: see :func:`_tui`.
-        return _tui()
+        return _tui(arguments)
 
     if arguments.command == "follow":
         return _follow(reader, arguments)
@@ -563,7 +568,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _tui() -> int:
+def _tui(arguments: Optional[argparse.Namespace] = None) -> int:
     """Hand the terminal to the browser, restoring it however it ends.
 
     The interface's reader is opened *by the worker, on the worker's thread*,
@@ -591,10 +596,11 @@ def _tui() -> int:
     # The ledger is switched on here for the same reason main switches it on:
     # this is certainly reading the live database, and a rename is invisible
     # unless something writes down what it saw.
+    restore = not bool(arguments and getattr(arguments, "fresh", False))
     with Console() as console, DatabaseWorker(
         open_reader=lambda: Reader(ledger=NameLedger())
     ) as owner:
-        App(db=owner).run(console)
+        App(db=owner, restore=restore).run(console)
     return 0
 
 
