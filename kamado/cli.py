@@ -374,6 +374,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return _send(reader, arguments)
 
     if arguments.command == "serve":
+        from . import snapshot
         from .serve import (
             make_live_attachments_provider,
             make_live_context_provider,
@@ -397,6 +398,10 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
                 file=sys.stderr,
                 flush=True,
             )
+        # A long-running server pays the temporary-file path on every refresh,
+        # and a previous run killed by launchd may have left its copies behind.
+        snapshot.warn_if_plaintext_fallback()
+        snapshot.sweep_orphans()
         return serve_run(
             host=arguments.host,
             port=arguments.port,
