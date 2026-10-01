@@ -57,6 +57,9 @@ macOS 15.7에서 확인했습니다. 저장소 디렉터리에서 실행하세�
 > uv run --python 3.12 -m kamado status
 > uv run --python 3.12 -m kamado tui
 > ```
+> 상주하는 `serve` 는 차이가 더 큽니다. 카카오톡이 쓸 때마다 스냅샷을 다시 만들기 때문에,
+> 3.9 에서는 갱신마다 DB 크기만큼의 임시 파일을 쓰고 읽습니다. 그래서 `serve` 는 3.9 에서
+> 시작할 때 경고를 한 줄 찍습니다(아래 「원격에서 보내고 읽기」).
 
 먼저 **시스템 설정 → 개인정보 보호 및 보안**에서 도구를 실행하는 **터미널 앱**
 (iTerm 또는 Terminal)에 권한을 주세요. 파이썬 파일에 주는 권한이 아닙니다.
@@ -506,6 +509,13 @@ export KAMADO_TOKEN="열여섯-글자-이상의-공유-비밀"
 python3 -m kamado serve
 ```
 
+**`serve` 는 Python 3.11+ 로 띄우세요.** launchd 같은 데서 상주시킬 때 인터프리터를
+`/usr/bin/python3` 로 적으면 macOS 기본 3.9 가 돕니다. 3.9 에는 `sqlite3` 의
+`deserialize` 가 없어서 스냅샷을 갱신할 때마다 평문 임시 파일을 거치고, 상주 서버에서는
+그 비용이 갱신 대기와 메모리로 쌓입니다(카카오톡 DB 이미지 약 880 MB 인 맥에서 갱신 중앙값
+3.2 s, 3.14 로 바꾸자 약 0.15 s). `/opt/homebrew/bin/python3.12` 처럼 3.11+ 경로를 직접
+적거나 `uv run --python 3.12 -m kamado serve` 로 띄우면 됩니다.
+
 ```bash
 # 원격 (SSH 포트포워딩: ssh -L 8765:127.0.0.1:8765 mac-host)
 T=http://127.0.0.1:8765; H="Authorization: Bearer 열여섯-글자-이상의-공유-비밀"
@@ -621,7 +631,7 @@ python3 install.py --target "$HOME/.claude/skills/kamado-cli" --force
 - **macOS 전용입니다.** 다른 운영체제는 지원하지 않습니다.
 - **일관성이 없으면 거절합니다.** 읽기가 충돌하면 `BUSY` 등으로 실패하며 완전한 기록인 척하지 않습니다.
 - **무결성은 확인하지만 진위는 아닙니다.** SQLite 무결성과 로그 체크섬은 검증하지만 SQLCipher 페이지별 HMAC은 검증하지 않습니다.
-- **평문 임시 파일이 생길 수 있습니다.** Python 3.9/3.10 등 SQLite `deserialize`가 없는 환경에서는 복호화 결과가 임시 파일을 거칩니다. 삭제는 안전 소거가 아닙니다. 해당 API가 있으면 평문 DB는 메모리에서 엽니다.
+- **평문 임시 파일이 생길 수 있습니다.** Python 3.9/3.10 등 SQLite `deserialize`가 없는 환경에서는 복호화 결과가 임시 파일을 거칩니다. 삭제는 안전 소거가 아닙니다. 해당 API가 있으면 평문 DB는 메모리에서 엽니다. 강제 종료(SIGKILL, launchd 재시작)로 남은 파일(`kamado-plain-<pid>-*`, 복제본 `kamado-clone-<pid>-*`·`kamado-wal-<pid>-*`)은 다음 실행이 스냅샷을 처음 만들 때(`serve` 는 시작할 때) 그 pid 가 살아 있지 않으면 지웁니다.
 - **클라이언트가 바뀌면** 스키마나 접근성 구조가 달라져 읽기·보내기가 실패할 수 있습니다.
 
 ## 개발

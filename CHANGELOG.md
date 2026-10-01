@@ -4,6 +4,28 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+## [Unreleased]
+
+`sqlite3` `deserialize`가 없는 Python 3.9/3.10에서 `serve`를 상주시킬 때의 문제를
+줄였습니다. 명령의 출력, `tui`, `openapi.json`은 그대로입니다.
+
+### 고침
+
+- **강제 종료된 실행이 남긴 임시 사본을 다음 실행이 지웁니다.** 3.9/3.10의 평문 임시 파일과
+  복제 스테이징 디렉터리는 `finally`에서 지웠으므로 SIGKILL이나 launchd 재시작이면 남았습니다
+  (상주 `serve`에서 `$TMPDIR/kamado-*` 4개, 약 3.4 GB). 이제 이름에 pid를 넣고
+  (`kamado-plain-<pid>-*.sqlite3`, `kamado-clone-<pid>-*`, `kamado-wal-<pid>-*`), 스냅샷을
+  처음 만들 때와 `serve`를 시작할 때 그 pid가 살아 있지 않은, 내 소유의 것만 지웁니다.
+  신호를 보낼 권한이 없는 pid는 살아 있는 것으로 봅니다. 예전 이름(`kamado-XXXX`)은 pid를 알 수
+  없어 건드리지 않습니다.
+
+### 바뀜
+
+- **`serve`가 3.9/3.10에서 시작할 때 경고를 한 줄 찍습니다**(stderr). 상주 서버는 갱신마다
+  임시 파일 경로를 타므로, 이 맥에서 갱신 중앙값 3.2 s(3.14에서는 약 0.15 s)였습니다.
+- README·SKILL.md: `serve`와 launchd 예시에서 3.11+ 인터프리터를 직접 적으라고 안내합니다
+  (macOS 기본 `/usr/bin/python3`는 3.9).
+
 ## [0.25.1] — 2026-10-01
 
 `serve`의 연결 종료 하나를 고쳤습니다(kanao-cli 0.26.1과 같은 수정). 명령, `tui`,
