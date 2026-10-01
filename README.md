@@ -380,6 +380,12 @@ export KAMADO_MOUSE=0
 `/notice`, `/files`, `/links`, `/photos`, `/videos`, `/edits`, `/safebot`은 [방 정보](#방-정보)에
 있습니다. `esc`는 다이제스트나 목록을 먼저 닫고, 그다음에 방을 닫습니다.
 
+`/time`, 마우스 모드(`Ctrl+G`), `/safebot` 상태와 열린 탭·포커스는 계정별로
+`~/Library/Application Support/kamado-cli/tui_state.json`에 저장되어 다음 실행 때 그대로
+돌아옵니다. 나간 방은 건너뛰고, `KAMADO_MOUSE`를 지정하면 저장된 마우스 모드보다 우선합니다.
+아직 보내지 않은 입력은 저장하지 않습니다. `kamado tui --fresh`는 저장된 상태를 읽지도
+쓰지도 않고 새로 시작합니다.
+
 ### 방 정보
 
 카카오톡이 같은 DB에 적어 두는 것 중 대화 줄 말고도 읽을 만한 것들입니다. 이미 복호화한
