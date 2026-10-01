@@ -787,6 +787,18 @@ on a live client, newest 4,000 rows of each readable room.
   version changed (`Reader.messages_at`). A version and the message built from
   it always come from the same read. A digest is cut again without the
   deleted line, and erased messages are not counted in a digest at all.
+- **A late row inside the loaded range is an arrival too** (issue #13).
+  The same range read also finds ids the tab does not hold, and
+  `messages_at` builds those with their versions before they are inserted in
+  log-id order. They update the digest, delivery mark and unseen counts without
+  moving a scrolled viewport. Nothing below the oldest loaded id is read:
+  only an explicit older page extends that range. Measured read-only on Windows
+  on 2026-10-01 at kanao-cli `a5eb25b`: among the newest 4,000 rows of each of
+  eight readable rooms, four rowid inversions across two rooms. The mechanism
+  reported from kamado-cli `4f0314b` therefore occurs here too; the fixture
+  regressions protect insertion, ordering, deduplication and the history bound.
+  `follow` and `/stream` still resume only above their cursors; changing their
+  shared contract is outside this fix.
 - **A reply is stacked the way the client stacks it, and neither mark costs a
   column.** The replier is named once, on the row that carries the quotation:
   time, name, then the one line they were answering, cut because the message

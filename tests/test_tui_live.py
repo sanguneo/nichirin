@@ -12,6 +12,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from kanao import paths
 from kanao.model import ERASED_PLACEHOLDER
@@ -162,6 +163,101 @@ class ViewportTests(LiveTests):
         self.assertEqual(self.chat().offset, 0)
         self.assertEqual(self.chat().unseen, 0)
         self.assertIn("PENDING", self.body())
+
+
+class BackfillBelowCursorTests(LiveTests):
+    """Only gaps inside the loaded range are late arrivals, not older history."""
+
+    def advance(self) -> None:
+        self.arrive(5200, "CURSOR_CEILING")
+        self.app.refresh(WIDTH)
+
+    def test_a_late_row_inside_the_loaded_range_appears_in_order(self) -> None:
+        self.advance()
+        self.arrive(5100, "BACKFILLED")
+
+        self.assertTrue(self.app.refresh(WIDTH))
+
+        ids = [message.id for message in self.chat().messages]
+        self.assertIn(5100, ids)
+        self.assertEqual(ids, sorted(ids))
+        self.assertIn("BACKFILLED", self.body())
+        self.assertIn(5100, self.chat().versions)
+
+    def test_a_late_row_is_not_inserted_or_counted_twice(self) -> None:
+        self.advance()
+        self.arrive(5100, "BACKFILLED_ONCE")
+        self.app.refresh(WIDTH)
+        before = self.chat().arrived
+        touch_log(self.root, DIRECT_ROOM, b"another log change")
+
+        self.assertFalse(self.app.refresh(WIDTH))
+
+        self.assertEqual(self.chat().arrived, before)
+        self.assertEqual([m.id for m in self.chat().messages].count(5100), 1)
+
+    def test_a_late_row_behind_another_tab_counts_as_unseen(self) -> None:
+        self.advance()
+        chat = self.chat()
+        self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM), beside=True)
+        self.arrive(5100, "BEHIND_OTHER_TAB")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(chat.unseen, 1)
+        self.assertEqual(chat.arrived, 2)
+        self.assertIn(5100, [m.id for m in chat.messages])
+
+    def test_a_late_row_below_the_viewport_keeps_the_visible_lines(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index * 2, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        before = self.viewport()
+        self.arrive(5657, "BACKFILL_BELOW_FOLD")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.viewport(), before)
+        self.assertEqual(self.chat().unseen, 1)
+        self.assertIn(5657, [m.id for m in self.chat().messages])
+
+    def test_log_changes_do_not_load_history_below_the_window(self) -> None:
+        self.app.chat = None
+        with patch("kanao.tui.app.HISTORY_WINDOW", 2):
+            self.app.open_room(next(r for r in self.app.rooms if r.id == DIRECT_ROOM))
+        self.advance()
+        self.arrive(4999, "UNLOADED_HISTORY")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual([m.id for m in self.chat().messages], [5001, 5003, 5200])
+
+    def test_an_explicit_older_page_extends_the_backfill_range(self) -> None:
+        self.arrive(4990, "OLDER_PAGE")
+        self.app.chat = None
+        with patch("kanao.tui.app.HISTORY_WINDOW", 2):
+            self.app.open_room(next(r for r in self.app.rooms if r.id == DIRECT_ROOM))
+        self.app.load_older()
+        self.advance()
+        self.arrive(4995, "AFTER_OLDER_PAGE")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(
+            [m.id for m in self.chat().messages], [4990, 4995, 5000, 5001, 5003, 5200]
+        )
+
+    def test_a_late_row_is_added_to_an_open_digest(self) -> None:
+        self.advance()
+        self.app._run_command("/sum 30m")
+        self.arrive(5100, "BACKFILLED_DIGEST")
+
+        self.app.refresh(WIDTH)
+
+        self.assertIn(
+            5100, [m.id for piece in self.chat().slices for m in piece.messages]
+        )
 
 
 class RoomListTests(LiveTests):

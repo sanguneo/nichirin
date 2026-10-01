@@ -732,6 +732,8 @@ class App:
         it: the digest, the export. The rows the window holds are compared by
         version, one range read with no names or quotes, and only a row that
         changed is read again; a row no longer returned at all is taken out.
+        An id missing from the held range is a late arrival and is inserted
+        in log-id order. Nothing below that range is loaded implicitly.
 
         What a row held and the message built from it always come from the
         same read, so a change landing between two reads is caught by the
@@ -744,10 +746,10 @@ class App:
             current = self.reader.row_versions(chat.room.id, low, high, include_erased=True)
         except (KanaoError, OSError, sqlite3.Error):
             return False
-        held = [message.id for message in chat.messages]
+        held = {message.id for message in chat.messages}
         removed = {one for one in held if one not in current}
         stale = [
-            one for one in held if one in current and chat.versions.get(one) != current[one]
+            one for one in current if one not in held or chat.versions.get(one) != current[one]
         ]
         if not removed and not stale:
             return False
@@ -764,7 +766,8 @@ class App:
             chat.versions.update(fresh_versions)
             # Gone between the two reads: as removed as a row the first missed.
             removed |= {one for one in stale if one not in rebuilt}
-        if not removed and all(
+        fresh = [message for one, message in rebuilt.items() if one not in held]
+        if not removed and not fresh and all(
             rebuilt[message.id] == message for message in chat.messages if message.id in rebuilt
         ):
             # A row whose version was simply not known yet - an arrival read
@@ -777,6 +780,14 @@ class App:
             for message in chat.messages
             if message.id not in removed
         ]
+        if fresh:
+            self._confirm_delivery(chat, fresh)
+            chat.arrived += sum(1 for message in fresh if _counts_as_unread(message))
+            for message in fresh:
+                self.palette.hue(message.sender)
+            chat.messages = sorted(chat.messages + fresh, key=lambda message: message.id)
+            if chat.offset > 0 or chat is not self.chat or self.adding:
+                chat.unseen += len(fresh)
         for one in removed | set(rebuilt):
             chat.feeds.pop(one, None)
         for one in removed:
