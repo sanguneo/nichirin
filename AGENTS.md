@@ -155,6 +155,17 @@ Every command pays discovery before it answers, and both halves were slow:
   **5.4 ms against 240.9 ms**, per database opened, and a room log is larger
   than the catalog. It is also the difference between the plaintext never
   touching the disk and it being written and unlinked.
+- **A forced exit skips the unlink, so the next fallback sweeps** (issue #14,
+  from kamado-cli `4f0314b`). The file cannot be delete-on-close: SQLite's
+  Windows VFS shares `READ | WRITE` without `DELETE`, and opening a
+  `FILE_FLAG_DELETE_ON_CLOSE` file failed every way it was tried. So the name
+  carries the pid and that process's creation time (`kanao-snapshot-v1-…`),
+  and `_snapshot_temp` deletes a tagged file only when the pid is absent,
+  signalled with the same birth, or held by a process born at another time —
+  through one exclusive handle that refuses links, directories, files open
+  elsewhere and files another account owns. Access denied or unknown keeps the
+  file. **Never `os.kill(pid, 0)` here: on Windows it terminates the process.**
+  The module reads `ctypes.wintypes`, so `snapshot` imports it only on Windows.
 - **The decryption is checked with `PRAGMA quick_check`, not `integrity_check`.**
   Both walk every page and every B-tree, which is what a wrong key fails; the
   full check additionally verifies index sort order against the rows indexed,

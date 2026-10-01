@@ -296,7 +296,9 @@ only when explicitly needed; otherwise they are omitted.
 - **Live writes.** If KakaoTalk rewrites a database mid-read, the read is
   refused (`BUSY`) rather than returning a torn result.
 - **Plaintext.** On Python 3.11+ decryption stays in memory. On 3.10 a
-  temporary file is used and deleted — deletion is not secure erasure.
+  temporary file is used and deleted — deletion is not secure erasure. One
+  left by a forced exit is removed by the next fallback once its process is
+  provably gone.
 - **Integrity, not authenticity.** SQLite integrity and log checksums are
   verified; SQLCipher's per-page HMAC is not.
 

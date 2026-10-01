@@ -31,10 +31,12 @@ a few dozen pages.  The overlay is given up on rather than defended: a log that
 moved again, or one that describes a database these pages cannot assemble, just
 falls back to a full decryption.
 
-*Exposure.*  On Python 3.11 and newer the plaintext never reaches the disk at
-all, because the image is handed straight to SQLite in memory.  On 3.10 a
-temporary file is still required; it is deleted, but deletion is not secure
-erasure and that limitation is documented rather than hidden.
+*Exposure.*  With SQLite's deserialize support (normally Python 3.11+) the
+plaintext never reaches disk. Otherwise a temporary file is required and
+removed after use. On Windows, abrupt termination can leave a tagged file
+until the next fallback, which removes only verified same-user orphans. Legacy
+untagged files and unverifiable candidates are left alone. Deletion is not
+secure erasure; upgrading Python avoids this plaintext disk exposure.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ import os
 import sqlite3
 import tempfile
 import time
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -339,22 +342,34 @@ def _connect(image: bytes) -> sqlite3.Connection:
     connection.close()
 
     # Python 3.10 has no deserialize, so the image has to reach SQLite as a file.
-    handle, name = tempfile.mkstemp(suffix=".sqlite3")
+    if hasattr(ctypes, "WinDLL"):
+        # Imported here: it reads ctypes.wintypes, which raises off Windows.
+        from ._snapshot_temp import create as create_plaintext
+
+        handle, name = create_plaintext()
+    else:
+        handle, name = tempfile.mkstemp(suffix=".sqlite3")
     try:
         with os.fdopen(handle, "wb") as plaintext:
             plaintext.write(image)
         on_disk = sqlite3.connect(f"{Path(name).as_uri()}?mode=ro&immutable=1", uri=True)
         try:
             memory = sqlite3.connect(":memory:", check_same_thread=False)
-            on_disk.backup(memory)
-            return memory
+            try:
+                on_disk.backup(memory)
+                return memory
+            except BaseException:
+                memory.close()
+                raise
         finally:
             on_disk.close()
     finally:
         try:
             os.unlink(name)
-        except OSError:
-            pass
+        except OSError as error:
+            warnings.warn(
+                f"Could not remove plaintext snapshot {name}: {error}", RuntimeWarning,
+            )
 
 
 def open_image(image: bytes, label: str) -> sqlite3.Connection:
