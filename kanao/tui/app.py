@@ -22,6 +22,7 @@ import time
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
 from .. import __version__
@@ -40,6 +41,8 @@ from ..model import (
 from ..reader import UNLOCK_SECONDS, Reader
 from . import digest, images
 from .console import CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP, Console, Key, force_size
+from .session import DEFAULT_ACCOUNT, SessionState, load_session
+from .session import save_session as write_session
 from .layout import (
     ELLIPSIS,
     TAB_SEPARATOR,
@@ -196,6 +199,7 @@ class App:
         reader: Reader,
         theme: Optional[Theme] = None,
         sender: Optional["MessageSender"] = None,
+        session_file: Optional[Path] = None,
     ) -> None:
         self.reader = reader
         self.theme = theme if theme is not None else Theme()
@@ -274,6 +278,16 @@ class App:
             tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
         ] = {}
         """Escapes already built, keyed by the box they were built for."""
+        self.session_file = session_file
+        """Where the last launch's switches and tabs are kept, or None to forget them.
+
+        Set only by the command, like the name ledger, so no test reads or
+        writes the person's own file.
+        """
+        self._account = DEFAULT_ACCOUNT
+        """Whose session this is, settled once the catalog has said."""
+        self._restoring = False
+        """Whether saved tabs are being put back, so none of them saves alone."""
 
     @property
     def chat(self) -> Optional[ChatState]:
@@ -293,6 +307,73 @@ class App:
         """Replace every open conversation with this one, or with none."""
         self.chats = [] if value is None else [value]
         self.focus = 0
+
+    # -- session ------------------------------------------------------------
+
+    def restore_session(self) -> None:
+        """Put back the switches and the tabs the last launch left open.
+
+        Called once the catalog has been read, because the file is kept per
+        account and the catalog is what says whose account this is; asking
+        any earlier would mean finding it before the first frame. The SafeBot
+        switch reaches the reader before any tab is read, so each one is read
+        the way it was last shown.
+
+        A saved tab comes back only if its room is still listed and its key
+        is still in memory. A locked room would have to be opened by the
+        client, and starting this screen must never bring a window up, so it
+        is skipped - and drops out of the session the next time it is written,
+        like a room that has gone.
+        """
+        if self.session_file is None:
+            return
+        try:
+            own = self.reader.own_user_id()
+        except KanaoError:
+            own = None
+        self._account = DEFAULT_ACCOUNT if own is None else str(own)
+        saved = load_session(self.session_file, self._account)
+        self.show_timestamps = saved.show_timestamps
+        self.reader.reveal_covered = saved.reveal_covered
+        listed = {room.id: room for room in self.rooms}
+        self._restoring = True
+        try:
+            for room_id in saved.open_room_ids:
+                room = listed.get(room_id)
+                if room is None or not room.readable:
+                    continue
+                try:
+                    self.open_room(room, beside=True)
+                except (KanaoError, sqlite3.Error) as error:
+                    said = error.message if isinstance(error, KanaoError) else str(error)
+                    self.status = f"'{room.title}' 탭을 다시 열지 못했습니다: {said}"
+        finally:
+            self._restoring = False
+        for index, chat in enumerate(self.chats):
+            if chat.room.id == saved.focused_room_id:
+                self.focus = index
+        self.save_session()
+
+    def save_session(self) -> None:
+        """Write down the switches and the open tabs for the next launch.
+
+        Drafts are not among them: unsent text would sit on disk in plain
+        text. A failure is said rather than swallowed, because a session that
+        quietly stops being saved is a restore that quietly stops working.
+        """
+        if self.session_file is None or self._restoring:
+            return
+        front = self.chat
+        state = SessionState(
+            show_timestamps=self.show_timestamps,
+            reveal_covered=self.reader.reveal_covered,
+            open_room_ids=[chat.room.id for chat in self.chats],
+            focused_room_id=None if front is None else front.room.id,
+        )
+        try:
+            write_session(self.session_file, self._account, state)
+        except OSError as error:
+            self._say(f"세션을 저장하지 못했습니다: {error}")
 
     # -- data ---------------------------------------------------------------
 
@@ -499,6 +580,7 @@ class App:
         )
         if already is not None:
             self.focus = already
+            self.save_session()
             return
 
         versions: dict[int, int] = {}
@@ -537,6 +619,7 @@ class App:
             self.focus = len(self.chats) - 1
         else:
             self.chat = opened
+        self.save_session()
 
     def _open_beside(self, chat: ChatState, name: str) -> None:
         """Put another conversation on screen beside the ones already open.
@@ -578,6 +661,7 @@ class App:
         self.chats.pop(index)
         if index <= self.focus:
             self.focus = max(0, self.focus - 1)
+        self.save_session()
 
     def refresh(self, width: int) -> bool:
         """Pick up anything new, for every open conversation.
@@ -1692,6 +1776,7 @@ class App:
         """
         self.show_timestamps = not self.show_timestamps
         chat.notice = "시간 표시 켬" if self.show_timestamps else "시간 표시 끔"
+        self.save_session()
 
     def _toggle_covered(self, chat: ChatState) -> None:
         """Show what SafeBot covered, or cover it again, in every open tab.
@@ -1725,6 +1810,7 @@ class App:
             if self.reader.reveal_covered
             else "세이프봇이 가린 메시지를 다시 가립니다"
         )
+        self.save_session()
 
     def _digest_lines(self, width: int) -> list[str]:
         """Render slices the way OmO renders a reflection: a padded tinted box."""
@@ -2053,6 +2139,7 @@ class App:
         move rather than waiting for the next keystroke.
         """
         self.focus = index % len(self.chats)
+        self.save_session()
         chat = self.chat
         if chat is not None and chat.offset == 0:
             chat.unseen = 0
@@ -2244,6 +2331,7 @@ class App:
             for tab in self.chats:
                 self._remember_seen(tab)
             self.chat = None
+            self.save_session()
         else:
             # The list lives in one place: this line used to carry its own
             # copy, and it had already lost /open, /close and /videos.
@@ -2342,6 +2430,7 @@ class App:
             if any(room.readable for room in self.rooms)
             else "읽을 수 있는 대화방이 없습니다. 방을 골라 enter를 누르면 카카오톡에서 엽니다."
         )
+        self.restore_session()
         due_at = 0.0
         last_key_at = 0.0
         while self.running:
@@ -2363,6 +2452,7 @@ class App:
                 continue
             self.refresh(width)
             due_at = _next_poll_at(time.monotonic(), time.monotonic() - now)
+        self.save_session()
 
 
 def _poll_due(now: float, due_at: float, last_key_at: float, composing: bool) -> bool:

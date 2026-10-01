@@ -189,7 +189,12 @@ def build_parser() -> argparse.ArgumentParser:
     schema = commands.add_parser("schema", help="List tables and columns")
     schema.add_argument("--room-id", type=int)
 
-    commands.add_parser("tui", help="Browse conversations in a terminal interface")
+    tui = commands.add_parser("tui", help="Browse conversations in a terminal interface")
+    tui.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Start without the last session's tabs and switches, and do not save this one",
+    )
 
     serve = commands.add_parser(
         "serve",
@@ -417,7 +422,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return 0
 
     if arguments.command == "tui":
-        return _tui(reader)
+        return _tui(reader, fresh=arguments.fresh)
 
     if arguments.command == "follow":
         return _follow(reader, arguments)
@@ -523,10 +528,11 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _tui(reader: Reader) -> int:
+def _tui(reader: Reader, fresh: bool = False) -> int:
     """Hand the terminal to the browser, restoring it however it ends."""
     from .tui.app import App
     from .tui.console import Console, supports_tui
+    from .tui.session import session_path
     from .tui.theme import Theme, detect_dark_mode
 
     if not supports_tui():
@@ -538,8 +544,10 @@ def _tui(reader: Reader) -> int:
     # Asked once, here, for the same reason the name ledger is opt-in: a
     # default that reads the machine makes every test depend on the machine.
     theme = Theme(dark=detect_dark_mode())
+    # The session file is switched on here for the same reason: this is the
+    # person's own screen, and a test's App must not read or write their tabs.
     with Console() as console:
-        App(reader, theme=theme).run(console)
+        App(reader, theme=theme, session_file=None if fresh else session_path()).run(console)
     return 0
 
 

@@ -79,6 +79,7 @@ the current implementation already satisfies it.
 | `tui/images.py` | Which protocol draws, how a picture is sized, and the CDN fetch |
 | `tui/sixel.py` | PNG → pixels and pixels → sixel, pure standard library |
 | `tui/app.py` | Screen state, rendering, key handling |
+| `tui/session.py` | The switches and open tabs kept between launches |
 | `kakaoread/` | The old name, aliased onto `kanao`; no behaviour of its own |
 
 Dependencies run strictly downward; nothing below `reader.py` imports anything
@@ -1084,7 +1085,7 @@ on a live client, newest 4,000 rows of each readable room.
   itself, and `patch` refuses an attribute that is not there. It does **not**
   model POSIX path comparison, which is the other half of what differs and is
   why the profile walk folds case itself. On Windows nothing is skipped:
-  the suite is 1033 tests with a skip count of zero, and that is the check that
+  the suite is 1082 tests with a skip count of zero, and that is the check that
   a guard has not quietly turned something off.
 
 ## What was taken from the macOS sister project, and what was not
@@ -1124,6 +1125,26 @@ Taken:
   Ported as written — the census and the room list it describes from are the
   same on both sides — and it is live here: three titles collide across the
   272 rooms of the account it was checked against.
+- **The session kept between launches** (`kamado-cli#57`, `#58`, issue #12),
+  from kamado-cli `e106351` and `4bd41e3` onto this repository's `3b39119`.
+  `tui/session.py` keeps `/time`, `/safebot` and the open tabs with their
+  focus in `%LOCALAPPDATA%\kanao-cli\tui_state.json`, filed per account. It
+  holds room ids and two booleans — no title, no name and no draft. Like the
+  name ledger it is opt-in at the constructor: `App(session_file=...)` is set
+  only by `cli._tui`, and `tui --fresh` passes none. The two fixes made over
+  the PR there hold here by construction rather than by code: this screen has
+  no worker queue, so saved tabs open one after another and none can be
+  refused for a full queue; and the reader *is* the SafeBot state, so the
+  switch is set on it before the first tab is read and the two cannot
+  disagree. What did need fitting: the account is `Reader.own_user_id()`,
+  asked once the catalog has been read rather than in the constructor; a
+  saved room that is locked now is skipped, because opening it means the
+  client bringing a window up and starting the screen must not do that — it
+  drops out with the next write, like a room that has gone; restoring writes
+  once, after the last tab; and the temporary file carries the process id,
+  so two interfaces do not write into one, while a refused move (another
+  process holding the file open) is said on the status line. Not taken: the
+  mouse switch, which this build does not have.
 
 Taken later, after being refused twice — **showing photos in the conversation**
 (`kamado-cli#32`). Both of the reasons it was refused turned out to be
