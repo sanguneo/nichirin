@@ -12,6 +12,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from kamado import paths
 from kamado.model import ERASED_PLACEHOLDER
@@ -430,10 +431,9 @@ class BackfillBelowCursorTests(LiveTests):
     The server can backfill an offline receive under a lower logId than rows
     already written, measured as ten such inversions in one live room. The
     watcher asks only for ids above its cursor, so the arrival list never
-    names the row, and it is outside every held id, so the range read over
-    the held window never names it either. The owner's comparison therefore
-    looks below the window's oldest id, and what it finds joins the tab in
-    log-id order.
+    names the row. The owner's range read over the held window does, and what
+    it finds that the tab lacks joins the tab in log-id order. Every test
+    first moves the cursor past the gap the backfill lands in.
     """
 
     def backfill(self, log_id: int, text: str, room_id: int = DIRECT_ROOM) -> None:
@@ -451,30 +451,38 @@ class BackfillBelowCursorTests(LiveTests):
         chat = self.chat() if chat is None else chat
         return [message.text for message in chat.messages]
 
+    def pass_the_gap(self, room_id: int = DIRECT_ROOM, log_id: int = 5010) -> None:
+        self.arrive(log_id, "CURSOR_PAST_THE_GAP", room_id=room_id)
+        self.app.refresh(WIDTH)
+
     def test_a_row_written_below_the_newest_id_reaches_the_tab(self) -> None:
-        self.backfill(4001, "LATE_BACKFILL")
+        self.pass_the_gap()
+        self.backfill(5005, "LATE_BACKFILL")
         self.assertTrue(self.app.refresh(WIDTH))
         self.assertIn("LATE_BACKFILL", self.texts(self.chat()))
 
     def test_the_backfilled_row_joins_at_its_place_in_log_id_order(self) -> None:
-        self.backfill(4001, "LATE_ONE")
-        self.backfill(4002, "LATE_TWO")
+        self.pass_the_gap()
+        self.backfill(5005, "LATE_ONE")
+        self.backfill(5006, "LATE_TWO")
         self.app.refresh(WIDTH)
         ids = [message.id for message in self.chat().messages]
         self.assertEqual(ids, sorted(ids))
-        self.assertEqual(ids[:3], [4001, 4002, 5000])
+        self.assertEqual(ids[-3:], [5005, 5006, 5010])
 
     def test_a_backfill_that_changes_nothing_does_not_redraw(self) -> None:
+        self.pass_the_gap()
+        self.backfill(5005, "LATE_BACKFILL")
         self.app.refresh(WIDTH)
         rendered = self.chat().rendered
-        # The same rows are still below the window on the next move; nothing
-        # new was written, so the tab must not be rebuilt for them again.
-        touch_log(self.root, DIRECT_ROOM, b"moved, nothing new below")
+        # The row is held now; a move with nothing new must not rebuild it.
+        touch_log(self.root, DIRECT_ROOM, b"moved, nothing new")
         self.assertFalse(self.app.refresh(WIDTH))
         self.assertIs(self.chat().rendered, rendered)
 
     def test_an_arrival_above_the_cursor_after_a_backfill_is_not_duplicated(self) -> None:
-        self.backfill(4001, "LATE_BACKFILL")
+        self.pass_the_gap()
+        self.backfill(5005, "LATE_BACKFILL")
         self.app.refresh(WIDTH)
         self.arrive(5400, "ORDINARY_ARRIVAL")
         self.app.refresh(WIDTH)
@@ -482,15 +490,33 @@ class BackfillBelowCursorTests(LiveTests):
         self.assertEqual(texts.count("LATE_BACKFILL"), 1)
         self.assertIn("ORDINARY_ARRIVAL", texts)
 
-    def test_a_backfilled_row_below_another_tab_joins_that_tab(self) -> None:
+    def test_a_backfilled_row_in_another_tab_joins_that_tab(self) -> None:
         self.app.open_room(next(room for room in self.app.rooms if room.id == GROUP_ROOM))
         direct, group = self.app.chats
-        self.backfill(4001, "FOR_THE_DIRECT", room_id=DIRECT_ROOM)
-        self.backfill(6300, "FOR_THE_GROUP", room_id=GROUP_ROOM)
+        self.pass_the_gap(DIRECT_ROOM, 5010)
+        self.pass_the_gap(GROUP_ROOM, 6900)
+        self.backfill(5005, "FOR_THE_DIRECT", room_id=DIRECT_ROOM)
+        self.backfill(6800, "FOR_THE_GROUP", room_id=GROUP_ROOM)
         self.assertTrue(self.app.refresh(WIDTH))
         self.assertIn("FOR_THE_DIRECT", self.texts(direct))
         self.assertNotIn("FOR_THE_GROUP", self.texts(direct))
         self.assertIn("FOR_THE_GROUP", self.texts(group))
+
+    def test_history_under_the_window_is_not_pulled_in_by_a_move(self) -> None:
+        # Under the oldest held id a backfill and history not yet loaded look
+        # the same; only the older-page read may bring either in.
+        with mock.patch("kamado.tui.app.HISTORY_WINDOW", 2):
+            app = App(self.reader, theme=Theme(truecolor=True, enabled=False))
+            app.load_rooms()
+            app.open_room(next(room for room in app.rooms if room.id == DIRECT_ROOM))
+        chat = app.chat
+        assert chat is not None
+        held = [message.id for message in chat.messages]
+        self.assertNotIn(5000, held)
+        self.arrive(5010, "MOVES_THE_ROOM")
+        app.refresh(WIDTH)
+        ids = [message.id for message in chat.messages]
+        self.assertEqual(ids, held + [5010])
 
 
 if __name__ == "__main__":

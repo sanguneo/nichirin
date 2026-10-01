@@ -124,15 +124,14 @@ class Changed:
     versions: tuple
     """``(id, version)`` for each rebuilt message, from the row it was built from."""
     added: tuple = ()
-    """Rows written below the tab's oldest id after the window was read.
+    """Rows written inside the held range after the tab read it.
 
-    The server can lower a row's logId than the ones written before it: an
-    offline receive is backfilled under an id the client had already passed,
-    measured as ten such inversions in one live room. The watcher only asks
-    for ids above the newest it saw, so these rows never arrive as arrivals,
-    and they are outside every held id, so a range read over the held window
-    never names them either. Read again under the oldest held id, they join
-    the transcript here instead of being invisible until the room reopens.
+    The server can write a row under a lower logId than rows already written:
+    an offline receive is backfilled under an id the client had already
+    passed, measured as ten such inversions in one live room. The watcher
+    only asks for ids above the newest it saw, so these rows never arrive as
+    arrivals; they join the transcript here instead of being invisible until
+    the room reopens.
     """
 
 
@@ -150,14 +149,6 @@ class Polled(list):
 
 _ROW_FAILURES = (KamadoError, OSError, sqlite3.Error)
 
-_BACKFILL_PAGE = 50
-"""How many rows below the held window one poll looks at for late backfill.
-
-A backfill burst can be deeper than this; the rest is picked up the next
-move of the room, page by page, the same way the watcher's own catch-up
-pages. Bounding it keeps an idle poll's cost at one indexed read."""
-
-
 def _changes(reader: Reader, room_id: int, held: dict) -> Optional[Changed]:
     """Compare the rows a tab holds with what the database holds now.
 
@@ -166,29 +157,28 @@ def _changes(reader: Reader, room_id: int, held: dict) -> Optional[Changed]:
     it come from the same read, so a change landing in between is caught by
     the next poll rather than filed as seen.
 
-    Below the held window the read is one versioned page, and only rows the
-    tab does not hold are built: a row written under the oldest held id after
-    the window was read is invisible to both the watcher (which asks only for
-    ids above its cursor) and the range read above, so this is the only place
-    it can be seen. Once absorbed, the rows are held by the tab like any
-    other, so the same poll never builds them twice.
+    The same read also names rows the tab does not hold. The window, the
+    arrivals and every older page are contiguous reads under this predicate,
+    so an id inside the held range that the tab lacks was written after it
+    was read - a backfill under an id the watcher's cursor already passed,
+    which only this comparison can see. Under the oldest held id nothing
+    tells such a row from history not yet loaded, so it is left to the
+    older-page read, which asks below that id and finds it there.
     """
     if not held:
         return None
     current = reader.row_versions(room_id, min(held), max(held), include_erased=True)
     removed = {one for one in held if one not in current}
     stale = [one for one, version in held.items() if one in current and version != current[one]]
-    rebuilt, versions = reader.messages_at(room_id, stale, include_erased=True)
+    unseen = sorted(one for one in current if one not in held)
+    rebuilt, versions = reader.messages_at(room_id, stale + unseen, include_erased=True)
+    found = {message.id for message in rebuilt}
     # Gone between the two reads: as removed as a row the first read missed.
-    removed |= set(stale) - {message.id for message in rebuilt}
-    below = reader.row_versions_below(
-        room_id, min(held), _BACKFILL_PAGE, include_erased=True
-    )
-    unseen = sorted(one for one in below if one not in held)
-    added, below_versions = reader.messages_at(room_id, unseen, include_erased=True)
+    removed |= set(stale) - found
+    added = [message for message in rebuilt if message.id not in held]
+    rebuilt = [message for message in rebuilt if message.id in held]
     if not removed and not rebuilt and not added:
         return None
-    versions.update(below_versions)
     return Changed(frozenset(removed), tuple(rebuilt), tuple(versions.items()), tuple(added))
 
 

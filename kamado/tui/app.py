@@ -889,10 +889,10 @@ class App:
         it: the digest, the export. The owner thread compared the held rows
         and read again only those that changed; this puts the answer on screen.
 
-        Rows written under the oldest held id (the server backfills an offline
-        receive under an id already passed) join here too, inserted at their
-        place in log-id order rather than appended, so the transcript keeps
-        the room's order and the window read stays the one read.
+        Rows written inside the held range after it was read (the server
+        backfills an offline receive under an id already passed) join here
+        too, inserted at their place in log-id order rather than appended, so
+        the transcript keeps the room's order.
         """
         chat.versions.update(change.versions)
         by_id = {message.id: message for message in chat.messages}

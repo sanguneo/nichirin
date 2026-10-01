@@ -249,6 +249,24 @@ code that depends on them without re-checking will quietly break.
   the interface keeps its reader, so somebody who joined after a room was
   opened stayed `User <id>`. `Reader._sender_name` re-reads the map at most
   every `NAME_RETRY_SECONDS`, then takes the room's join-feed nickname.
+- **`NTChatRoom` holds a row that is not a room.** `chatId = -2`, `type =
+  10001`, `hidden = 1`, no messages: the client's thread-notification
+  bookkeeping, whose `lastUpdatedAt` it keeps refreshing, so it sorted first
+  as "Room -2" (#60). `rooms()` and `count_rooms()` share one filter —
+  `chatId > 0`, and `hidden = 0` where the column exists — and `room()` and
+  `resolve()` go through `rooms()`, so a hidden room is not found by id
+  either. Measured 62 rooms to 61 on the live account.
+- **A row can be written under an id the room already passed.** An offline
+  receive is backfilled at a lower logId (ten inversions measured in one
+  room), and the watcher only asks above its cursor (#62). The tab's held
+  window, its arrivals and its older pages are contiguous reads under one
+  predicate, so `tui/worker._changes` reports an id inside
+  `min(held)..max(held)` that the tab lacks as `Changed.added`, from the
+  range read it already makes. Below the oldest held id a backfill and
+  history not yet loaded are indistinguishable; reading a page there on every
+  move pulled 50 rows of history into the tab each time, so that row is left
+  to the older-page read. `follow` and `/stream` still miss it: moving their
+  cursor is the shared-contract change, not a TUI fix.
 
 ### What else a room records: 공감, edits, notices, files, SafeBot
 
