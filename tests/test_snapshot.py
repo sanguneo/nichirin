@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import sqlite3
 import struct
@@ -875,6 +876,11 @@ class _NoDeserialize(sqlite3.Connection):
     deserialize = None
 
 
+class _WithDeserialize(sqlite3.Connection):
+    def deserialize(self, *_arguments: object) -> None:
+        raise AssertionError("only its presence is asked about")
+
+
 def _connections_like(factory: type) -> ContextManager[object]:
     real_connect = sqlite3.connect
     return patch(
@@ -976,6 +982,25 @@ class OrphanSweepTests(unittest.TestCase):
             cache.invalidate(database)
             cache.connect(database, geometry())
         sweep.assert_called_once_with()
+
+
+class FallbackWarningTests(unittest.TestCase):
+    def warn(self) -> str:
+        stream = io.StringIO()
+        snapshot.warn_if_plaintext_fallback(stream)
+        return stream.getvalue()
+
+    def test_an_interpreter_without_deserialize_is_warned_about_once(self) -> None:
+        with patch.object(snapshot, "_warned", []), _connections_like(_NoDeserialize):
+            first, second = self.warn(), self.warn()
+        self.assertEqual(len(first.splitlines()), 1)
+        self.assertIn("deserialize", first)
+        self.assertIn("3.11+", first)
+        self.assertEqual(second, "")
+
+    def test_an_interpreter_with_deserialize_says_nothing(self) -> None:
+        with patch.object(snapshot, "_warned", []), _connections_like(_WithDeserialize):
+            self.assertEqual(self.warn(), "")
 
 
 if __name__ == "__main__":

@@ -33,13 +33,14 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Optional, Protocol
+from typing import Final, Optional, Protocol, TextIO
 
 from . import page as pages, wal as wal_format
 from .cipher import Geometry
@@ -653,6 +654,7 @@ _TEMP_NAME: Final = re.compile(r"kamado-(?:plain|clone|wal)-([0-9]+)-")
 
 _swept: "list[bool]" = []
 _sweep_lock = threading.Lock()
+_warned: "list[bool]" = []
 
 
 def _temp_prefix(kind: str) -> str:
@@ -713,6 +715,34 @@ def _sweep_once() -> None:
             return
         _swept.append(True)
     sweep_orphans()
+
+
+def plaintext_reaches_disk() -> bool:
+    """Whether this interpreter's SQLite lacks ``deserialize``."""
+    probe = sqlite3.connect(":memory:")
+    try:
+        return getattr(probe, "deserialize", None) is None
+    finally:
+        probe.close()
+
+
+def warn_if_plaintext_fallback(stream: Optional[TextIO] = None) -> bool:
+    """Say once, on stderr, that this interpreter takes the slow disk path.
+
+    A long-running ``serve`` refreshes its snapshot on every commit, so the
+    temporary-file path costs far more there than in a single command.
+    """
+    if _warned or not plaintext_reaches_disk():
+        return False
+    _warned.append(True)
+    version = ".".join(str(part) for part in sys.version_info[:3])
+    print(
+        f"warning: Python {version} lacks sqlite3 deserialize; snapshot refresh "
+        "writes plaintext temp files and is several times slower. Use Python 3.11+.",
+        file=stream if stream is not None else sys.stderr,
+        flush=True,
+    )
+    return True
 
 
 def open_image(image: bytes, label: str) -> sqlite3.Connection:

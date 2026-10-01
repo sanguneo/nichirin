@@ -8,6 +8,7 @@ and falls through to the runtime handler when both pieces are present.
 
 from __future__ import annotations
 
+import io
 import os
 import unittest
 from unittest import mock
@@ -63,6 +64,15 @@ class ServeArgumentTests(unittest.TestCase):
 class ServeRuntimeTests(unittest.TestCase):
     """End-to-end: parser -> run() with stubs covering the live side."""
 
+    def setUp(self) -> None:
+        # Starting sweeps the real temporary directory and may warn on stderr;
+        # neither belongs to these tests unless one asks for it.
+        for target, value in (("kamado.snapshot._warned", [True]),
+                              ("kamado.snapshot.sweep_orphans", mock.Mock())):
+            patcher = mock.patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _args(self, *extra):
         return cli.build_parser().parse_args(["serve", *extra])
 
@@ -108,6 +118,21 @@ class ServeRuntimeTests(unittest.TestCase):
             status = cli.run(arguments, mock.Mock())
         self.assertEqual(status, 0)
         self.assertEqual(captured["token"], "flag-token-1234567890")
+
+    def test_starting_warns_about_the_disk_path_and_sweeps_orphans(self) -> None:
+        arguments = self._args("--token", "flag-token-1234567890")
+        stderr = io.StringIO()
+        with mock.patch("kamado.snapshot._warned", []), \
+                mock.patch("kamado.snapshot.plaintext_reaches_disk", return_value=True), \
+                mock.patch("kamado.snapshot.sweep_orphans") as sweep, \
+                mock.patch("sys.stderr", stderr), \
+                mock.patch("kamado.serve.run", return_value=0):
+            status = cli.run(arguments, mock.Mock())
+        self.assertEqual(status, 0)
+        sweep.assert_called_once_with()
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("lacks sqlite3 deserialize", lines[0])
 
 
 if __name__ == "__main__":
