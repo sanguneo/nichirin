@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from importlib import import_module
 from pathlib import Path
+from typing import ContextManager
 from unittest.mock import patch
 
 from kamado import snapshot
@@ -866,6 +867,115 @@ class CacheTests(_Fixture):
         cache.connect(other, geometry())
         with self.assertRaises(sqlite3.ProgrammingError):
             first.execute("SELECT 1")
+
+
+class _NoDeserialize(sqlite3.Connection):
+    """A connection shaped like Python 3.9/3.10's, whatever runs the suite."""
+
+    deserialize = None
+
+
+def _connections_like(factory: type) -> ContextManager[object]:
+    real_connect = sqlite3.connect
+    return patch(
+        "kamado.snapshot.sqlite3.connect",
+        side_effect=lambda *a, **k: real_connect(*a, factory=factory, **k),
+    )
+
+
+def _dead_pid() -> int:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+class OrphanSweepTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+
+    def test_only_copies_named_after_a_dead_pid_are_removed(self) -> None:
+        dead, alive = _dead_pid(), os.getpid()
+        doomed_file = self.root / f"kamado-plain-{dead}-a1.sqlite3"
+        doomed_file.write_bytes(b"plain")
+        doomed_dir = self.root / f"kamado-clone-{dead}-b2"
+        doomed_dir.mkdir()
+        (doomed_dir / "KakaoTalk.edb").write_bytes(b"clone")
+        kept = [
+            self.root / f"kamado-plain-{alive}-c3.sqlite3",
+            # Not ours to signal: PermissionError counts as alive.
+            self.root / "kamado-wal-1-d4.sqlite3",
+            self.root / "tmpe5.sqlite3",
+            self.root / "kamado-f6",
+            self.root / "kamado-cli-test-g7",
+        ]
+        for path in kept:
+            path.write_bytes(b"keep")
+
+        removed = snapshot.sweep_orphans(self.root)
+
+        self.assertEqual(sorted(removed), sorted([doomed_file, doomed_dir]))
+        self.assertFalse(doomed_file.exists())
+        self.assertFalse(doomed_dir.exists())
+        for path in kept:
+            self.assertTrue(path.exists(), path.name)
+
+    def test_a_symlink_is_removed_without_touching_what_it_points_at(self) -> None:
+        target = self.root / "elsewhere.txt"
+        target.write_bytes(b"keep")
+        link = self.root / f"kamado-plain-{_dead_pid()}-h8.sqlite3"
+        link.symlink_to(target)
+
+        snapshot.sweep_orphans(self.root)
+
+        self.assertFalse(os.path.lexists(link))
+        self.assertEqual(target.read_bytes(), b"keep")
+
+    def test_a_missing_directory_removes_nothing(self) -> None:
+        self.assertEqual(snapshot.sweep_orphans(self.root / "absent"), [])
+
+    def test_the_fallback_names_its_plaintext_after_this_process(self) -> None:
+        source = self.root / "plain.db"
+        pages = build_database(source, ROWS_A)
+        created: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def recording(*args, **kwargs):
+            handle, name = real_mkstemp(*args, **kwargs)
+            created.append(name)
+            return handle, name
+
+        with _connections_like(_NoDeserialize), patch(
+            "kamado.snapshot.tempfile.mkstemp", side_effect=recording
+        ):
+            connection = snapshot._connect(b"".join(pages))
+        self.addCleanup(connection.close)
+
+        self.assertEqual(len(created), 1)
+        self.assertTrue(
+            Path(created[0]).name.startswith(f"kamado-plain-{os.getpid()}-"), created[0]
+        )
+        self.assertFalse(os.path.exists(created[0]))
+        self.assertEqual(
+            connection.execute("SELECT body FROM note WHERE id = 1").fetchone()[0], "alpha 1"
+        )
+
+    def test_the_first_snapshot_sweeps_once_per_process(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        database = Path(directory.name) / "fixture.edb"
+        database.write_bytes(encrypt_pages(build_database(self.root / "a.db", ROWS_A)))
+        cache = SnapshotCache()
+        self.addCleanup(cache.close)
+
+        with patch.object(snapshot, "_swept", []), patch(
+            "kamado.snapshot.sweep_orphans"
+        ) as sweep:
+            cache.connect(database, geometry())
+            cache.invalidate(database)
+            cache.connect(database, geometry())
+        sweep.assert_called_once_with()
 
 
 if __name__ == "__main__":

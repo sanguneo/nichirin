@@ -29,6 +29,7 @@ erasure and that limitation is documented rather than hidden.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -627,7 +628,9 @@ def _connect(image: bytes) -> sqlite3.Connection:
     connection.close()
 
     # Python 3.10 has no deserialize, so the image has to reach SQLite as a file.
-    handle, name = tempfile.mkstemp(suffix=".sqlite3")
+    # The name carries our pid so a run killed before ``finally`` leaves a file
+    # the next run can tell is orphaned; see sweep_orphans.
+    handle, name = tempfile.mkstemp(prefix=_temp_prefix("plain"), suffix=".sqlite3")
     try:
         with os.fdopen(handle, "wb") as plaintext:
             plaintext.write(image)
@@ -643,6 +646,73 @@ def _connect(image: bytes) -> sqlite3.Connection:
             os.unlink(name)
         except OSError:
             pass
+
+
+_TEMP_NAME: Final = re.compile(r"kamado-(?:plain|clone|wal)-([0-9]+)-")
+"""Temporary files and directories this module names after its own pid."""
+
+_swept: "list[bool]" = []
+_sweep_lock = threading.Lock()
+
+
+def _temp_prefix(kind: str) -> str:
+    return f"kamado-{kind}-{os.getpid()}-"
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether *pid* names a process; one we may not signal counts as alive."""
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def sweep_orphans(directory: Optional[Path] = None) -> list[Path]:
+    """Remove temporary copies left behind by a kamado run that was killed.
+
+    ``finally`` does not run under SIGKILL or a launchd restart, so the
+    plaintext file of the 3.9/3.10 path and the clone staging directories can
+    outlive their process. Only names carrying a pid that no longer exists are
+    removed, and only entries this user owns; a symlink is never followed.
+    Returns what was removed.
+    """
+    root = Path(directory) if directory is not None else Path(tempfile.gettempdir())
+    removed: list[Path] = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return removed
+    uid = os.getuid()
+    for name in names:
+        match = _TEMP_NAME.match(name)
+        if match is None or _pid_alive(int(match.group(1))):
+            continue
+        path = root / name
+        try:
+            status = os.lstat(path)
+            if status.st_uid != uid:
+                continue
+            if path.is_symlink() or not path.is_dir():
+                os.unlink(path)
+            else:
+                shutil.rmtree(path)
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def _sweep_once() -> None:
+    with _sweep_lock:
+        if _swept:
+            return
+        _swept.append(True)
+    sweep_orphans()
 
 
 def open_image(image: bytes, label: str) -> sqlite3.Connection:
@@ -764,6 +834,7 @@ class SnapshotCache:
             self._entries.move_to_end(database)
             return cached.connection
 
+        _sweep_once()
         if (
             cached is not None
             and cached.base is not None
@@ -840,7 +911,7 @@ class SnapshotCache:
     ) -> bytes:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
-            staging = Path(tempfile.mkdtemp(prefix="kamado-wal-"))
+            staging = Path(tempfile.mkdtemp(prefix=_temp_prefix("wal")))
             try:
                 frozen = clone_snapshot(database, staging)
                 return update_image_with_wal(base, frozen, geometry)
@@ -860,7 +931,7 @@ class SnapshotCache:
     def _decrypt_with_retry(self, database: Path, geometry: Geometry) -> bytes:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
-            staging = Path(tempfile.mkdtemp(prefix="kamado-"))
+            staging = Path(tempfile.mkdtemp(prefix=_temp_prefix("clone")))
             try:
                 # Read a copy-on-write clone rather than the live file: the
                 # account is one large database a running client rewrites
