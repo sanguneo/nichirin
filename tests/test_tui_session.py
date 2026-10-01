@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
-from pathlib import Path
+from unittest import mock
 
 from kamado.cli import build_parser
+from kamado.tui.console import MOUSE_VARIABLE
 from kamado.tui.theme import Theme
 from kamado.tui.app import App
 from kamado.tui.session import (
@@ -14,7 +16,7 @@ from kamado.tui.session import (
     state_file_path,
 )
 from tests.fixtures import DIRECT_ROOM, GROUP_ROOM
-from tests.test_tui_worker import FakeSender, HEIGHT, WAIT, WIDTH, WorkerCase
+from tests.test_tui_worker import FakeSender, WAIT, WIDTH, WorkerCase
 
 
 class TuiSessionStoreTests(unittest.TestCase):
@@ -110,19 +112,15 @@ class TuiAppSessionIntegrationTests(WorkerCase):
             environment=self.env,
         )
         self.assertFalse(app.show_timestamps)
-        self.assertFalse(app.mouse_clicks)
-        self.assertEqual(app._pending_restore_room_ids, [DIRECT_ROOM, GROUP_ROOM])
-        self.assertEqual(app._pending_restore_focus_id, GROUP_ROOM)
+        self.assertEqual(app._restore_ids, [DIRECT_ROOM, GROUP_ROOM])
+        self.assertEqual(app._restore_focus, GROUP_ROOM)
 
-        app.load_rooms()
-        self.assertTrue(app._pump(WIDTH, timeout=WAIT))
+        self._settle_restore(app)
 
-        while len(app.chats) < 2:
-            self.assertTrue(app._pump(WIDTH, timeout=WAIT))
-
-        self.assertEqual(len(app.chats), 2)
         self.assertEqual([c.room.id for c in app.chats], [DIRECT_ROOM, GROUP_ROOM])
-        self.assertEqual(app.chat.room.id, GROUP_ROOM)
+        chat = app.chat
+        assert chat is not None
+        self.assertEqual(chat.room.id, GROUP_ROOM)
 
     def test_app_fresh_mode_ignores_saved_session(self) -> None:
         user_id = 9999
@@ -143,7 +141,7 @@ class TuiAppSessionIntegrationTests(WorkerCase):
             environment=self.env,
         )
         self.assertTrue(app.show_timestamps)
-        self.assertEqual(app._pending_restore_room_ids, [])
+        self.assertEqual(app._restore_ids, [])
 
         app.load_rooms()
         self.assertTrue(app._pump(WIDTH, timeout=WAIT))
@@ -176,10 +174,83 @@ class TuiAppSessionIntegrationTests(WorkerCase):
         self.assertEqual(loaded.open_room_ids, [DIRECT_ROOM])
         self.assertEqual(loaded.focused_room_id, DIRECT_ROOM)
 
-        app.close_tab(app.chats[0]) if hasattr(app, "close_tab") else app._leave_room(app.chats[0])
+        app._leave_room(app.chats[0])
         loaded = load_session(user_id=user_id, environment=self.env)
         self.assertEqual(loaded.open_room_ids, [])
         self.assertIsNone(loaded.focused_room_id)
+
+    def _restoring_app(self, state: TuiSessionState) -> App:
+        save_session(state, user_id=9999, environment=self.env)
+        return App(
+            None,
+            theme=Theme(truecolor=True, enabled=False),
+            sender=self.sender,
+            db=self.worker,
+            restore=True,
+            user_id=9999,
+            environment=self.env,
+        )
+
+    def _settle_restore(self, app: App) -> int:
+        """Pump until every saved tab has been answered; return the most in flight.
+
+        Each pump waits, bounded, for an answer that is known to be owed.
+        """
+        app.load_rooms()
+        most = 0
+        while not app._catalogued or app._restoring is not None or app._restore_ids:
+            app._pump(WIDTH, timeout=WAIT)
+            most = max(most, len(app._opening))
+        return most
+
+    def test_restore_asks_for_one_saved_tab_at_a_time(self) -> None:
+        app = self._restoring_app(
+            TuiSessionState(open_room_ids=[DIRECT_ROOM, GROUP_ROOM], focused_room_id=DIRECT_ROOM)
+        )
+        self.assertLessEqual(self._settle_restore(app), 1)
+        self.assertEqual([c.room.id for c in app.chats], [DIRECT_ROOM, GROUP_ROOM])
+        chat = app.chat
+        assert chat is not None
+        self.assertEqual(chat.room.id, DIRECT_ROOM)
+        loaded = load_session(user_id=9999, environment=self.env)
+        self.assertEqual(loaded.open_room_ids, [DIRECT_ROOM, GROUP_ROOM])
+        self.assertEqual(loaded.focused_room_id, DIRECT_ROOM)
+
+    def test_restore_skips_a_room_that_is_gone(self) -> None:
+        app = self._restoring_app(
+            TuiSessionState(open_room_ids=[424242, GROUP_ROOM], focused_room_id=424242)
+        )
+        self._settle_restore(app)
+        self.assertEqual([c.room.id for c in app.chats], [GROUP_ROOM])
+        loaded = load_session(user_id=9999, environment=self.env)
+        self.assertEqual(loaded.open_room_ids, [GROUP_ROOM])
+
+    def test_saved_safebot_setting_reaches_the_reader(self) -> None:
+        app = self._restoring_app(
+            TuiSessionState(reveal_covered=True, open_room_ids=[DIRECT_ROOM])
+        )
+        self.assertFalse(app.reveal_covered)
+        self._settle_restore(app)
+        # Only a settled REVEAL job sets this, and that job switched the reader.
+        self.assertTrue(app.reveal_covered)
+
+    def test_mouse_variable_outranks_the_saved_toggle(self) -> None:
+        with mock.patch.dict(os.environ, {MOUSE_VARIABLE: "0"}):
+            app = self._restoring_app(TuiSessionState(mouse_clicks=True))
+        self.assertFalse(app.mouse_clicks)
+
+    def test_a_failed_save_is_said(self) -> None:
+        app = self._restoring_app(TuiSessionState())
+        with mock.patch(
+            "kamado.tui.app.save_session", side_effect=PermissionError("denied")
+        ):
+            app._toggle_timestamps()
+        self.assertIn("세션을 저장하지 못했습니다", app.status)
+
+    def test_without_restore_no_account_is_looked_up(self) -> None:
+        with mock.patch("kamado.tui.app.current_user_id") as looked_up:
+            App(None, theme=Theme(truecolor=True, enabled=False), db=self.worker)
+        looked_up.assert_not_called()
 
     def test_cli_parser_fresh_flag(self) -> None:
         parser = build_parser()

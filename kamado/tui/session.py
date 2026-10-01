@@ -69,11 +69,18 @@ def state_file_path(
 def current_user_id(
     environment: os._Environ[str] | dict[str, str] | None = None,
 ) -> Optional[int]:
-    try:
-        from .. import derive, keyring
+    """The account id ``status`` last resolved, or ``None`` when none is cached.
 
+    Only the cached id is read: recovering it from the preferences is a
+    multi-core search that has no place in starting the interface. Without one
+    the session is filed under ``"default"``.
+    """
+    from .. import derive, keyring
+    from ..errors import KamadoError
+
+    try:
         return keyring._remembered_id(environment, derive.platform_uuid())
-    except Exception:
+    except KamadoError:
         return None
 
 
@@ -130,12 +137,11 @@ def save_session(
         "accounts": accounts,
     }
 
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(".tmp")
-        temp_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        temp_path.replace(path)
-    except OSError:
-        pass
+    # An OSError is the caller's to report: a session that silently stops
+    # being saved is a restore that silently stops working.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    temp_path.replace(path)
