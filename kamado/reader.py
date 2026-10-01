@@ -985,6 +985,26 @@ class Reader:
         ).fetchall()
         return {int(row[0]): _version(row) for row in rows}
 
+    def row_versions_below(
+        self, room_id: int, before_id: int, limit: int, include_erased: bool = False
+    ) -> dict[int, int]:
+        """Versions for the *limit* rows just under *before_id*, newest first.
+
+        The counterpart the held-window read needs for backfill: the client
+        can write a row under an id the room already passed (an offline
+        receive lands at a lower logId than rows written since), and a range
+        over the held ids cannot see it. Cutting from the newest end below
+        *before_id* keeps the read bounded however deep the room's history.
+        """
+        selected, deleted = self._message_query(include_erased)
+        rows = self.connection().execute(
+            f"SELECT {selected} FROM {MESSAGE_TABLE} "
+            f"WHERE chatId = ? AND {deleted} AND logId < ? "
+            f"ORDER BY logId DESC LIMIT ?",
+            (room_id, before_id, limit),
+        ).fetchall()
+        return {int(row[0]): _version(row) for row in rows}
+
     def messages_at(
         self,
         room_id: int,

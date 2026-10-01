@@ -888,6 +888,11 @@ class App:
         replaced - stayed on screen as it was, and so did anything built from
         it: the digest, the export. The owner thread compared the held rows
         and read again only those that changed; this puts the answer on screen.
+
+        Rows written under the oldest held id (the server backfills an offline
+        receive under an id already passed) join here too, inserted at their
+        place in log-id order rather than appended, so the transcript keeps
+        the room's order and the window read stays the one read.
         """
         chat.versions.update(change.versions)
         by_id = {message.id: message for message in chat.messages}
@@ -897,17 +902,38 @@ class App:
             for message in change.rebuilt
             if message.id in by_id and by_id[message.id] != message
         }
-        if not removed and not rebuilt:
+        added = tuple(m for m in change.added if m.id not in by_id)
+        if not removed and not rebuilt and not added:
             # A row whose version was simply not known yet - an arrival, or a
             # window just opened - says nothing new; the screen stays as it is.
             return False
 
         anchor = self._bottom_anchor(chat, width) if chat.offset > 0 else None
-        chat.messages = [
+        kept = [
             rebuilt.get(message.id, message)
             for message in chat.messages
             if message.id not in removed
         ]
+        if added:
+            # Backfilled rows are merged into log-id order; both lists are
+            # ordered, so one merge keeps each room's internal order, which is
+            # what a cursor resumes from.
+            extra = sorted(added, key=lambda m: m.id)
+            merged: list = []
+            i = j = 0
+            while i < len(kept) and j < len(extra):
+                if extra[j].id < kept[i].id:
+                    merged.append(extra[j])
+                    j += 1
+                else:
+                    merged.append(kept[i])
+                    i += 1
+            merged.extend(kept[i:])
+            merged.extend(extra[j:])
+            kept = merged
+            for message in added:
+                self.palette.hue(message.sender)
+        chat.messages = kept
         for one in removed | set(rebuilt):
             chat.feeds.pop(one, None)
         for one in removed:

@@ -123,6 +123,17 @@ class Changed:
     """Held messages read again because their row changed, or was not known."""
     versions: tuple
     """``(id, version)`` for each rebuilt message, from the row it was built from."""
+    added: tuple = ()
+    """Rows written below the tab's oldest id after the window was read.
+
+    The server can lower a row's logId than the ones written before it: an
+    offline receive is backfilled under an id the client had already passed,
+    measured as ten such inversions in one live room. The watcher only asks
+    for ids above the newest it saw, so these rows never arrive as arrivals,
+    and they are outside every held id, so a range read over the held window
+    never names them either. Read again under the oldest held id, they join
+    the transcript here instead of being invisible until the room reopens.
+    """
 
 
 class Polled(list):
@@ -139,6 +150,13 @@ class Polled(list):
 
 _ROW_FAILURES = (KamadoError, OSError, sqlite3.Error)
 
+_BACKFILL_PAGE = 50
+"""How many rows below the held window one poll looks at for late backfill.
+
+A backfill burst can be deeper than this; the rest is picked up the next
+move of the room, page by page, the same way the watcher's own catch-up
+pages. Bounding it keeps an idle poll's cost at one indexed read."""
+
 
 def _changes(reader: Reader, room_id: int, held: dict) -> Optional[Changed]:
     """Compare the rows a tab holds with what the database holds now.
@@ -147,6 +165,13 @@ def _changes(reader: Reader, room_id: int, held: dict) -> Optional[Changed]:
     was never known - is read again. The version and the message built from
     it come from the same read, so a change landing in between is caught by
     the next poll rather than filed as seen.
+
+    Below the held window the read is one versioned page, and only rows the
+    tab does not hold are built: a row written under the oldest held id after
+    the window was read is invisible to both the watcher (which asks only for
+    ids above its cursor) and the range read above, so this is the only place
+    it can be seen. Once absorbed, the rows are held by the tab like any
+    other, so the same poll never builds them twice.
     """
     if not held:
         return None
@@ -156,9 +181,15 @@ def _changes(reader: Reader, room_id: int, held: dict) -> Optional[Changed]:
     rebuilt, versions = reader.messages_at(room_id, stale, include_erased=True)
     # Gone between the two reads: as removed as a row the first read missed.
     removed |= set(stale) - {message.id for message in rebuilt}
-    if not removed and not rebuilt:
+    below = reader.row_versions_below(
+        room_id, min(held), _BACKFILL_PAGE, include_erased=True
+    )
+    unseen = sorted(one for one in below if one not in held)
+    added, below_versions = reader.messages_at(room_id, unseen, include_erased=True)
+    if not removed and not rebuilt and not added:
         return None
-    return Changed(frozenset(removed), tuple(rebuilt), tuple(versions.items()))
+    versions.update(below_versions)
+    return Changed(frozenset(removed), tuple(rebuilt), tuple(versions.items()), tuple(added))
 
 
 @dataclass
