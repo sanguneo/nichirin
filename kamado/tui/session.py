@@ -15,6 +15,7 @@ _STATE_FILE = "tui_state.json"
 @dataclass
 class TuiSessionState:
     show_timestamps: bool = True
+    show_status: bool = True
     mouse_clicks: bool = field(default_factory=mouse_default)
     reveal_covered: bool = False
     open_room_ids: list[int] = field(default_factory=list)
@@ -23,6 +24,7 @@ class TuiSessionState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "show_timestamps": self.show_timestamps,
+            "show_status": self.show_status,
             "mouse_clicks": self.mouse_clicks,
             "reveal_covered": self.reveal_covered,
             "open_room_ids": self.open_room_ids,
@@ -32,6 +34,7 @@ class TuiSessionState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TuiSessionState":
         show_timestamps = bool(data.get("show_timestamps", True))
+        show_status = bool(data.get("show_status", True))
         mouse_clicks = bool(data.get("mouse_clicks", mouse_default()))
         reveal_covered = bool(data.get("reveal_covered", False))
 
@@ -53,6 +56,7 @@ class TuiSessionState:
 
         return cls(
             show_timestamps=show_timestamps,
+            show_status=show_status,
             mouse_clicks=mouse_clicks,
             reveal_covered=reveal_covered,
             open_room_ids=open_room_ids,

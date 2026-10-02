@@ -67,6 +67,7 @@ from .console import (
     CLEAR_BOX,
     SELECT_MODE,
     SHOW_PHOTO,
+    TOGGLE_STATUS,
     TOGGLE_TIMESTAMP,
     Console,
     Key,
@@ -311,6 +312,8 @@ class App:
         """
         self.show_timestamps = True
         """Whether timestamps are shown on each message in the transcript."""
+        self.show_status = True
+        """Whether the bottom status line is shown in the chat screen."""
         self.reveal_covered = False
         """Whether the owner's reader was last told to show what SafeBot covered.
 
@@ -331,6 +334,7 @@ class App:
                 # Set on purpose, the variable outranks what was last toggled.
                 self.mouse_clicks = saved.mouse_clicks
             self.show_timestamps = saved.show_timestamps
+            self.show_status = saved.show_status
             self._restore_reveal = saved.reveal_covered
             self._restore_ids = list(saved.open_room_ids)
             self._restore_focus = saved.focused_room_id
@@ -544,6 +548,7 @@ class App:
         open_ids = [chat.room.id for chat in self.chats]
         state = TuiSessionState(
             show_timestamps=self.show_timestamps,
+            show_status=self.show_status,
             mouse_clicks=self.mouse_clicks,
             reveal_covered=self.reveal_covered,
             open_room_ids=open_ids,
@@ -1261,7 +1266,8 @@ class App:
         ]
 
         composer, (caret_row, caret_col) = self._composer_lines(width)
-        body_height = max(1, height - len(lines) - len(composer) - 1)
+        footer_height = 1 if self.show_status else 0
+        body_height = max(1, height - len(lines) - len(composer) - footer_height)
         rows = max(1, body_height)
 
         # Recorded before the transcript is built: a picture's reserved rows are
@@ -1289,12 +1295,13 @@ class App:
             # keeps whatever was in them, and a frame that leaves them out
             # shows the one before it through the gaps.
             lines.append(" " * width)
-        while len(lines) < height - len(composer) - 1:
+        while len(lines) < height - len(composer) - footer_height:
             lines.append("")
 
         self.cursor = (len(lines) + 1 + caret_row, caret_col)
         lines.extend(composer)
-        lines.append(self._footer_chat(width, len(body)))
+        if self.show_status:
+            lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
 
     def _tab_strip(self, width: int) -> str:
@@ -2271,11 +2278,13 @@ class App:
             ("body", "tab / ⇧tab     열린 대화방 탭 전환"),
             ("body", "^P             최신 사진 미리보기 토글"),
             ("body", "^T             타임스탬프 표시 / 숨기기 토글"),
+            ("body", "^S             하단 상태줄 표시 / 숨기기 토글"),
             ("body", "^G             마우스 클릭 / 텍스트 선택 모드 전환"),
             ("", ""),
             ("head", "슬래시 명령어"),
             ("body", "/help          이 도움말 화면 표시"),
             ("body", "/time          타임스탬프 표시 / 숨기기 토글"),
+            ("body", "/status        하단 상태줄 표시 / 숨기기 토글"),
             ("body", "/open <이름>   대화방을 새 탭으로 열기"),
             ("body", "/close         현재 대화방 탭 닫기"),
             ("body", "/sum <구간>    최근 대화 요약 (예: /sum 30m, /sum 2h)"),
@@ -2300,6 +2309,16 @@ class App:
         for tab in self.chats:
             tab.rendered = None
         notice = "시간 표시 켬" if self.show_timestamps else "시간 표시 끔"
+        self.status = notice
+        target = chat or self.chat
+        if target is not None:
+            self._passing_notice(target, notice)
+        self.save_session()
+
+    def _toggle_status(self, chat: Optional[ChatState] = None) -> None:
+        """Toggle bottom status line visibility in the chat screen."""
+        self.show_status = not self.show_status
+        notice = "상태줄 표시 켬" if self.show_status else "상태줄 표시 끔"
         self.status = notice
         target = chat or self.chat
         if target is not None:
@@ -2725,6 +2744,8 @@ class App:
                 self._toggle_newest_photo(chat)
             elif text == TOGGLE_TIMESTAMP:
                 self._toggle_timestamps(chat)
+            elif text == TOGGLE_STATUS:
+                self._toggle_status(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -3200,6 +3221,8 @@ class App:
             self._toggle_covered(chat)
         elif name in ("time", "timestamp", "timestamps"):
             self._toggle_timestamps(chat)
+        elif name in ("status", "footer"):
+            self._toggle_status(chat)
         elif name in ("help", "?"):
             self._show_help(chat)
         elif name in ("q", "quit", "exit"):
@@ -3212,7 +3235,7 @@ class App:
             chat.notice = (
                 f"알 수 없는 명령: /{name}  "
                 "(사용 가능: /help · /open 방 · /close · /sum 30m · /older · "
-                "/real 닉 · /time · /photo · /notice · /files · /links · /photos · /videos · "
+                "/real 닉 · /time · /status · /photo · /notice · /files · /links · /photos · /videos · "
                 "/edits · /safebot · /export · /quit)"
             )
 
