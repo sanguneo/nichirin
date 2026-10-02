@@ -61,6 +61,8 @@ to offer instead.
 """
 TOGGLE_TIMESTAMP: Final = "\x14"
 """Ctrl+T, which toggles timestamp visibility in the chat transcript."""
+TOGGLE_STATUS: Final = "\x13"
+"""Ctrl+S, which toggles bottom status line visibility in the chat screen."""
 SELECT_MODE: Final = "\x07"
 """Ctrl+G, which hands the mouse to the terminal and takes it back.
 

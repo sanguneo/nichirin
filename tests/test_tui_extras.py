@@ -10,7 +10,7 @@ from tests.platform import require_posix_console
 require_posix_console()
 
 from kamado.tui.app import App
-from kamado.tui.console import Key, TOGGLE_TIMESTAMP
+from kamado.tui.console import Key, TOGGLE_STATUS, TOGGLE_TIMESTAMP
 from kamado.tui.layout import display_width, strip_ansi
 from kamado.tui.theme import Theme
 
@@ -127,6 +127,47 @@ class ExtrasScreenTests(unittest.TestCase):
         frame = self.frame()
         self.assertTrue(any("^T" in line and "타임스탬프" in line for line in frame))
         self.assertTrue(any("/time" in line and "타임스탬프" in line for line in frame))
+        self.app.handle(Key.ESCAPE, "")
+
+    def test_status_bar_toggle_via_shortcut_and_command(self) -> None:
+        # Initial render with status bar
+        frame_initial = self.frame()
+        rows_with_status = self.app._body_rows
+        self.assertTrue(self.app.show_status)
+        self.assertIn("명", frame_initial[-1])
+
+        # Toggle via Ctrl+S
+        self.app.handle("char", TOGGLE_STATUS)
+        self.assertFalse(self.app.show_status)
+        self.assertEqual(self.chat().notice, "상태줄 표시 끔")
+        frame_hidden = self.frame()
+        # Footer line is gone; bottom line is composer's bottom divider rule
+        self.assertTrue(frame_hidden[-1].startswith("─"))
+        self.assertNotIn("명", frame_hidden[-1])
+        # Body gets 1 extra row
+        self.assertEqual(self.app._body_rows, rows_with_status + 1)
+
+        # Toggle back via /status command
+        self.command("/status")
+        self.assertTrue(self.app.show_status)
+        self.assertEqual(self.chat().notice, "상태줄 표시 켬")
+        frame_restored = self.frame()
+        self.assertIn("명", frame_restored[-1])
+        self.assertEqual(self.app._body_rows, rows_with_status)
+
+        # Toggle via /footer alias
+        self.command("/footer")
+        self.assertFalse(self.app.show_status)
+        self.assertEqual(self.chat().notice, "상태줄 표시 끔")
+        frame_footer_cmd = self.frame()
+        self.assertTrue(frame_footer_cmd[-1].startswith("─"))
+        self.assertEqual(self.app._body_rows, rows_with_status + 1)
+
+    def test_help_panel_lists_status_toggle(self) -> None:
+        self.command("/help")
+        frame = self.frame()
+        self.assertTrue(any("^S" in line and "상태줄" in line for line in frame))
+        self.assertTrue(any("/status" in line and "상태줄" in line for line in frame))
         self.app.handle(Key.ESCAPE, "")
 
 

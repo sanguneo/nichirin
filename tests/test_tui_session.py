@@ -30,6 +30,7 @@ class TuiSessionStoreTests(unittest.TestCase):
     def test_state_serialization_round_trip(self) -> None:
         state = TuiSessionState(
             show_timestamps=False,
+            show_status=False,
             mouse_clicks=True,
             reveal_covered=True,
             open_room_ids=[100, 200],
@@ -42,12 +43,14 @@ class TuiSessionStoreTests(unittest.TestCase):
     def test_load_defaults_when_file_missing(self) -> None:
         state = load_session(user_id=1234, environment=self.env)
         self.assertTrue(state.show_timestamps)
+        self.assertTrue(state.show_status)
         self.assertEqual(state.open_room_ids, [])
         self.assertIsNone(state.focused_room_id)
 
     def test_save_and_load_isolated_by_user_id(self) -> None:
         state_a = TuiSessionState(
             show_timestamps=False,
+            show_status=False,
             mouse_clicks=False,
             reveal_covered=True,
             open_room_ids=[101, 102],
@@ -55,6 +58,7 @@ class TuiSessionStoreTests(unittest.TestCase):
         )
         state_b = TuiSessionState(
             show_timestamps=True,
+            show_status=True,
             mouse_clicks=True,
             reveal_covered=False,
             open_room_ids=[201],
@@ -77,6 +81,7 @@ class TuiSessionStoreTests(unittest.TestCase):
 
         state = load_session(user_id=1000, environment=self.env)
         self.assertTrue(state.show_timestamps)
+        self.assertTrue(state.show_status)
         self.assertEqual(state.open_room_ids, [])
 
 
@@ -95,6 +100,7 @@ class TuiAppSessionIntegrationTests(WorkerCase):
         user_id = 9999
         initial_state = TuiSessionState(
             show_timestamps=False,
+            show_status=False,
             mouse_clicks=False,
             reveal_covered=False,
             open_room_ids=[DIRECT_ROOM, GROUP_ROOM],
@@ -112,6 +118,7 @@ class TuiAppSessionIntegrationTests(WorkerCase):
             environment=self.env,
         )
         self.assertFalse(app.show_timestamps)
+        self.assertFalse(app.show_status)
         self.assertEqual(app._restore_ids, [DIRECT_ROOM, GROUP_ROOM])
         self.assertEqual(app._restore_focus, GROUP_ROOM)
 
@@ -164,6 +171,10 @@ class TuiAppSessionIntegrationTests(WorkerCase):
         app._toggle_timestamps()
         loaded = load_session(user_id=user_id, environment=self.env)
         self.assertFalse(loaded.show_timestamps)
+
+        app._toggle_status()
+        loaded = load_session(user_id=user_id, environment=self.env)
+        self.assertFalse(loaded.show_status)
 
         direct_room = next(r for r in app.rooms if r.id == DIRECT_ROOM)
         app.open_room(direct_room)
