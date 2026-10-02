@@ -999,16 +999,26 @@ class App:
             self.palette.hue(message.sender)
         chat.messages.extend(fresh)
 
-        if chat.offset > 0:
+        from_me = any(message.from_me for message in fresh)
+        if from_me:
+            # The user spoke - whether from this interface or the client - so
+            # bring the viewport down to what they just said rather than
+            # holding it up in older lines.
+            chat.offset = 0
+            if chat is self.chat and not self.picking:
+                chat.unseen = 0
+                self._mark_room_seen(chat.room.id)
+        elif chat.offset > 0:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
             chat.offset += len(self._transcript_of(chat, width)) - before
-        if chat.offset > 0 or chat is not self.chat or self.picking:
+
+        if (chat.offset > 0 or chat is not self.chat or self.picking) and not from_me:
             # Arrivals nobody has seen: the viewport is up in this
             # conversation's history, or this is a tab the reader is not on,
             # or the reader is in the room list picking a room.
             chat.unseen += len(fresh)
-        else:
+        elif not from_me:
             chat.unseen = 0
             self._mark_room_seen(chat.room.id)
         return True
