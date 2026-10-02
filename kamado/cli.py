@@ -73,7 +73,7 @@ def _add_cover_toggle(parser: argparse.ArgumentParser) -> None:
     )
 
 
-DAEMON_COMMANDS = ("status", "verify", "rooms", "context", "messages", "friends", "query")
+DAEMON_COMMANDS = ("status", "verify", "rooms", "context", "messages", "friends", "query", "send")
 """The commands :meth:`daemon.DaemonServer._dispatch` answers.
 
 Everything else runs here. Forwarding by exclusion handed the daemon every
