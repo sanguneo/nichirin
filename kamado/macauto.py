@@ -59,7 +59,7 @@ _SETTLE_SECONDS = 0.2
 _WAIT_SECONDS = 3.0
 """How long to wait for the send button to enable, and for the box to empty."""
 
-_POLL_SECONDS = 0.05
+_POLL_SECONDS = 0.005
 """Gap between those polls; an accessibility read is cheap."""
 
 _ACTIVATE_SECONDS = 0.6
@@ -469,9 +469,19 @@ class Sender:
                 ErrorCode.KAKAO_NOT_RUNNING,
                 "KakaoTalk is not running; start it and open the conversation first",
             )
-        windows = self._backend.chat_windows()
         wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
+        try:
+            windows = self._backend.chat_windows(hit_test=False)  # type: ignore[call-arg]
+        except TypeError:
+            windows = self._backend.chat_windows()
         matches = [window for window in windows if window.title.casefold() in wanted]
+
+        if not matches:
+            try:
+                full_windows = self._backend.chat_windows(hit_test=True)  # type: ignore[call-arg]
+                matches = [window for window in full_windows if window.title.casefold() in wanted]
+            except TypeError:
+                pass
 
         if not matches and self._recoverer is not None:
             recovered = self._recoverer(wanted)
@@ -594,9 +604,11 @@ class AXBackend:
             )
         return element
 
-    def _windows(self) -> list[ax.Element]:
+    def _windows(self, hit_test: bool = True) -> list[ax.Element]:
         """Enumerate without changing visibility, focus or the active Space."""
         windows = self._app.windows()
+        if not hit_test:
+            return windows
         # A window restored while the app is hidden can disappear from both
         # AX lists while its controls remain usable. Hit-testing within the
         # application recovers its AXWindow without clicking or unhiding it.
@@ -617,10 +629,10 @@ class AXBackend:
                 return window
         return None
 
-    def chat_windows(self) -> list[ChatWindow]:
+    def chat_windows(self, hit_test: bool = True) -> list[ChatWindow]:
         """Return every window that is not the main one, which is a room."""
         found: list[ChatWindow] = []
-        windows = self._windows()
+        windows = self._windows(hit_test=hit_test)
         for window in windows:
             if window.identifier == MAIN_WINDOW_IDENTIFIER:
                 continue
@@ -686,9 +698,11 @@ class AXBackend:
         for child in element.children():
             if child.role != "AXScrollArea":
                 continue
-            found = [c for c in child.children() if c.role in _INPUT_ROLES]
-            if found and not any(c.role == "AXTable" for c in child.children()):
+            subs = child.children()
+            found = [c for c in subs if c.role in _INPUT_ROLES]
+            if found and not any(c.role == "AXTable" for c in subs):
                 composer = found[0]
+                break
         if composer is None:
             return None
         handle = self._register(composer)

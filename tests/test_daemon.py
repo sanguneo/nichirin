@@ -13,8 +13,10 @@ require_unix_sockets()
 
 from kamado import daemon
 from kamado.errors import ErrorCode, KamadoError
+from kamado.macauto import ChatWindow, Sender
 from kamado.reader import Reader
 from tests.fixtures import StubCache, build_database, build_keyring
+from tests.test_send import FakeWindows
 
 
 class DaemonTests(unittest.TestCase):
@@ -217,4 +219,25 @@ class NamedRoomTests(unittest.TestCase):
             with self.subTest(command=command):
                 with self.assertRaises(KamadoError) as raised:
                     self.dispatch(command, {})
+                self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)
+
+    def test_send_dry_run_dispatches_cleanly(self) -> None:
+        backend = FakeWindows()
+        backend.windows = [ChatWindow(42, "Peer Renamed")]
+        sender = Sender(backend, running=lambda: True)
+        with patch("kamado.macauto.make_sender", return_value=sender):
+            answer = self.dispatch(
+                "send", {"room": "Peer Renamed", "text": "hello", "dry_run": True}
+            )
+        self.assertTrue(answer["ok"], answer)
+        self.assertTrue(answer["dryRun"])
+        self.assertFalse(answer["submitted"])
+        self.assertEqual(answer["room"], "Peer Renamed")
+        self.assertIn("roomId", answer)
+
+    def test_send_requires_nonempty_room(self) -> None:
+        for payload in ({}, {"room": "   "}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(KamadoError) as raised:
+                    self.dispatch("send", payload)
                 self.assertEqual(raised.exception.code, ErrorCode.INVALID_REQUEST)

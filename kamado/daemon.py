@@ -350,4 +350,38 @@ class DaemonServer:
             rows = reader.query(args["sql"], room_id=args.get("room_id"))
             return success({"rows": rows, "count": len(rows)})
 
+        if command == "send":
+            target = args.get("room_id") if args.get("room_id") is not None else args.get("room")
+            if target is None or (isinstance(target, str) and not target.strip()):
+                raise KamadoError(
+                    ErrorCode.INVALID_REQUEST, "a nonempty room name is required"
+                )
+            if isinstance(target, str) and target.strip().isdigit() and args.get("room_id") is not None:
+                target = int(target.strip())
+            room = _resolve(reader, target)
+            catalogued = reader.rooms()
+            duplicates = [
+                r for r in catalogued if r.title.casefold() == room.title.casefold()
+            ]
+            if len(duplicates) != 1:
+                raise KamadoError(
+                    ErrorCode.AMBIGUOUS_CHAT,
+                    "multiple catalog rooms share this window title; give the target a unique title",
+                    candidates=[r.as_json() for r in duplicates],
+                )
+            stored = reader.stored_title(room.id)
+            aliases = [stored] if stored and stored != room.title else []
+            hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
+            from .macauto import make_sender
+
+            result = make_sender().send(
+                room.title,
+                args.get("text", ""),
+                dry_run=args.get("dry_run", False),
+                open_if_needed=args.get("open_room", False),
+                aliases=aliases,
+                hint=hint,
+            )
+            return success({**result, "roomId": str(room.id)})
+
         raise KamadoError(ErrorCode.INVALID_REQUEST, f"unknown daemon command: {command}")
