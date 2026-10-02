@@ -35,6 +35,12 @@ stops the daemon's answer from growing without a limit in the client."""
 REQUEST_TIMEOUT_SECONDS: Final = 10.0
 """How long one request may take to arrive, however it is split up."""
 
+SEND_TIMEOUT_SECONDS: Final = 120.0
+"""How long a forwarded send may take to answer.
+
+Opening a closed room and waiting for the client to fill a freshly drawn
+main window has been measured past 40 s, far beyond a read's five."""
+
 
 class FrameError(ValueError):
     """A line on the daemon socket did not arrive whole: cut short, too long or late."""
@@ -90,24 +96,34 @@ def is_daemon_running(environment: Any = None) -> bool:
 
 
 def send_to_daemon(
-    command: str, args: dict[str, Any], environment: Any = None, timeout: float = 5.0
+    command: str,
+    args: dict[str, Any],
+    environment: Any = None,
+    timeout: Optional[float] = None,
+    repeatable: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Ask the daemon, or answer None so the caller runs the command itself.
 
     An answer that is cut short, malformed or larger than
     :data:`RESPONSE_MAX_BYTES` is never handed back as though it were whole;
-    it is None, the same as no daemon at all. Every forwarded command only
-    reads, so running it again here cannot do anything twice.
+    it is None, the same as no daemon at all. A read can simply run again
+    here. A send cannot: once the request has reached the daemon it may have
+    typed the message, so a lost answer for a ``repeatable=False`` command is
+    ``SEND_FAILED`` with the outcome unknown, never None and a second send.
     """
+    if timeout is None:
+        timeout = 5.0 if repeatable else SEND_TIMEOUT_SECONDS
     sock_path = socket_path(environment)
     if not sock_path.exists():
         return None
+    delivered = False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
             sock.connect(str(sock_path))
             payload = json.dumps({"command": command, "args": args}, ensure_ascii=False)
             sock.sendall(payload.encode("utf-8") + b"\n")
+            delivered = True
             response = _receive_line(
                 sock, maximum=RESPONSE_MAX_BYTES, timeout=timeout, subject="the daemon's answer"
             )
@@ -116,6 +132,14 @@ def send_to_daemon(
     except (OSError, ValueError):
         # FrameError and a malformed body are ValueErrors: both mean the
         # answer did not arrive whole.
+        if delivered and not repeatable:
+            return as_envelope(
+                KamadoError(
+                    ErrorCode.SEND_FAILED,
+                    "the daemon took the request but its answer did not arrive; "
+                    "the message may have been sent, so check the room before retrying",
+                )
+            )
         return None
 
 
@@ -351,37 +375,19 @@ class DaemonServer:
             return success({"rows": rows, "count": len(rows)})
 
         if command == "send":
-            target = args.get("room_id") if args.get("room_id") is not None else args.get("room")
-            if target is None or (isinstance(target, str) and not target.strip()):
-                raise KamadoError(
-                    ErrorCode.INVALID_REQUEST, "a nonempty room name is required"
-                )
-            if isinstance(target, str) and target.strip().isdigit() and args.get("room_id") is not None:
-                target = int(target.strip())
-            room = _resolve(reader, target)
-            catalogued = reader.rooms()
-            duplicates = [
-                r for r in catalogued if r.title.casefold() == room.title.casefold()
-            ]
-            if len(duplicates) != 1:
-                raise KamadoError(
-                    ErrorCode.AMBIGUOUS_CHAT,
-                    "multiple catalog rooms share this window title; give the target a unique title",
-                    candidates=[r.as_json() for r in duplicates],
-                )
-            stored = reader.stored_title(room.id)
-            aliases = [stored] if stored and stored != room.title else []
-            hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
-            from .macauto import make_sender
+            from .macauto import send_to_room
 
-            result = make_sender().send(
-                room.title,
-                args.get("text", ""),
-                dry_run=args.get("dry_run", False),
-                open_if_needed=args.get("open_room", False),
-                aliases=aliases,
-                hint=hint,
+            target = args.get("room_id") if args.get("room_id") is not None else args.get("room")
+            if target is None:
+                raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+            return success(
+                send_to_room(
+                    reader,
+                    target,
+                    str(args.get("text") or ""),
+                    dry_run=bool(args.get("dry_run", False)),
+                    open_room=bool(args.get("open_room", False)),
+                )
             )
-            return success({**result, "roomId": str(room.id)})
 
         raise KamadoError(ErrorCode.INVALID_REQUEST, f"unknown daemon command: {command}")

@@ -404,9 +404,6 @@ class TabArrivalTests(LiveTests):
         self.app.open_room(next(room for room in self.app.rooms if room.id == GROUP_ROOM))
         self.direct, self.group = self.app.chats
 
-    def texts(self, chat) -> list[str]:
-        return [message.text for message in chat.messages]
-
     def test_each_message_lands_in_the_room_it_was_written_in(self) -> None:
         self.arrive(5400, "FOR_THE_DIRECT_ROOM", room_id=DIRECT_ROOM)
         self.arrive(6400, "FOR_THE_GROUP", room_id=GROUP_ROOM)
@@ -454,6 +451,7 @@ class BackfillBelowCursorTests(LiveTests):
     def pass_the_gap(self, room_id: int = DIRECT_ROOM, log_id: int = 5010) -> None:
         self.arrive(log_id, "CURSOR_PAST_THE_GAP", room_id=room_id)
         self.app.refresh(WIDTH)
+
     def test_a_row_written_below_the_newest_id_reaches_the_tab(self) -> None:
         self.pass_the_gap()
         self.backfill(5005, "LATE_BACKFILL")

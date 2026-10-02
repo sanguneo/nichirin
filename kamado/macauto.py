@@ -128,8 +128,12 @@ class MessageSender(Protocol):
 class WindowBackend(Protocol):
     """Everything the sender needs from the windowing system."""
 
-    def chat_windows(self) -> list[ChatWindow]:
-        """Return KakaoTalk's open chat windows (excluding the main window)."""
+    def chat_windows(self, hit_test: bool = True) -> list[ChatWindow]:
+        """Return KakaoTalk's open chat windows (excluding the main window).
+
+        ``hit_test=False`` reads only the AX window lists, which is enough
+        whenever the target is listed and skips probing every window's centre.
+        """
         ...
 
     def input_handle(self, window: int) -> Optional[int]:
@@ -470,18 +474,14 @@ class Sender:
                 "KakaoTalk is not running; start it and open the conversation first",
             )
         wanted = {name.strip().casefold() for name in (room, *aliases) if name.strip()}
-        try:
-            windows = self._backend.chat_windows(hit_test=False)  # type: ignore[call-arg]
-        except TypeError:
-            windows = self._backend.chat_windows()
+        windows = self._backend.chat_windows(hit_test=False)
         matches = [window for window in windows if window.title.casefold() in wanted]
 
         if not matches:
-            try:
-                full_windows = self._backend.chat_windows(hit_test=True)  # type: ignore[call-arg]
-                matches = [window for window in full_windows if window.title.casefold() in wanted]
-            except TypeError:
-                pass
+            # A window can be missing from both AX lists while its controls
+            # stay addressable; only then is every window centre hit-tested.
+            windows = self._backend.chat_windows()
+            matches = [window for window in windows if window.title.casefold() in wanted]
 
         if not matches and self._recoverer is not None:
             recovered = self._recoverer(wanted)
@@ -702,7 +702,6 @@ class AXBackend:
             found = [c for c in subs if c.role in _INPUT_ROLES]
             if found and not any(c.role == "AXTable" for c in subs):
                 composer = found[0]
-                break
         if composer is None:
             return None
         handle = self._register(composer)
@@ -1077,3 +1076,47 @@ def make_sender() -> Sender:
         RoomOpener(backend),
         recoverer=backend.recover_windows,
     )
+
+
+def send_to_room(
+    reader, target, text: str, *, dry_run: bool = False, open_room: bool = False
+) -> dict:
+    """Resolve the catalog before targeting an exact client window.
+
+    Shared by ``kamado send`` and the daemon, so the duplicate-title refusal
+    and the aliases cannot drift apart between the two.
+    """
+    from .context import _resolve
+
+    if isinstance(target, str) and not target.strip():
+        raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+    room = _resolve(reader, target)
+    catalogued = reader.rooms()
+    # A window title cannot distinguish two catalog rooms with the same name,
+    # even if the caller supplied an id and only one window is currently open.
+    duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
+    if len(duplicates) != 1:
+        raise KamadoError(
+            ErrorCode.AMBIGUOUS_CHAT,
+            "multiple catalog rooms share this window title; give the target a unique title",
+            candidates=[r.as_json() for r in duplicates],
+        )
+    # The window carries the catalog's own title, which differs from the one
+    # resolved here for the self-chat and for groups with no custom name.
+    stored = reader.stored_title(room.id)
+    aliases = [stored] if stored and stored != room.title else []
+    # The client lists rooms by recency too, so this is close before it is
+    # right - close enough that opening one usually costs a single click.
+    hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
+    try:
+        result = make_sender().send(
+            room.title,
+            text,
+            dry_run=dry_run,
+            open_if_needed=open_room,
+            aliases=aliases,
+            hint=hint,
+        )
+    except OSError as error:
+        raise KamadoError(ErrorCode.SEND_FAILED, str(error)) from error
+    return {**result, "roomId": str(room.id)}

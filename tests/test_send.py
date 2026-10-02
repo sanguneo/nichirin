@@ -19,7 +19,7 @@ class FakeWindows:
         self.actions: list[str] = []
         self.fail_submit = False
 
-    def chat_windows(self) -> list[ChatWindow]:
+    def chat_windows(self, hit_test: bool = True) -> list[ChatWindow]:
         return self.windows
 
     def input_handle(self, window: int) -> int | None:

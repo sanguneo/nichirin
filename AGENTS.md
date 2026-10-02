@@ -456,10 +456,20 @@ keep rather than one to rediscover.
   used to forward everything not on an exclusion list, and the daemon answered
   `digest`, `search`, `names` and every new command with `unknown daemon
   command`, which was printed as the result. `cli.DAEMON_COMMANDS` names the
-  seven `DaemonServer._dispatch` handles; `serve`, `tui`, `follow` and `send`
-  stay local for the reasons they always did — a server holding a socket open
+  eight `DaemonServer._dispatch` handles; `serve`, `tui` and `follow` stay
+  local for the reasons they always did — a server holding a socket open
   would print one answer and exit. The daemon's reader outlives requests, so
   `_dispatch` sets `reveal_covered` from each request's `show_covered`.
+- **A forwarded send is at most once.** `send` joined the daemon in 0.26.0
+  (#66, #67) because the warm reader skips the key derivation and the full
+  decryption: 2.8 s became 0.34 s per send as measured by the contributor.
+  Every other forwarded command only reads, so a lost answer is `None` and the
+  command runs again here. A send cannot be run again: the daemon may already
+  have typed it, and the 5 s read deadline is shorter than opening a closed
+  room. `send_to_daemon(repeatable=False)` waits `SEND_TIMEOUT_SECONDS` and
+  answers `SEND_FAILED` (outcome unknown) once the request was written; only a
+  daemon that never received it falls back to a local send. The catalog
+  checks live in `macauto.send_to_room`, shared by both paths.
 - **SSE, not WebSockets.** This is a one-way push of small JSON payloads, so
   `curl -N` is a complete client and no dependency is needed for either side.
 - **Sends are serialized under one lock and spaced by the server**, because the

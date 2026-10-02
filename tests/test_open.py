@@ -94,7 +94,7 @@ class FakeDesktop:
     def now(self) -> float:
         return self.elapsed
 
-    def chat_windows(self) -> list[ChatWindow]:
+    def chat_windows(self, hit_test: bool = True) -> list[ChatWindow]:
         return list(self.windows)
 
     def input_handle(self, window: int) -> int:

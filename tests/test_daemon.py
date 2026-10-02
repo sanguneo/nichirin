@@ -164,8 +164,8 @@ class FramingTests(unittest.TestCase):
         self.assertEqual(answer["error"]["code"], ErrorCode.INVALID_REQUEST.value)
         self.assertIn("JSON", answer["error"]["message"])
 
-    def client(self, pieces: list[bytes]):
-        connection = _Connection(pieces)
+    def client(self, pieces: list[bytes], command: str = "ping", repeatable: bool = True, connection=None):
+        connection = _Connection(pieces) if connection is None else connection
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "daemon.sock"
@@ -174,7 +174,22 @@ class FramingTests(unittest.TestCase):
             patch("kamado.daemon.socket_path", return_value=path),
             patch("kamado.daemon.socket.socket", return_value=connection),
         ):
-            return daemon.send_to_daemon("ping", {})
+            return daemon.send_to_daemon(command, {}, repeatable=repeatable)
+
+    def test_a_send_whose_answer_is_lost_is_not_run_again(self) -> None:
+        """The daemon may already have typed it; None would send it twice."""
+        answer = self.client([b'{"ok": true, "subm'], command="send", repeatable=False)
+        assert answer is not None
+        self.assertFalse(answer["ok"])
+        self.assertEqual(answer["error"]["code"], ErrorCode.SEND_FAILED.value)
+
+    def test_a_send_the_daemon_never_received_runs_here(self) -> None:
+        class Refused(_Connection):
+            def connect(self, _path: str) -> None:
+                raise ConnectionRefusedError("synthetic refusal")
+
+        answer = self.client([], command="send", repeatable=False, connection=Refused([]))
+        self.assertIsNone(answer)
 
     def test_an_answer_split_across_reads_is_put_back_together(self) -> None:
         self.assertEqual(self.client([b'{"ok": tr', b'ue}\n']), {"ok": True})

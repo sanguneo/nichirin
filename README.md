@@ -189,7 +189,7 @@ PBKDF2-HMAC-SHA256을 100,000회 적용해 유도합니다. 힙 스캔도, 실�
 | `follow` | `[--room-id ID ...] [--interval SECONDS]` — 방마다 `--room-id` 반복, 기본 1초 |
 | `query` | `SQL [--room-id ID]` — 읽기 전용 SQL |
 | `schema` | `[--room-id ID]` — 테이블과 열 |
-| `daemon` | `(start [--foreground] \| stop \| status)` — 백그라운드 상주 데몬 (쿼리 즉각 응답) |
+| `daemon` | `(start [--foreground] \| stop \| status)` — 백그라운드 상주 데몬 (쿼리와 `send` 즉각 응답) |
 | `serve` | `[--host H] [--port N] [--token T] [--min-interval S] [--poll-interval S]` — 전송·읽기·스트림을 HTTP + SSE로 (아래 "원격에서 보내고 읽기") |
 | `tui` | 대화형 POSIX 터미널에서 실행 |
 
@@ -376,14 +376,15 @@ export KAMADO_MOUSE=0
 `/sum 30m`이나 `/sum 2h`는 **요약하는 척하지 않습니다.** 이 프로세스 안에는 모델이
 없으므로 구간의 활동량·화자·단어·대표 문장을 뽑을 뿐입니다. `/export`는 다이제스트의
 원문을 내보냅니다. `/older`는 이전 기록, `/real 닉네임`은 이름 이력, `/photo`(=`Ctrl+P`)는
-가장 최근 사진, `/time`(=`Ctrl+T`)은 메시지 앞 시각 켜고 끄기, `/back`은 뒤로, `/quit`은
+가장 최근 사진, `/time`(=`Ctrl+T`)은 메시지 앞 시각 켜고 끄기, `/status`(=`Ctrl+S`, 별칭 `/footer`)는
+맨 아래 상태줄 켜고 끄기(끄면 대화가 한 줄 더 보입니다), `/back`은 뒤로, `/quit`은
 종료입니다. 대화방 위에는 `enter`·`esc`·`/help`만 적혀 있고, 단축키와 명령 전체는
 `/help`(또는 `/?`)가 보여줍니다. 목록에서 `f`는 친구, `/`는 필터입니다.
 `Ctrl+G`는 마우스를 [클릭과 드래그 복사](#마우스-클릭과-드래그-복사) 사이에서 바꿉니다.
 `/notice`, `/files`, `/links`, `/photos`, `/videos`, `/edits`, `/safebot`은 [방 정보](#방-정보)에
 있습니다. `esc`는 다이제스트나 목록을 먼저 닫고, 그다음에 방을 닫습니다.
 
-`/time`, 마우스 모드(`Ctrl+G`), `/safebot` 상태와 열린 탭·포커스는 계정별로
+`/time`, `/status`, 마우스 모드(`Ctrl+G`), `/safebot` 상태와 열린 탭·포커스는 계정별로
 `~/Library/Application Support/kamado-cli/tui_state.json`에 저장되어 다음 실행 때 그대로
 돌아옵니다. 나간 방은 건너뛰고, `KAMADO_MOUSE`를 지정하면 저장된 마우스 모드보다 우선합니다.
 아직 보내지 않은 입력은 저장하지 않습니다. `kamado tui --fresh`는 저장된 상태를 읽지도

@@ -536,40 +536,17 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
 
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     """Resolve the catalog before targeting an exact client window."""
-    from .macauto import make_sender
+    from .macauto import send_to_room
 
-    if arguments.room is not None and not arguments.room.strip():
-        raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
-    room = _selected_room(reader, arguments)
-    catalogued = reader.rooms()
-    # A window title cannot distinguish two catalog rooms with the same name,
-    # even if the caller supplied an id and only one window is currently open.
-    duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
-    if len(duplicates) != 1:
-        raise KamadoError(
-            ErrorCode.AMBIGUOUS_CHAT,
-            "multiple catalog rooms share this window title; give the target a unique title",
-            candidates=[r.as_json() for r in duplicates],
-        )
-    # The window carries the catalog's own title, which differs from the one
-    # resolved here for the self-chat and for groups with no custom name.
-    stored = reader.stored_title(room.id)
-    aliases = [stored] if stored and stored != room.title else []
-    # The client lists rooms by recency too, so this is close before it is
-    # right — close enough that opening one usually costs a single click.
-    hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
-    try:
-        result = make_sender().send(
-            room.title,
-            arguments.text,
-            dry_run=arguments.dry_run,
-            open_if_needed=arguments.open_room,
-            aliases=aliases,
-            hint=hint,
-        )
-    except OSError as error:
-        raise KamadoError(ErrorCode.SEND_FAILED, str(error)) from error
-    _emit(success({**result, "roomId": str(room.id)}))
+    target = arguments.room_id if arguments.room_id is not None else arguments.room
+    result = send_to_room(
+        reader,
+        target,
+        arguments.text,
+        dry_run=arguments.dry_run,
+        open_room=arguments.open_room,
+    )
+    _emit(success(result))
     return 0
 
 
@@ -655,7 +632,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from .daemon import is_daemon_running, send_to_daemon
 
         if is_daemon_running():
-            res = send_to_daemon(arguments.command, vars(arguments))
+            res = send_to_daemon(
+                arguments.command,
+                vars(arguments),
+                repeatable=arguments.command != "send",
+            )
             if res is not None:
                 _emit(res)
                 return 0 if res.get("ok") else 1
