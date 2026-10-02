@@ -55,6 +55,10 @@ class LiveTests(unittest.TestCase):
             self.fail("no conversation is open")
         return chat
 
+    def texts(self, chat=None) -> list[str]:
+        chat = self.chat() if chat is None else chat
+        return [message.text for message in chat.messages]
+
     def arrive(self, log_id: int, text: str, room_id: int = DIRECT_ROOM, author: int = PEER_ID) -> None:
         connection = self.cache.database
         connection.execute(
@@ -447,14 +451,9 @@ class BackfillBelowCursorTests(LiveTests):
         connection.commit()
         touch_log(self.root, room_id, b"backfilled " + text.encode())
 
-    def texts(self, chat=None) -> list[str]:
-        chat = self.chat() if chat is None else chat
-        return [message.text for message in chat.messages]
-
     def pass_the_gap(self, room_id: int = DIRECT_ROOM, log_id: int = 5010) -> None:
         self.arrive(log_id, "CURSOR_PAST_THE_GAP", room_id=room_id)
         self.app.refresh(WIDTH)
-
     def test_a_row_written_below_the_newest_id_reaches_the_tab(self) -> None:
         self.pass_the_gap()
         self.backfill(5005, "LATE_BACKFILL")
@@ -517,6 +516,45 @@ class BackfillBelowCursorTests(LiveTests):
         app.refresh(WIDTH)
         ids = [message.id for message in chat.messages]
         self.assertEqual(ids, held + [5010])
+
+
+class FromMeScrollSnapTests(LiveTests):
+    """When the user speaks from another client, the view snaps to bottom.
+
+    If the reader scrolled up in history, subsequent arrivals from other
+    people hold the scroll position so the reader is not yanked away from
+    what they are reading. But when the user sends a message or uploads an
+    image from KakaoTalk, they are actively speaking in the room: holding the
+    viewport up hides what they just said and leaves subsequent replies
+    trapped below the fold as an apparent freeze.
+    """
+
+    def test_sending_from_client_snaps_scrolled_viewport_to_bottom(self) -> None:
+        chat = self.chat()
+        chat.offset = 3
+        self.arrive(5400, "FROM_ME_UPLOAD", author=OWN_ID)
+        self.app.refresh(WIDTH)
+        self.assertEqual(chat.offset, 0)
+        self.assertEqual(chat.unseen, 0)
+        self.assertIn("FROM_ME_UPLOAD", self.texts(chat))
+
+    def test_replies_after_a_sent_message_stay_visible_at_bottom(self) -> None:
+        chat = self.chat()
+        chat.offset = 3
+        self.arrive(5400, "MY_PHOTO", author=OWN_ID)
+        self.app.refresh(WIDTH)
+        self.arrive(5401, "REPLY_FROM_OTHER", author=PEER_ID)
+        self.app.refresh(WIDTH)
+        self.assertEqual(chat.offset, 0)
+        self.assertIn("REPLY_FROM_OTHER", self.texts(chat))
+
+    def test_arrivals_from_others_while_scrolled_still_hold_position(self) -> None:
+        chat = self.chat()
+        chat.offset = 3
+        self.arrive(5400, "FROM_OTHER", author=PEER_ID)
+        self.app.refresh(WIDTH)
+        self.assertGreater(chat.offset, 3)
+        self.assertGreater(chat.unseen, 0)
 
 
 if __name__ == "__main__":
