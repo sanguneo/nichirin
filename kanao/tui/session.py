@@ -1,9 +1,9 @@
-"""What the interface remembers between launches: two switches and the open tabs.
+"""What the interface remembers between launches: three switches and the open tabs.
 
 Kept in ``%LOCALAPPDATA%\\kanao-cli\\tui_state.json`` beside the context and
 row caches, and filed per account, so a second account signed in on this
 machine gets its own tabs back rather than somebody else's. It holds room ids
-and two booleans. Never a title, a name or a draft: a half-written message
+and three booleans. Never a title, a name or a draft: a half-written message
 would otherwise sit on disk in plain text after the screen that held it closed.
 """
 
@@ -40,6 +40,7 @@ def _room_id(value: Any) -> Optional[int]:
 @dataclass
 class SessionState:
     show_timestamps: bool = True
+    show_status: bool = True
     reveal_covered: bool = False
     open_room_ids: list[int] = field(default_factory=list)
     """Left to right, the way the tab strip showed them."""
@@ -48,6 +49,7 @@ class SessionState:
     def as_json(self) -> dict[str, Any]:
         return {
             "show_timestamps": self.show_timestamps,
+            "show_status": self.show_status,
             "reveal_covered": self.reveal_covered,
             # Strings, like every id this tool hands out: they exceed 2**53.
             "open_room_ids": [str(room_id) for room_id in self.open_room_ids],
@@ -59,6 +61,7 @@ class SessionState:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "SessionState":
         shown = data.get("show_timestamps")
+        footer = data.get("show_status")
         revealed = data.get("reveal_covered")
         listed = data.get("open_room_ids")
         open_ids: list[int] = []
@@ -68,6 +71,7 @@ class SessionState:
                 open_ids.append(room_id)
         return cls(
             show_timestamps=shown if isinstance(shown, bool) else True,
+            show_status=footer if isinstance(footer, bool) else True,
             reveal_covered=revealed if isinstance(revealed, bool) else False,
             open_room_ids=open_ids,
             focused_room_id=_room_id(data.get("focused_room_id")),

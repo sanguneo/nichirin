@@ -20,7 +20,14 @@ from tests.platform import require_windows_console
 
 require_windows_console()
 
-from kanao.tui.console import SHOW_PHOTO, TOGGLE_TIMESTAMP, Console, Key, KeyEvent
+from kanao.tui.console import (
+    SHOW_PHOTO,
+    TOGGLE_STATUS,
+    TOGGLE_TIMESTAMP,
+    Console,
+    Key,
+    KeyEvent,
+)
 
 VK_BACK = 0x08
 VK_TAB = 0x09
@@ -168,6 +175,9 @@ class NewlineDecodingTests(unittest.TestCase):
         self.assertEqual(
             self.read(down(0x54, TOGGLE_TIMESTAMP)), ("char", TOGGLE_TIMESTAMP)
         )
+
+    def test_control_s_reaches_the_screen(self) -> None:
+        self.assertEqual(self.read(down(0x53, TOGGLE_STATUS)), ("char", TOGGLE_STATUS))
 
 
 if __name__ == "__main__":

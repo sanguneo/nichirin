@@ -29,6 +29,22 @@ _IDLE_TICK: Final = 0.01
 _ENABLE_VIRTUAL_TERMINAL_PROCESSING: Final = 0x0004
 _ENABLE_PROCESSED_OUTPUT: Final = 0x0001
 _ENABLE_WRAP_AT_EOL_OUTPUT: Final = 0x0002
+_ENABLE_LINE_INPUT: Final = 0x0002
+_ENABLE_ECHO_INPUT: Final = 0x0004
+
+
+def _keystroke_mode(previous: int) -> int:
+    """Return *previous* with line input, and the echo that needs it, turned off.
+
+    In line-input mode the console takes Ctrl+S for itself: the key press
+    never reaches ``ReadConsoleInputW``, output is suspended, and the next
+    key press is swallowed to resume it. Measured through a pseudoconsole in
+    the console's default mode: Ctrl+S and the Ctrl+T after it both arrived
+    as releases only. With these two flags off, both presses arrived. The
+    records are read one by one, so nothing here wanted lines anyway. Echo
+    is cleared as well because the console refuses it without line input.
+    """
+    return previous & ~(_ENABLE_LINE_INPUT | _ENABLE_ECHO_INPUT)
 
 
 def _wrap_free_mode(previous: int) -> int:
@@ -87,7 +103,15 @@ bind nothing to it. That a live console hands it over as ``\\x14`` was not
 measured; the decoder's test feeds it the record a console builds for it.
 """
 
-_SHORTCUTS: Final = frozenset({CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP})
+TOGGLE_STATUS: Final = "\x13"
+"""Ctrl+S, which hides the footer under the conversation or shows it again.
+
+The console keeps Ctrl+S for pausing output while it is in line-input mode,
+which is why :class:`Console` turns that mode off; ``/status`` does the same
+thing on a terminal that binds the key to something of its own.
+"""
+
+_SHORTCUTS: Final = frozenset({CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP, TOGGLE_STATUS})
 """Control characters handed to the screen as themselves.
 
 Everything else unprintable is dropped, which is what happened to Ctrl+P for
@@ -174,6 +198,34 @@ def _enable_vt() -> Optional[int]:
     if not kernel32.SetConsoleMode(handle, wanted):
         return None
     return previous.value
+
+
+def _enable_keystrokes() -> Optional[int]:
+    """Hand every key press to the reader, returning the input mode to restore."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (AttributeError, OSError):
+        return None
+    handle = kernel32.GetStdHandle(_STD_INPUT)
+    if handle in (0, None) or handle == ctypes.c_void_p(-1).value:
+        return None
+    previous = wintypes.DWORD()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(previous)):
+        return None
+    if not kernel32.SetConsoleMode(handle, _keystroke_mode(previous.value)):
+        return None
+    return previous.value
+
+
+def _restore_input(mode: Optional[int]) -> None:
+    if mode is None:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.GetStdHandle(_STD_INPUT)
+        kernel32.SetConsoleMode(handle, mode)
+    except (AttributeError, OSError):
+        pass
 
 
 def _restore_vt(mode: Optional[int]) -> None:
@@ -309,6 +361,7 @@ class Console:
 
     def __init__(self) -> None:
         self._mode: Optional[int] = None
+        self._input_mode: Optional[int] = None
         self._codepage: Optional[int] = None
         self._entered = False
         self._kernel32: Optional[ctypes.WinDLL] = None
@@ -332,6 +385,7 @@ class Console:
     def __enter__(self) -> "Console":
         self._codepage = _set_utf8()
         self._mode = _enable_vt()
+        self._input_mode = _enable_keystrokes()
         reconfigure = getattr(sys.stdout, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
@@ -348,6 +402,7 @@ class Console:
             sys.stdout.flush()
             self._entered = False
         _restore_vt(self._mode)
+        _restore_input(self._input_mode)
         _restore_codepage(self._codepage)
 
     def cell_pixels(self) -> Optional[tuple[int, int]]:

@@ -779,6 +779,19 @@ on a live client, newest 4,000 rows of each readable room.
   arrived: the screen sat one keystroke behind and backspace looked broken.
   Key-up and non-key records are dropped, and an astral character is rejoined
   from the two UTF-16 halves the console delivers it as.
+- **Line input is off while the interface reads keys, or Ctrl+S is the
+  console's.** In `ENABLE_LINE_INPUT` the console's input buffer takes a
+  Ctrl+S press as *pause*: the press never reaches `ReadConsoleInputW`,
+  output is suspended, and the next key press is swallowed to resume it
+  (`InputBuffer::Write` in microsoft/terminal). Measured through a hidden
+  pseudoconsole on 2026-10-02, the default mode `0x01F7`, seven keys sent:
+  `Console.read_key` returned only `a` and `q`. Both Ctrl+S presses, the
+  Ctrl+T after the first and the `b` after the second were lost. With
+  `_keystroke_mode` (`0x01F1`) all seven arrived, and leaving the console
+  put `0x01F7` back. Echo is cleared with it because the console refuses
+  echo without line input. Processed input stays on, so Ctrl+C is unchanged.
+  A legacy conhost window shares that input buffer, but it was not driven by
+  hand.
 - **The viewport anchors by a flag resolved at render time.**
   `ChatState.anchor_top` exists because the top is a distance from the bottom,
   and neither the body nor the screen height is known when the key is handled.
@@ -894,7 +907,11 @@ on a live client, newest 4,000 rows of each readable room.
 - **Arrivals must not steal the viewport.** When `chat.offset` is zero the view
   follows the newest line; when the reader has scrolled up, the offset is
   advanced by exactly the number of lines appended so the same text stays put,
-  and the count surfaces as `unseen` instead. `test_tui_live.py` asserts this
+  and the count surfaces as `unseen` instead. **Except for the reader's own
+  words** (issue #15, kamado-cli#68): a fresh `from_me` row means they spoke,
+  here or in the client, so the offset goes to zero. Otherwise what they sent
+  and every answer after it sat below the fold, and the room looked frozen.
+  A tab behind still counts it in `unseen`. `test_tui_live.py` asserts this
   against the scrolling region only — the status line and footer are *supposed*
   to change, and including them in that assertion is what made the first
   version of the test fail against correct behaviour.
@@ -1168,7 +1185,8 @@ Taken:
   from kamado-cli `e106351` and `4bd41e3` onto this repository's `3b39119`.
   `tui/session.py` keeps `/time`, `/safebot` and the open tabs with their
   focus in `%LOCALAPPDATA%\kanao-cli\tui_state.json`, filed per account. It
-  holds room ids and two booleans — no title, no name and no draft. Like the
+  holds room ids and three booleans (the third is the footer switch below)
+  — no title, no name and no draft. Like the
   name ledger it is opt-in at the constructor: `App(session_file=...)` is set
   only by `cli._tui`, and `tui --fresh` passes none. The two fixes made over
   the PR there hold here by construction rather than by code: this screen has
@@ -1184,6 +1202,19 @@ Taken:
   so two interfaces do not write into one, while a refused move (another
   process holding the file open) is said on the status line. Not taken: the
   mouse switch, which this build does not have.
+- **The footer switch** (`kamado-cli#64`, `#65`, issue #16), from kamado-cli
+  `fef720b` onto this repository's `4c8bb90`. `Ctrl+S`, `/status` and
+  `/footer` hide the participants/loaded/version row and give it to the
+  conversation, and the switch is kept in the session as `show_status`.
+  What had to be fitted: this screen has a status line *and* a footer, and
+  only the footer goes, because notices and "new messages" are said on the
+  status line. The key also needed the console's line input turned off (see
+  the console entry above). On macOS `tty.setraw` turns IXON off, so this
+  never came up there.
+- **Snapping to the bottom when the reader speaks from the client**
+  (`kamado-cli#68`, `#69`, issue #15), from kamado-cli `d25a23c`. It is the
+  same `_append_arrivals` change. A tab behind still adds the arrival to
+  its `+N`, where the macOS version leaves the count alone.
 
 Taken later, after being refused twice — **showing photos in the conversation**
 (`kamado-cli#32`). Both of the reasons it was refused turned out to be

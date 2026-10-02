@@ -196,8 +196,9 @@ class RepaintTests(unittest.TestCase):
             # restore, entering and leaving only writes escapes to the buffer.
             with patch.object(console_module, "_set_utf8", lambda: None):
                 with patch.object(console_module, "_enable_vt", lambda: None):
-                    with console:
-                        pass
+                    with patch.object(console_module, "_enable_keystrokes", lambda: None):
+                        with console:
+                            pass
 
         self.captured(cycle)
         self.assertTrue(self.captured(lambda: console.draw(lines)).startswith(HOME))
@@ -223,6 +224,13 @@ class WrapModeTests(unittest.TestCase):
         self.assertFalse(wanted & 0x0002, "the console may still wrap at the last column")
         self.assertTrue(wanted & 0x0004, "escape sequences stopped being processed")
         self.assertTrue(wanted & 0x0001)
+
+    def test_line_input_is_cleared_so_ctrl_s_is_not_taken_for_a_pause(self) -> None:
+        # The console's default input mode, as read through a pseudoconsole.
+        wanted = console_module._keystroke_mode(0x01F7)
+        self.assertFalse(wanted & 0x0002, "line input takes Ctrl+S for a pause")
+        self.assertFalse(wanted & 0x0004, "echo is refused without line input")
+        self.assertEqual(wanted, 0x01F1)
 
 
 class AddressedLinesTests(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""The interface's session: two switches and the open tabs, kept between launches.
+"""The interface's session: three switches and the open tabs, kept between launches.
 
 Closing the screen used to throw everything away: the times came back, SafeBot
 covered again, and every tab had to be found again. The App writes nothing
@@ -34,6 +34,7 @@ class StoreTests(TemporaryFile):
     def test_a_saved_session_reads_back_as_it_was_written(self) -> None:
         state = SessionState(
             show_timestamps=False,
+            show_status=False,
             reveal_covered=True,
             open_room_ids=[2**60, 7],
             focused_room_id=7,
@@ -68,12 +69,17 @@ class StoreTests(TemporaryFile):
         state = SessionState.from_json(
             {
                 "show_timestamps": "false",
+                "show_status": 0,
                 "reveal_covered": 1,
                 "open_room_ids": [True, -3, "abc", "12", 12, 30],
                 "focused_room_id": "x",
             }
         )
         self.assertEqual(state, SessionState(open_room_ids=[12, 30]))
+
+    def test_a_file_written_before_the_footer_switch_keeps_the_footer(self) -> None:
+        state = SessionState.from_json({"show_timestamps": False, "open_room_ids": ["7"]})
+        self.assertTrue(state.show_status)
 
     def test_a_refused_move_is_raised_and_leaves_nothing_behind(self) -> None:
         # A directory where the file belongs refuses the move over it, the
@@ -124,11 +130,13 @@ class RestoreTests(AppCase):
     def test_saved_tabs_come_back_in_order_with_the_focused_one_in_front(self) -> None:
         state = SessionState(
             show_timestamps=False,
+            show_status=False,
             open_room_ids=[GROUP_ROOM, DIRECT_ROOM],
             focused_room_id=GROUP_ROOM,
         )
         save_session(self.path, str(OWN_ID), state)
         self.app.restore_session()
+        self.assertFalse(self.app.show_status)
         self.assertEqual(self.tabs(self.app), [GROUP_ROOM, DIRECT_ROOM])
         assert self.app.chat is not None
         self.assertEqual(self.app.chat.room.id, GROUP_ROOM)
@@ -166,7 +174,7 @@ class RestoreTests(AppCase):
         self.assertEqual(written.call_args.args[2].open_room_ids, [GROUP_ROOM, DIRECT_ROOM])
 
     def test_every_change_is_written_down(self) -> None:
-        from kanao.tui.console import TOGGLE_TIMESTAMP
+        from kanao.tui.console import TOGGLE_STATUS, TOGGLE_TIMESTAMP
 
         self.app.restore_session()
         room = {room.id: room for room in self.app.rooms}
@@ -182,6 +190,9 @@ class RestoreTests(AppCase):
 
         self.app.handle("char", TOGGLE_TIMESTAMP)
         self.assertFalse(self.saved().show_timestamps)
+
+        self.app.handle("char", TOGGLE_STATUS)
+        self.assertFalse(self.saved().show_status)
 
         self.app._run_command("/safebot")
         self.assertTrue(self.saved().reveal_covered)

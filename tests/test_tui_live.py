@@ -165,6 +165,62 @@ class ViewportTests(LiveTests):
         self.assertIn("PENDING", self.body())
 
 
+class SentFromTheClientTests(LiveTests):
+    """What the reader says in the client brings the viewport down (issue #15).
+
+    Holding the place is right for somebody else's words. For the reader's
+    own it hid what they had just sent and every answer after it, so the
+    room looked frozen. A send from this screen already went to the bottom.
+    """
+
+    def scrolled_up(self) -> None:
+        for index in range(30):
+            self.arrive(6000 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+
+    def test_my_message_from_the_client_brings_the_viewport_down(self) -> None:
+        self.scrolled_up()
+        self.arrive(6100, "SENT_FROM_THE_CLIENT", author=OWN_ID)
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.chat().offset, 0)
+        self.assertEqual(self.chat().unseen, 0)
+        self.assertIn("SENT_FROM_THE_CLIENT", self.viewport())
+
+    def test_the_answer_after_it_is_on_screen_too(self) -> None:
+        self.scrolled_up()
+        self.arrive(6100, "SENT_FROM_THE_CLIENT", author=OWN_ID)
+        self.app.refresh(WIDTH)
+        self.arrive(6101, "ANSWER_AFTER_IT")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.chat().offset, 0)
+        self.assertEqual(self.chat().unseen, 0)
+        self.assertIn("ANSWER_AFTER_IT", self.viewport())
+
+    def test_somebody_else_alone_still_leaves_the_place_held(self) -> None:
+        self.scrolled_up()
+        before = self.viewport()
+        self.arrive(6100, "SOMEBODY_ELSE")
+        self.app.refresh(WIDTH)
+
+        self.assertGreater(self.chat().offset, 8)
+        self.assertEqual(self.chat().unseen, 1)
+        self.assertEqual(self.viewport(), before)
+
+    def test_a_tab_behind_counts_my_message_and_waits_at_its_bottom(self) -> None:
+        self.scrolled_up()
+        behind = self.chat()
+        group = next(room for room in self.app.rooms if room.id == GROUP_ROOM)
+        self.app.open_room(group, beside=True)
+        self.arrive(6100, "SENT_WHILE_BEHIND", author=OWN_ID)
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(behind.offset, 0)
+        self.assertEqual(behind.unseen, 1)
+
+
 class BackfillBelowCursorTests(LiveTests):
     """Only gaps inside the loaded range are late arrivals, not older history."""
 

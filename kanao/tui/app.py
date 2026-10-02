@@ -40,7 +40,15 @@ from ..model import (
 )
 from ..reader import UNLOCK_SECONDS, Reader
 from . import digest, images
-from .console import CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP, Console, Key, force_size
+from .console import (
+    CLEAR_BOX,
+    SHOW_PHOTO,
+    TOGGLE_STATUS,
+    TOGGLE_TIMESTAMP,
+    Console,
+    Key,
+    force_size,
+)
 from .session import DEFAULT_ACCOUNT, SessionState, load_session
 from .session import save_session as write_session
 from .layout import (
@@ -216,6 +224,8 @@ class App:
         self.status = ""
         self.show_timestamps = True
         """Whether each message carries its time; the screen's, not one tab's."""
+        self.show_status = True
+        """Whether the footer under a conversation is drawn or given to the text."""
         self.running = True
         self.zone = KST
         self.drafts: dict[int, str] = {}
@@ -334,6 +344,7 @@ class App:
         self._account = DEFAULT_ACCOUNT if own is None else str(own)
         saved = load_session(self.session_file, self._account)
         self.show_timestamps = saved.show_timestamps
+        self.show_status = saved.show_status
         self.reader.reveal_covered = saved.reveal_covered
         listed = {room.id: room for room in self.rooms}
         self._restoring = True
@@ -366,6 +377,7 @@ class App:
         front = self.chat
         state = SessionState(
             show_timestamps=self.show_timestamps,
+            show_status=self.show_status,
             reveal_covered=self.reader.reveal_covered,
             open_room_ids=[chat.room.id for chat in self.chats],
             focused_room_id=None if front is None else front.room.id,
@@ -710,7 +722,12 @@ class App:
             self.palette.hue(message.sender)
         chat.messages.extend(fresh)
 
-        if chat.offset > 0:
+        if any(message.from_me for message in fresh):
+            # The reader spoke, from the client if not from here, so what they
+            # said and every answer after it belong on screen. Holding the
+            # place hid both below the fold and the room looked frozen.
+            chat.offset = 0
+        elif chat.offset > 0:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
             chat.offset += len(self._transcript_of(chat, width)) - before
@@ -1116,7 +1133,10 @@ class App:
         )
 
         composer, caret = self._composer_lines(width)
-        rows = max(1, height - len(lines) - len(composer) - 2)
+        # The status line always stays: it carries the notices and the count
+        # of what arrived below. Only the footer can be given to the text.
+        below = 2 if self.show_status else 1
+        rows = max(1, height - len(lines) - len(composer) - below)
         self._body_rows = rows
         body_top = len(lines)
         self.placements = []
@@ -1139,13 +1159,14 @@ class App:
             # brought forward over a longer one would otherwise show it
             # through the gaps.
             lines.append(" " * width)
-        while len(lines) < height - len(composer) - 2:
+        while len(lines) < height - len(composer) - below:
             lines.append("")
 
         self.cursor = (len(lines) + 1, caret)
         lines.extend(composer)
         lines.append(self._status_line(width))
-        lines.append(self._footer_chat(width, len(body)))
+        if self.show_status:
+            lines.append(self._footer_chat(width, len(body)))
         return lines[:height]
 
     def _tab_strip(self, width: int) -> str:
@@ -1753,6 +1774,7 @@ class App:
             row("home  end", "맨 위 · 맨 아래 (작성 중이면 입력창 처음 · 끝)"),
             row("ctrl+p", "최근 사진 열기 · 닫기"),
             row("ctrl+t", "메시지 앞 시각 보이기 · 숨기기"),
+            row("ctrl+s", "맨 아래 상태줄 보이기 · 숨기기"),
             row("ctrl+u", "입력창 비우기"),
             row("ctrl+c", "종료"),
             ("", ""),
@@ -1766,6 +1788,7 @@ class App:
             row("/real 닉네임", "그 이름을 쓴 계정과 각자의 이름 이력"),
             row("/photo", "최근 사진 열기 · 닫기"),
             row("/time", "메시지 앞 시각 보이기 · 숨기기"),
+            row("/status", "맨 아래 상태줄 보이기 · 숨기기"),
             row("/notice", "방 공지 전체"),
             row("/files", f"{recent} 파일"),
             row("/links", f"{recent} 링크"),
@@ -1787,6 +1810,17 @@ class App:
         """
         self.show_timestamps = not self.show_timestamps
         chat.notice = "시간 표시 켬" if self.show_timestamps else "시간 표시 끔"
+        self.save_session()
+
+    def _toggle_status(self, chat: ChatState) -> None:
+        """Hide the footer under the conversation, or bring it back.
+
+        One setting for every tab, like the time. The row it frees goes to the
+        conversation; the status line above it stays, because that is where
+        a notice and the count of new messages are said.
+        """
+        self.show_status = not self.show_status
+        chat.notice = "상태줄 표시 켬" if self.show_status else "상태줄 표시 끔"
         self.save_session()
 
     def _toggle_covered(self, chat: ChatState) -> None:
@@ -2092,6 +2126,8 @@ class App:
                 self._toggle_newest_photo(chat)
             elif text == TOGGLE_TIMESTAMP:
                 self._toggle_timestamps(chat)
+            elif text == TOGGLE_STATUS:
+                self._toggle_status(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -2332,6 +2368,8 @@ class App:
             self._show_help(chat)
         elif name in ("time", "timestamp", "timestamps"):
             self._toggle_timestamps(chat)
+        elif name in ("status", "footer"):
+            self._toggle_status(chat)
         elif name == "open":
             self._open_beside(chat, " ".join(arguments))
         elif name == "close":
