@@ -1,16 +1,16 @@
-"""Exact window targeting, draft replacement, and background text sending.
+"""Exact window targeting, draft replacement, and text submission.
 
 The accessibility tree addresses one composer and one send button inside
-one window. A process-directed keystroke cannot make that same guarantee:
-several chat windows share one process.
+one window. Clients without a send button need a process-directed Return,
+guarded by the focused composer's identity, window and placed text.
 
-* **Sending to an existing window leaves the desktop alone.** Discovery never
-  raises a window, even when the client exposes none. Explicitly opening a
-  closed room is separate: it still activates the client and clicks its list.
+* **The button path leaves the desktop alone.** Discovery never raises a
+  window. The Return fallback activates the client and focuses the composer.
+  Explicitly opening a closed room also activates the client and clicks its list.
 * **The text is written, not typed.**  Setting the input's value in one call is
   atomic from the client's point of view, where a synthesised keystroke per
   character is a race against the IME and against the user.
-* **A send is one button press, aimed at that chat window.**
+* **A send is one button press or a guarded Return.**
 * **An unfinished draft is cleared, not refused**, and the clearing is reported
   — ``clearedDraft`` on a send, ``wouldClearDraft`` on a dry run — because
   losing somebody's half-typed line silently is the indefensible part.
@@ -78,8 +78,7 @@ and the wanted room was row 116. The limit is a stop, not a budget.
 _SEND_BUTTON_TITLES = ("전송", "Send")
 """The chat window's send button, pressed to commit a message.
 
-An ``AXValue`` write places the text without the client counting it as typing,
-so a Return over it is ignored; the button is what actually sends."""
+Prefer the button when exposed. Clients without it use a focus-checked Return."""
 
 
 @dataclass(frozen=True)
@@ -232,7 +231,7 @@ def running(runner=subprocess.run) -> bool:
 def activate(runner=subprocess.run) -> None:
     """Bring KakaoTalk forward.
 
-    Sending never needs this.  Opening a *closed* room does: its chat-list rows
+    The guarded Return fallback needs this. Opening a *closed* room does too: its chat-list rows
     ignore both ``AXPress`` and a posted Return, so the only thing that opens
     one is a real double-click, and a click at screen coordinates is only safe
     aimed at the window in front.
@@ -586,6 +585,7 @@ class AXBackend:
         self._app = ax.application(pid)
         self._registry: dict[int, ax.Element] = {}
         self._windows_by_control: dict[int, ax.Element] = {}
+        self._text_by_control: dict[int, str] = {}
         self._next = 1
         self._search_restore: Optional[str] = None
         """What the client's search box held before this process typed in it."""
@@ -720,7 +720,8 @@ class AXBackend:
         no focus and — this is the part worth keeping — **no activation**: the
         client is never brought forward, the pointer is never moved, and
         whatever the user is doing is not interrupted.  It also enables the
-        client's own send button, which :meth:`submit` then presses.
+        client's own send button, when exposed. :meth:`submit` uses a guarded
+        Return on clients without one, which does require activation and focus.
 
         Typing the text was tried and abandoned: synthesised keystrokes drop
         characters unpredictably, and they only arrive at all once the app has
@@ -731,6 +732,7 @@ class AXBackend:
         composer = self._element(control)
         for attempt in range(_WRITE_ATTEMPTS):
             if composer.set_attribute("AXValue", text) and composer.value == text:
+                self._text_by_control[control] = text
                 return
             if attempt + 1 < _WRITE_ATTEMPTS:
                 time.sleep(_SETTLE_SECONDS)
@@ -761,8 +763,10 @@ class AXBackend:
         going empty rather than by the press call's own return value, which
         this client reports as failure even on a press that works.
 
-        A missing button is a failure. A Return aimed at the process cannot
-        distinguish this composer from another chat in the same application.
+        With no button, raise the target and activate the client, then focus
+        the composer. Return is posted only after its native identity, owning
+        window and original placed value are confirmed through the app's
+        focused element. This path takes foreground and keyboard focus.
 
         The button is enabled by the write, but not instantly, so it is waited
         for rather than pressed on faith — pressing a disabled button does
@@ -772,10 +776,36 @@ class AXBackend:
         composer = self._element(control)
         button = self._send_button(control)
         if button is None:
-            raise OSError("the chat window has no accessible send button")
-        if not self._wait(lambda: button.attribute("AXEnabled") is True):
-            raise OSError("the send button did not become enabled; it was not pressed")
-        button.perform("AXPress")
+            window = self._windows_by_control.get(control)
+            text = self._text_by_control.get(control)
+            if window is None or text is None:
+                raise OSError("cannot target Return without a chat window and placed text")
+            window.perform("AXRaise")
+            window.set_attribute("AXMain", True)
+            activate()
+            composer.set_attribute("AXFocused", True)
+
+            def focused_composer() -> bool:
+                focused = self._app.attribute("AXFocusedUIElement")
+                if not isinstance(focused, ax.Element) or not focused.same_as(composer):
+                    return False
+                focused_window = focused.attribute("AXWindow")
+                return (
+                    isinstance(focused_window, ax.Element)
+                    and focused_window.same_as(window)
+                    and focused.value == text
+                )
+
+            if not self._wait(focused_composer):
+                raise OSError(
+                    "could not verify the target composer's focus, window and text; "
+                    "Return was not posted"
+                )
+            ax.post_key(self._pid, 36)
+        else:
+            if not self._wait(lambda: button.attribute("AXEnabled") is True):
+                raise OSError("the send button did not become enabled; it was not pressed")
+            button.perform("AXPress")
 
         def emptied() -> bool:
             remaining = composer.value

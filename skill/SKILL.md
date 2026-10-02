@@ -233,14 +233,20 @@ New server messages reach the local database only while the client syncs them.
 
 Sending requires a running, signed-in KakaoTalk client and a uniquely targeted
 chat window. macOS Accessibility (`AXUIElement`) finds the composer, sets its
-`AXValue`, and presses the window's send button. A Return over AXValue-placed
-text is ignored, because the client does not count the write as typing, so the
-button is what actually sends. A missing or disabled button fails rather than
-posting Return to an unspecified composer in the same process. Sending to an
-existing window does not activate the app, take foreground, move the cursor,
-or touch the clipboard.
+`AXValue`, and presses the window's send button when exposed. This button path
+does not activate the app, take foreground, move the cursor, or touch the
+clipboard. A disabled or unreadable button fails; it never falls back to Return.
 
-Minimized and hidden windows need not be shown. Discovery merges AX window
+Clients such as KakaoTalk for Mac 26.4.1 expose no accessible send button.
+Only in that case, the sender raises the target window, activates KakaoTalk and
+focuses the composer. Before posting Return, it confirms that the app's
+`AXFocusedUIElement` is the same native composer, its `AXWindow` is the same
+target window, and its `AXValue` equals the text just placed. A failed guard
+returns an error without posting any key. **This fallback requires activation
+and changes keyboard focus.** Dry-run does not place text or run the fallback.
+Both paths require the composer to empty before reporting `submitted: true`.
+
+On the button path, minimized and hidden windows need not be shown. Discovery merges AX window
 lists with application-scoped hit-testing at WindowServer window positions:
 this is a read, not a click. If another Space still hides the exact target,
 the sender presses only that title's Window-menu item and reads the resulting

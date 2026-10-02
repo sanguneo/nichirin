@@ -316,7 +316,7 @@ a different table; where it is not, this build says less rather than guessing.
 
 ### Sending
 
-Sending into an **already open** room window costs 0.07 s of accessibility
+On clients with an AX send button, sending into an **already open** room window costs 0.07 s of accessibility
 work and never touches the desktop: no activation, no focus, no pointer, no
 keystrokes. Everything below is what it took to get there.
 
@@ -332,7 +332,16 @@ keystrokes. Everything below is what it took to get there.
 - **An unreadable composer is not an empty composer.** A failed AX read
   returns `None`; after a press that means the outcome is unknown, not
   `submitted: true`. A disabled/unreadable button is never pressed, and a
-  missing button must not fall back to a process-wide Return.
+  missing button must not fall back to an unguarded process-wide Return.
+- **A button-less client needs focused Return, not background submission.**
+  KakaoTalk for Mac 26.4.1 exposed no AX send button in the 2026-10-02 dump.
+  Raise the target, activate the app and focus the composer, then verify the
+  app's focused element with `same_as`, its owning window with `same_as`, and
+  its value against the original placed text before posting Return. Any
+  failed guard posts no key; success still requires readable emptying. This
+  path changes foreground and focus. Its current regression proof is
+  synthetic; the live dry-run found no target (`WINDOW_NOT_FOUND`), and no
+  live send was performed for this change.
 - **Minimization is a CFBoolean, not the text `"true"`.** The client accepted
   the CFString setter with status 0 but emitted no event and did not minimize.
   Real booleans produced `AXWindowMiniaturized`/`AXWindowDeminiaturized`.
