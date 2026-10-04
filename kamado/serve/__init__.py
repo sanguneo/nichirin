@@ -42,6 +42,7 @@ re-exported here, so ``from kamado import serve`` still reaches all of it.
 from __future__ import annotations
 
 from .backends import (
+    make_live_account_reader,
     make_live_attachments_provider,
     make_live_context_provider,
     make_live_digest_provider,
@@ -50,6 +51,7 @@ from .backends import (
     make_live_revisions_provider,
     make_live_rooms_provider,
     make_live_send,
+    make_live_upload,
     make_live_watcher_factory,
 )
 from .config import (
@@ -63,6 +65,7 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_UPLOAD_BYTES,
     MIN_TOKEN_LENGTH,
     validate_min_interval,
     validate_poll_interval,
@@ -70,6 +73,7 @@ from .config import (
 )
 from .handler import build_handler
 from .server import QuietDisconnects, ServeHTTPServer, run
+from .upload import UploadStage
 
 __all__ = [
     "DEFAULT_HOST",
@@ -82,10 +86,13 @@ __all__ = [
     "MAX_LIMIT",
     "MAX_QUEUED_SENDS",
     "MAX_STREAMS",
+    "MAX_UPLOAD_BYTES",
     "MIN_TOKEN_LENGTH",
     "QuietDisconnects",
     "ServeHTTPServer",
+    "UploadStage",
     "build_handler",
+    "make_live_account_reader",
     "make_live_attachments_provider",
     "make_live_context_provider",
     "make_live_digest_provider",
@@ -94,6 +101,7 @@ __all__ = [
     "make_live_revisions_provider",
     "make_live_rooms_provider",
     "make_live_send",
+    "make_live_upload",
     "make_live_watcher_factory",
     "run",
     "validate_min_interval",

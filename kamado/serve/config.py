@@ -76,6 +76,28 @@ slot opens. Four keeps the worst wait to a few sends' worth of pacing, which
 fits inside an ordinary client timeout.
 """
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+"""Largest file ``POST /upload`` takes, announced as ``features.upload.maxBytes``.
+
+The body is read into memory before it is staged, so this is a memory bound as
+much as a policy. It is the Windows build's number, so one client limit fits
+both.
+"""
+
+UPLOAD_FRAMING_BYTES = 64 * 1024
+"""What a multipart body may carry beyond the file: boundaries, headers, room.
+
+A ``Content-Length`` above the file limit plus this is refused unread; the
+file part itself is held to ``MAX_UPLOAD_BYTES`` exactly once it is parsed.
+"""
+
+UPLOAD_KEEP_SECONDS = 60 * 60
+"""How long a staged upload is kept before a later upload sweeps it.
+
+The client reads the file from its path after the confirmation has closed, so
+the copy cannot be deleted when the request answers.
+"""
+
 _SQLITE_INT_MIN = -(2 ** 63)
 _SQLITE_INT_MAX = 2 ** 63 - 1
 
