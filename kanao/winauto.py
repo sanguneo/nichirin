@@ -161,6 +161,8 @@ DIALOG_OPEN_ID = 1
 DIALOG_CANCEL_ID = 2
 UPLOAD_ATTEMPTS = 80
 """Looks for each step of a file send before giving up: four seconds at POLL_SECONDS."""
+FIRST_PRESS_ATTEMPTS = 40
+"""Looks for the dialog after the first press of the file button before pressing again."""
 
 
 def scaled(point: tuple[int, int], dpi: int) -> tuple[int, int]:
@@ -842,11 +844,18 @@ class Sender:
             )
 
         before = backend.top_windows()
-        try:
-            backend.click_file_button(window.handle)
-        except OSError as error:
-            raise nothing_sent(f"the file button could not be pressed ({error})") from error
-        dialog = self._wait_for(lambda: backend.file_dialog(window.handle))
+        dialog = None
+        # Pressing the file button sends nothing; it only opens the dialog, so
+        # a press the client did not take is pressed once more. With the
+        # dialog up the room is disabled and a second press goes nowhere.
+        for attempts in (FIRST_PRESS_ATTEMPTS, UPLOAD_ATTEMPTS):
+            try:
+                backend.click_file_button(window.handle)
+            except OSError as error:
+                raise nothing_sent(f"the file button could not be pressed ({error})") from error
+            dialog = self._wait_for(lambda: backend.file_dialog(window.handle), attempts)
+            if dialog is not None:
+                break
         if dialog is None:
             raise nothing_sent("the file button showed no open-file dialog")
         try:
@@ -880,13 +889,15 @@ class Sender:
             "size": size,
         }
 
-    def _wait_for(self, look: Callable[[], Optional[int]]) -> Optional[int]:
-        """Look up to UPLOAD_ATTEMPTS times, settling between looks."""
-        for attempt in range(UPLOAD_ATTEMPTS):
+    def _wait_for(
+        self, look: Callable[[], Optional[int]], attempts: int = UPLOAD_ATTEMPTS
+    ) -> Optional[int]:
+        """Look up to *attempts* times, settling between looks."""
+        for attempt in range(attempts):
             found = look()
             if found is not None:
                 return found
-            if attempt + 1 < UPLOAD_ATTEMPTS:
+            if attempt + 1 < attempts:
                 self._settle()
         return None
 
@@ -920,6 +931,8 @@ _WM_GETTEXT = 0x000D
 _WM_GETTEXTLENGTH = 0x000E
 _BM_CLICK = 0x00F5
 _GW_OWNER = 4
+_SMTO_ABORTIFHUNG = 0x0002
+_WM_NULL = 0x0000
 _DESKTOP_SWITCHDESKTOP = 0x0100
 _POPUP_CLASS = "EVA_Window_Dblclk"
 _POPUP_SLACK = 0.2
@@ -1399,22 +1412,42 @@ class Win32Backend:
         return rect.left, rect.top, rect.right, rect.bottom
 
     def _post_click(self, handle: int, x: int, y: int) -> None:
-        """Post a click at a point measured from the window's corner. No cursor moves."""
+        """Click a point measured from the window's corner. No cursor moves.
+
+        Sent, not posted: in a remote-desktop session the client let posted
+        clicks on its toolbar go unanswered while sent ones opened the dialog
+        (2026-10-04). The release may open a modal and stay in it, so its
+        timeout is not a failure; what the click did is read from the windows
+        that appear, not from this call.
+        """
         from ctypes import wintypes
 
+        # A room restored a moment ago has not finished laying itself out;
+        # a click that arrives first lands on nothing. Measured in a
+        # remote-desktop session: clicked straight after the restore, no
+        # dialog in 6 s; after one WM_NULL round trip, a dialog in 0.32 s.
+        self._message(handle, _WM_NULL)
         left, top, _right, _bottom = self._rect(handle)
         point = wintypes.POINT(left + x, top + y)
         self._user32.ScreenToClient(handle, ctypes.byref(point))
         position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
+        result = ctypes.c_size_t()
         for message, button in (
             (_WM_MOUSEMOVE, 0),
             (_WM_LBUTTONDOWN, _MK_LBUTTON),
             (_WM_LBUTTONUP, 0),
         ):
-            if not self._user32.PostMessageW(handle, message, button, position):
-                raise OSError(f"PostMessage(click) failed: {ctypes.get_last_error()}")
+            if not self._user32.IsWindow(handle):
+                raise OSError("the window closed before it was clicked")
+            self._user32.SendMessageTimeoutW(
+                handle, message, button, position, _SMTO_ABORTIFHUNG, 2000, ctypes.byref(result)
+            )
 
     def click_file_button(self, handle: int) -> None:
+        # A room parked for a while answers its first click after a restore
+        # only once it has painted again: unpainted, no dialog in 6 s; after
+        # UpdateWindow, a dialog in 0.37 s (remote-desktop session, 2026-10-04).
+        self._user32.UpdateWindow(handle)
         _left, top, _right, bottom = self._rect(handle)
         x, up = scaled(FILE_BUTTON, self._dpi(handle))
         self._post_click(handle, x, (bottom - top) - up)

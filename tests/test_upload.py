@@ -28,6 +28,8 @@ class FakeFileWindows:
         self.chosen = ""
         self.locked = False
         self.minimise_taken = True
+        self.presses_ignored = 0
+        """How many presses of the file button the client lets go by first."""
 
     def chat_windows(self) -> list[ChatWindow]:
         return self.windows
@@ -78,6 +80,9 @@ class FakeFileWindows:
 
     def click_file_button(self, handle: int) -> None:
         self.actions.append("file button")
+        if self.presses_ignored:
+            self.presses_ignored -= 1
+            return
         if self.dialog_appears:
             self.visible.add(DIALOG)
 
@@ -150,11 +155,18 @@ class UploadTests(unittest.TestCase):
         self.sender.upload("Synthetic room", self.path)
         self.assertNotIn("focus 42", self.backend.actions)
 
+    def test_a_press_the_client_lets_go_by_is_pressed_once_more(self) -> None:
+        self.backend.presses_ignored = 1
+        self.sender.upload("Synthetic room", self.path)
+        self.assertEqual(self.backend.actions.count("file button"), 2)
+        self.assertIn("send", self.backend.actions)
+
     def test_no_dialog_sends_nothing_and_parks_the_room_again(self) -> None:
         self.backend.dialog_appears = False
         error = self.failure()
         self.assertIs(error.code, ErrorCode.SEND_FAILED)
         self.assertIn("nothing was sent", error.message)
+        self.assertEqual(self.backend.actions.count("file button"), 2)
         self.assertNotIn("send", self.backend.actions)
         self.assertEqual(self.backend.actions[-2:], ["park", "focus 7"])
 

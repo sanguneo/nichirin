@@ -1145,7 +1145,17 @@ on a live client, newest 4,000 rows of each readable room.
     re-parks the room was not taken either. `Sender.upload` now asks
     `desktop_locked()` first (the input desktop cannot be switched to while
     locked) and refuses before touching a window, and a room whose minimise
-    is not taken is parked with `SW_SHOWMINNOACTIVE`.
+    is not taken is parked with `SW_SHOWMINNOACTIVE`. A session that is
+    disconnected (remote desktop closed, the console at a new sign-in) reads
+    as locked too, and rightly: nothing can show a dialog there.
+  - **In a remote-desktop session, clicks must be sent, after a repaint.**
+    Measured the same evening: posted clicks on the toolbar went unanswered
+    while sent ones opened the dialog, and a room restored after a while
+    parked ignored a click sent straight after the restore (no dialog in
+    6 s) but answered one sent after `UpdateWindow` (0.37 s). So the click is
+    sent with a timeout after a repaint and a `WM_NULL` round trip, and a
+    first press that opens nothing within 2 s is pressed once more — the
+    file button only opens the dialog, so a second press sends nothing.
 - Confirm recipient and content before sending to real people. Callers must
   keep at least two seconds between sends. Real tests use only self-chat or a
   room explicitly authorized by the user; unit tests never call the desktop.
