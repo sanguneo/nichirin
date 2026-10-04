@@ -1138,6 +1138,14 @@ on a live client, newest 4,000 rows of each readable room.
   - The client uploads from the path after the confirmation closes, so the
     staged copy under `%LOCALAPPDATA%\kanao-cli\uploads` is kept an hour and
     swept by a later upload.
+  - **A locked workstation cannot show the open-file dialog.** Observed the
+    same day through the tailnet proxy with the lock screen up (`LogonUI`
+    running): the posted click opened nothing, the send answered "no
+    open-file dialog; nothing was sent", and the posted `SC_MINIMIZE` that
+    re-parks the room was not taken either. `Sender.upload` now asks
+    `desktop_locked()` first (the input desktop cannot be switched to while
+    locked) and refuses before touching a window, and a room whose minimise
+    is not taken is parked with `SW_SHOWMINNOACTIVE`.
 - Confirm recipient and content before sending to real people. Callers must
   keep at least two seconds between sends. Real tests use only self-chat or a
   room explicitly authorized by the user; unit tests never call the desktop.

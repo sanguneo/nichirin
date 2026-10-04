@@ -26,6 +26,8 @@ class FakeFileWindows:
         self.popup_closes = True
         self.foreground_window = 7
         self.chosen = ""
+        self.locked = False
+        self.minimise_taken = True
 
     def chat_windows(self) -> list[ChatWindow]:
         return self.windows
@@ -58,7 +60,15 @@ class FakeFileWindows:
 
     def minimize_window(self, handle: int) -> None:
         self.actions.append("park")
+        if self.minimise_taken:
+            self.parked = True
+
+    def park_quietly(self, handle: int) -> None:
+        self.actions.append("park quietly")
         self.parked = True
+
+    def desktop_locked(self) -> bool:
+        return self.locked
 
     def foreground(self) -> int | None:
         return self.foreground_window
@@ -186,6 +196,20 @@ class UploadTests(unittest.TestCase):
                     self.sender.upload("Synthetic room", path)
                 self.assertIs(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, [])
+
+    def test_a_locked_desktop_sends_nothing_and_touches_no_window(self) -> None:
+        self.backend.locked = True
+        error = self.failure()
+        self.assertIs(error.code, ErrorCode.SEND_FAILED)
+        self.assertIn("locked", error.message)
+        self.assertIn("nothing was sent", error.message)
+        self.assertEqual(self.backend.actions, [])
+
+    def test_a_room_whose_minimise_is_not_taken_is_parked_without_activation(self) -> None:
+        self.backend.minimise_taken = False
+        self.sender.upload("Synthetic room", self.path)
+        self.assertEqual(self.backend.actions[-3:], ["park", "park quietly", "focus 7"])
+        self.assertTrue(self.backend.parked)
 
     def test_a_coordinate_follows_the_window_s_scaling(self) -> None:
         self.assertEqual(scaled(FILE_BUTTON, 96), FILE_BUTTON)

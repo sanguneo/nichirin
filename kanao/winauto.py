@@ -556,6 +556,14 @@ class FileBackend(WindowBackend, Protocol):
         """Whether a room is still parked, so its buttons have no position yet."""
         ...
 
+    def park_quietly(self, handle: int) -> None:
+        """Minimise without activating, for when the ordinary minimise was not taken."""
+        ...
+
+    def desktop_locked(self) -> bool:
+        """Whether Windows is locked, so no dialog the client opens can be shown."""
+        ...
+
     def minimize_window(self, handle: int) -> None:
         """Park a room again."""
         ...
@@ -785,6 +793,12 @@ class Sender:
         # Every backend this is built with drives files too; the text-only
         # protocol is narrower only so the text tests need not fake files.
         backend = cast(FileBackend, self._backend)
+        if backend.desktop_locked():
+            raise KanaoError(
+                ErrorCode.SEND_FAILED,
+                "Windows is locked, so the client cannot show its open-file dialog; "
+                "nothing was sent",
+            )
         window = self.resolve(
             room,
             open_if_needed=open_if_needed,
@@ -808,6 +822,12 @@ class Sender:
         finally:
             if parked:
                 backend.minimize_window(window.handle)
+                # A posted minimise is asked of the client and can go untaken;
+                # the room is never left standing where it was parked before.
+                if self._wait_for(
+                    lambda: window.handle if backend.is_minimized(window.handle) else None
+                ) is None:
+                    backend.park_quietly(window.handle)
             if previous is not None and previous != window.handle:
                 backend.return_focus(previous)
 
@@ -900,6 +920,7 @@ _WM_GETTEXT = 0x000D
 _WM_GETTEXTLENGTH = 0x000E
 _BM_CLICK = 0x00F5
 _GW_OWNER = 4
+_DESKTOP_SWITCHDESKTOP = 0x0100
 _POPUP_CLASS = "EVA_Window_Dblclk"
 _POPUP_SLACK = 0.2
 """How far a confirmation may differ from FILE_POPUP_SIZE and still be it."""
@@ -1353,6 +1374,21 @@ class Win32Backend:
 
     def is_visible(self, handle: int) -> bool:
         return bool(self._user32.IsWindow(handle) and self._user32.IsWindowVisible(handle))
+
+    def park_quietly(self, handle: int) -> None:
+        self._user32.ShowWindow(handle, _SW_SHOWMINNOACTIVE)
+
+    def desktop_locked(self) -> bool:
+        # The input desktop of a locked session is the secure one, which this
+        # process cannot switch to: measured 2026-10-04 with the lock screen
+        # up, when the client's open-file dialog never appeared.
+        desktop = self._user32.OpenInputDesktop(0, False, _DESKTOP_SWITCHDESKTOP)
+        if not desktop:
+            return True
+        try:
+            return not self._user32.SwitchDesktop(desktop)
+        finally:
+            self._user32.CloseDesktop(desktop)
 
     def _rect(self, handle: int) -> tuple[int, int, int, int]:
         from ctypes import wintypes
