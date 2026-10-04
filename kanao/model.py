@@ -59,12 +59,20 @@ Every row of this type carried ``src_logId``, ``src_userId``, ``src_type`` and
 ``src_message`` in its attachment, across three rooms and 108 replies.
 """
 
+FILE_MESSAGE: Final = 18
+"""A file sent as a file: its text is the file's name, and `/file` hands over its bytes.
+
+Confirmed against a live client on 2026-10-04: a synthetic TXT sent through
+`POST /upload` read back as this type with the name as its text.
+"""
+
 _MESSAGE_KINDS: Final = {
     FEED_MESSAGE: "feed",
     TEXT_MESSAGE: "text",
     PHOTO_MESSAGE: "photo",
     VIDEO_MESSAGE: "video",
     REPLY_MESSAGE: "reply",
+    FILE_MESSAGE: "file",
 }
 
 
@@ -77,7 +85,6 @@ def message_kind(type_code: int) -> str:
     return _MESSAGE_KINDS.get(type_code, f"other:{type_code}")
 
 
-FILE_MESSAGE: Final = 18
 ALBUM_MESSAGE: Final = 27
 
 FEED_KINDS: Final = {4: "입장", 2: "퇴장"}
