@@ -17,6 +17,7 @@ from pathlib import Path
 from kanao.errors import ErrorCode
 from kanao.model import ROOM_KINDS
 from kanao.serve import config
+from kanao.tui.digest import parse_duration
 
 from tests.serve.helpers import StubSender, ServedCase, _request, _start_server
 
@@ -60,7 +61,12 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(highlights["maximum"], config.MAX_HIGHLIGHTS)
         self.assertEqual(highlights["default"], 3)
 
-        self.assertEqual(parameter("/digest", "span")["default"], "30m")
+        span = parameter("/digest", "span")
+        self.assertEqual(span["default"], "30m")
+        # The document once offered `1d`, which the slicer refuses with a 400.
+        for example in [span["default"], *span["examples"]]:
+            with self.subTest(span=example):
+                parse_duration(example)
 
         port = self.spec["servers"][0]["variables"]["port"]["default"]
         self.assertEqual(port, str(config.DEFAULT_PORT))
