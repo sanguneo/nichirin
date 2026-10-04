@@ -22,13 +22,14 @@ def make_live_rooms_provider(reader_factory) -> Callable[[], list[Any]]:
     return provider
 
 
-def make_live_context_provider(reader_factory) -> Callable[[int, int], dict[str, Any]]:
+def make_live_context_provider(reader_factory) -> Callable[..., dict[str, Any]]:
     """Return the context a live server reads on each ``GET /context``."""
 
-    def provider(room_id: int, limit: int) -> dict[str, Any]:
+    def provider(room_id: int, limit: int, *, show_covered: bool = False) -> dict[str, Any]:
         from ..context import read_context
 
         with reader_factory() as reader:
+            reader.reveal_covered = show_covered
             answer = read_context(reader, room_id, limit=limit)
         return {key: value for key, value in answer.items() if key != "ok"}
 
@@ -138,7 +139,7 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
     return send
 
 
-def make_live_digest_provider(reader_factory) -> Callable[[int, str, int, int], dict[str, Any]]:
+def make_live_digest_provider(reader_factory) -> Callable[..., dict[str, Any]]:
     """Return the digest a live server builds on each ``GET /digest``.
 
     The digest is ``kamado.digest.build``, the same call the command makes, so
@@ -148,10 +149,13 @@ def make_live_digest_provider(reader_factory) -> Callable[[int, str, int, int], 
     it.
     """
 
-    def provider(room_id: int, span: str, limit: int, highlights: int) -> dict[str, Any]:
+    def provider(
+        room_id: int, span: str, limit: int, highlights: int, *, show_covered: bool = False
+    ) -> dict[str, Any]:
         from ..digest import build
 
         with reader_factory() as reader:
+            reader.reveal_covered = show_covered
             return build(
                 reader, room_id, span=span, limit=limit, highlights=highlights
             )

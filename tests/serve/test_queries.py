@@ -35,7 +35,7 @@ class QueryTests(ServedCase):
             StubMessage(102, 1, "bob", "hello", 1700000010),
         ]
 
-        def context_provider(room_id: int, limit: int):
+        def context_provider(room_id: int, limit: int, *, show_covered=False):
             room = next(r for r in rooms if int(r["id"]) == room_id)
             return {"room": room, "messages": [m.as_json() for m in messages]}
 
@@ -55,7 +55,7 @@ class QueryTests(ServedCase):
         """
         seen = {}
 
-        def digest_provider(room_id: int, span: str, limit: int, highlights: int):
+        def digest_provider(room_id: int, span: str, limit: int, highlights: int, *, show_covered=False):
             seen.update(roomId=room_id, span=span, limit=limit, highlights=highlights)
             return {"room": {"id": str(room_id)}, "span": span, "slices": [], "note": "…"}
 
@@ -70,7 +70,7 @@ class QueryTests(ServedCase):
     def test_digest_defaults_match_the_command(self) -> None:
         seen = {}
 
-        def digest_provider(room_id: int, span: str, limit: int, highlights: int):
+        def digest_provider(room_id: int, span: str, limit: int, highlights: int, *, show_covered=False):
             seen.update(span=span, limit=limit, highlights=highlights)
             return {"slices": []}
 
@@ -79,7 +79,7 @@ class QueryTests(ServedCase):
         self.assertEqual(seen, {"span": "30m", "limit": 400, "highlights": 3})
 
     def test_digest_without_a_room_is_refused(self) -> None:
-        self.serve(_start_server(StubSender(), digest_provider=lambda *_: {}))
+        self.serve(_start_server(StubSender(), digest_provider=lambda *_, **__: {}))
         status, body, _ = _request(self.base, "GET", "/digest")
         self.assertEqual(status, 400)
         self.assertEqual(body["error"]["code"], "INVALID_REQUEST")
@@ -87,7 +87,7 @@ class QueryTests(ServedCase):
     def test_digest_relays_a_refusal_from_the_slicer(self) -> None:
         """A span the slicer cannot take is the CLI's answer, not a crash."""
 
-        def digest_provider(room_id: int, span: str, limit: int, highlights: int):
+        def digest_provider(room_id: int, span: str, limit: int, highlights: int, *, show_covered=False):
             raise KamadoError(ErrorCode.INVALID_REQUEST, "a slice cannot exceed 12h")
 
         self.serve(_start_server(StubSender(), digest_provider=digest_provider))
@@ -96,12 +96,12 @@ class QueryTests(ServedCase):
         self.assertEqual(body["error"]["code"], "INVALID_REQUEST")
 
     def test_digest_needs_a_token_like_every_other_read(self) -> None:
-        self.serve(_start_server(StubSender(), digest_provider=lambda *_: {}))
+        self.serve(_start_server(StubSender(), digest_provider=lambda *_, **__: {}))
         status, _, _ = _request(self.base, "GET", "/digest?roomId=1", token=None)
         self.assertEqual(status, 401)
 
     def test_context_unknown_room_is_not_found(self) -> None:
-        def context_provider(room_id: int, limit: int):
+        def context_provider(room_id: int, limit: int, *, show_covered=False):
             raise KamadoError(ErrorCode.CHAT_NOT_FOUND, f"No conversation has id {room_id}")
 
         self.serve(_start_server(StubSender(), rooms=[{"id": "1", "title": "Family"}],
@@ -116,11 +116,11 @@ class QueryTests(ServedCase):
         """Providers that record being called, so a refusal can be proven."""
         calls = []
 
-        def context_provider(room_id: int, limit: int):
+        def context_provider(room_id: int, limit: int, *, show_covered=False):
             calls.append(("context", room_id, limit))
             return {"room": {"id": str(room_id)}, "messages": []}
 
-        def digest_provider(room_id: int, span: str, limit: int, highlights: int):
+        def digest_provider(room_id: int, span: str, limit: int, highlights: int, *, show_covered=False):
             calls.append(("digest", room_id, limit, highlights))
             return {"room": {"id": str(room_id)}, "span": span, "slices": [], "note": "…"}
 

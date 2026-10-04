@@ -576,9 +576,11 @@ keep rather than one to rediscover.
   four hosts seen (`open.`, `p.`, `iopen.`, `chat.`) each answered an
   unauthenticated GET with `200 image/jpeg`. A group is composed from
   `displayMemberIds`, the display list, not a full roll. Contract 0.18.1
-  dropped the two keys' `x-platform`; the board-notice full text stays
-  Windows-only, since this client keeps no board and its one 100-character
-  notice row matched no message.
+  dropped the two keys' `x-platform`. Contract 0.21.1 also makes the notice
+  full-text keys common: this build looks beyond a 100-character legacy row
+  for a matching live message or type-98 post share, without a board table.
+  The recovery is proven on synthetic rows; the share's `os` shape has not
+  been measured against this Mac client.
 
 ## Conventions
 

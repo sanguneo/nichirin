@@ -60,7 +60,12 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(highlights["maximum"], config.MAX_HIGHLIGHTS)
         self.assertEqual(highlights["default"], 3)
 
-        self.assertEqual(parameter("/digest", "span")["default"], "30m")
+        from kamado.tui.digest import parse_duration
+
+        span = parameter("/digest", "span")
+        for value in [span["default"], *span.get("examples", [])]:
+            with self.subTest(span=value):
+                parse_duration(value)
 
         port = self.spec["servers"][0]["variables"]["port"]["default"]
         self.assertEqual(port, str(config.DEFAULT_PORT))
@@ -106,11 +111,6 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
-                "components/schemas/Notice/properties/truncated",
-                "components/schemas/Notice/properties/fullText",
-                "components/schemas/Notice/properties/fullTextMessageId",
-                "components/schemas/Notice/properties/fullTextTruncated",
-                "components/schemas/Notice/properties/fullTextCandidates",
             },
         )
 

@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Final, Optional, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 DIRECT_CHAT: Final = "DirectChat"
 GROUP_CHAT: Final = "MultiChat"
@@ -724,6 +725,51 @@ def reactions_in(raw: object) -> tuple[Reaction, ...]:
     return tuple(found)
 
 
+NOTICE_TEXT_LIMIT: Final = 100
+"""How much of a notice ``NTChatMeta`` keeps; a notice this long may be cut."""
+MESSAGE_TEXT_LIMIT: Final = 3999
+"""How much of a long message the row keeps; the rest is a file the client did not save."""
+SHARE_TEXT_LIMIT: Final = 500
+"""How much of a board post its share carries."""
+POST_SHARE_MESSAGE: Final = 98
+"""A board post shared into the room.
+
+The attachment's shape is assumed, not measured on this client: ``os`` is a
+list of segments, a ``t = 1`` segment's ``ct`` is the post's text and another
+segment's ``url`` is ``kakaomoim://post?...&post_id=...``. It follows the
+LOCO post attachment as node-kakao describes it.
+"""
+
+
+def post_share_in(attachment: dict[str, Any]) -> Optional[str]:
+    """Return a board post share's text, or None when the attachment is not one.
+
+    A share counts only when one of its segments links a post by its id.
+    """
+    segments = attachment.get("os")
+    if not isinstance(segments, list):
+        return None
+    text: Optional[str] = None
+    names_post = False
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        body = segment.get("ct")
+        if text is None and segment.get("t") == 1 and isinstance(body, str):
+            text = body
+        url = segment.get("url")
+        if isinstance(url, str):
+            try:
+                parts = urlsplit(url)
+            except ValueError:
+                continue
+            names_post = names_post or (
+                (parts.scheme, parts.netloc) == ("kakaomoim", "post")
+                and any(parse_qs(parts.query).get("post_id", ()))
+            )
+    return text if names_post else None
+
+
 def covered_in(attachment: dict[str, Any]) -> Optional[str]:
     """Say who covered a message, or None when nothing did.
 
@@ -791,9 +837,19 @@ class Notice:
     posted_at: Optional[int]
     source: str
     """``board`` for a board post, ``legacy`` for the meta-table notice row."""
+    truncated: bool = False
+    """``text`` stopped at the :data:`NOTICE_TEXT_LIMIT` the client keeps."""
+    full_text: Optional[str] = None
+    full_text_message_id: Optional[int] = None
+    full_text_source: Optional[str] = None
+    """``share`` or ``message``; set exactly when ``full_text`` is."""
+    full_text_truncated: bool = False
+    """``full_text`` itself stopped at its source's limit."""
+    full_text_candidates: tuple[int, ...] = ()
+    """Messages that each begin with the whole of ``text``, when there are two or more."""
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        answer: dict[str, Any] = {
             "text": self.text,
             "kind": self.kind,
             "authorId": None if self.author_id is None else str(self.author_id),
@@ -801,6 +857,17 @@ class Notice:
             "postedAt": to_iso(self.posted_at),
             "source": self.source,
         }
+        if self.truncated:
+            answer["truncated"] = True
+        if self.full_text is not None and self.full_text_message_id is not None:
+            answer["fullText"] = self.full_text
+            answer["fullTextMessageId"] = str(self.full_text_message_id)
+            answer["fullTextSource"] = self.full_text_source
+            if self.full_text_truncated:
+                answer["fullTextTruncated"] = True
+        if self.full_text_candidates:
+            answer["fullTextCandidates"] = [str(one) for one in self.full_text_candidates]
+        return answer
 
 
 @dataclass(frozen=True)
