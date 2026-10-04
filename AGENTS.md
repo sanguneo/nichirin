@@ -376,7 +376,9 @@ crossed over.
   11 rows; `type & 0x2000` (which piratetalk also checks) was 0 rows here and is
   not used. The row keeps its text, so hiding it is this tool's decision:
   `Reader.reveal_covered` is off by default, as the client shows it, and
-  `/safebot` or `--show-covered` turns it on. Off, the text is withheld from
+  `/safebot`, `--show-covered` or `showCovered=true` on `/context` and
+  `/digest` turns it on. The server's flag reaches a reader built for that
+  request, so it reveals nothing to the next caller. Off, the text is withheld from
   the message, a quote of it, its links and the search — a match with empty
   text would still say what it contained. The six `openchat_blind` cover feeds
   seen all pointed at rows already `is_encrypt_delete_msg = 1`, which show as

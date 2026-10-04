@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "KakaoTalk local bridge — serve",
-    "version": "0.20.0",
+    "version": "0.21.0",
     "summary": "The HTTP + SSE surface that kanao-cli (Windows) and kamado-cli (macOS) both answer.",
     "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only. A cut-off notice's whole text — `Notice.truncated`, `fullText`, `fullTextMessageId`, `fullTextSource`, `fullTextTruncated` and `fullTextCandidates` — is answered by both builds since 0.20.0, because both clients cut the notice row at the same 100 characters. The profile pictures added in 0.17.0 — `Room.images` and `Message.senderImage` — are answered by both builds since 0.18.1. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
     "license": {
@@ -140,6 +140,9 @@
             "$ref": "#/components/parameters/OpenRoom"
           },
           {
+            "$ref": "#/components/parameters/ShowCovered"
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -195,6 +198,9 @@
           },
           {
             "$ref": "#/components/parameters/OpenRoom"
+          },
+          {
+            "$ref": "#/components/parameters/ShowCovered"
           },
           {
             "name": "span",
@@ -749,6 +755,16 @@
         "in": "query",
         "required": false,
         "description": "Open the room in the client first if its key is not in memory, then answer. Opening a room marks it read in the client, so it happens only when asked; without it such a room answers 503 `KEY_UNAVAILABLE`. `true` or `false` — anything else is a 400, so a typo cannot open a room. Opening is done one at a time, under the same lock as sending. On a host where every room is always readable it changes nothing.",
+        "schema": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "ShowCovered": {
+        "name": "showCovered",
+        "in": "query",
+        "required": false,
+        "description": "Show the text of messages an open chat's SafeBot covered, the way `--show-covered` does on the command line. Off by default, as the client shows them: a covered message carries `covered` and an empty `text`. Asked for, the same messages carry their text and still say `covered`. It applies to this request only. `true` or `false`; anything else is a 400. A message deleted for everyone stays deleted either way.",
         "schema": {
           "type": "boolean",
           "default": false

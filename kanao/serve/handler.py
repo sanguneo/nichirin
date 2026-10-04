@@ -168,6 +168,16 @@ class _SendQueue:
         self._state.wait(remaining)
 
 
+def _show_covered(query: dict[str, list[str]]) -> bool:
+    """Whether a read asked for what an open chat's SafeBot covered.
+
+    Off unless asked, as the client shows it; ``--show-covered`` and the
+    interface's ``/safebot`` are the same switch. Spelled out like ``open``,
+    so a typo is a 400 rather than a guess either way.
+    """
+    return validate_flag(query.get("showCovered", ["false"])[0], name="showCovered")
+
+
 def build_handler(
     send: Callable[..., dict[str, Any]],
     *,
@@ -175,8 +185,8 @@ def build_handler(
     min_interval: float = DEFAULT_MIN_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     rooms_provider: Optional[Callable[[], list[Any]]] = None,
-    context_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
-    digest_provider: Optional[Callable[[int, str, int, int], dict[str, Any]]] = None,
+    context_provider: Optional[Callable[..., dict[str, Any]]] = None,
+    digest_provider: Optional[Callable[..., dict[str, Any]]] = None,
     watcher_factory: Optional[Callable[[], Any]] = None,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -193,8 +203,10 @@ def build_handler(
     *send* takes ``(room, text, dry_run=..., open_if_needed=..., aliases=...,
     hint=...)`` and returns the sender envelope or raises :class:`KanaoError`.
     *rooms* is a static list of serialized rooms (tests); *rooms_provider*
-    returns model rooms; *context_provider* takes ``(room_id, limit)`` and
-    returns the ``context.read_context`` payload minus its envelope; and
+    returns model rooms; *context_provider* takes ``(room_id, limit,
+    show_covered=...)`` and returns the ``context.read_context`` payload
+    minus its envelope; *digest_provider* takes ``(room_id, span, limit,
+    highlights, show_covered=...)``; and
     *room_opener* takes a room id and has the client open that room so its
     key is loaded, raising :class:`KanaoError` if it cannot; it is what
     ``open=true`` on ``/context`` and ``/digest`` calls, one at a time under
@@ -471,6 +483,7 @@ def build_handler(
                     query.get("limit", ["40"])[0], name="limit", maximum=MAX_LIMIT
                 )
                 wanted = validate_flag(query.get("open", ["false"])[0], name="open")
+                shown = _show_covered(query)
             except KanaoError as error:
                 # Refused before the reader is opened: a bad number should cost
                 # the caller a round trip, not a decryption.
@@ -478,7 +491,9 @@ def build_handler(
                 return
             try:
                 payload = self._read_opening(
-                    room_id, wanted, lambda: context_provider(room_id, limit)
+                    room_id,
+                    wanted,
+                    lambda: context_provider(room_id, limit, show_covered=shown),
                 )
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
@@ -521,12 +536,17 @@ def build_handler(
                     maximum=MAX_HIGHLIGHTS,
                 )
                 wanted = validate_flag(query.get("open", ["false"])[0], name="open")
+                shown = _show_covered(query)
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return
             try:
                 payload = self._read_opening(
-                    room_id, wanted, lambda: digest_provider(room_id, span, limit, highlights)
+                    room_id,
+                    wanted,
+                    lambda: digest_provider(
+                        room_id, span, limit, highlights, show_covered=shown
+                    ),
                 )
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))

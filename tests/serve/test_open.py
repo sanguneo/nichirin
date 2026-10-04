@@ -23,13 +23,15 @@ class LockedRoom:
     def open(self, room_id: int) -> None:
         self.opened.append(room_id)
 
-    def context(self, room_id: int, limit: int):
+    def context(self, room_id: int, limit: int, show_covered: bool = False):
         self.reads += 1
         if not self.opened:
             raise KanaoError(ErrorCode.KEY_UNAVAILABLE, "KakaoTalk has not opened that room")
         return {"room": {"id": str(room_id)}, "messages": []}
 
-    def digest(self, room_id: int, span: str, limit: int, highlights: int):
+    def digest(
+        self, room_id: int, span: str, limit: int, highlights: int, show_covered: bool = False
+    ):
         self.context(room_id, limit)
         return {"room": {"id": str(room_id)}, "span": span, "slices": [], "note": "…"}
 
