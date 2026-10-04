@@ -6,6 +6,8 @@ machine connects with a bearer token and can then:
 - ``POST /send`` — hand a message to the same ``winauto.Sender`` the ``send``
   command drives, with the two-seconds-between-sends rule enforced server-side
   by making the second send wait rather than by refusing it.
+- ``POST /upload`` — send one file through the room's own file button, in the
+  same line as ``/send``; ``GET /health`` declares it under ``features``.
 - ``GET /rooms`` — list readable rooms in the same shape as the CLI command.
 - ``GET /context?roomId=…`` — read one room's recent messages.
 - ``GET /notice``, ``/attachments``, ``/revisions`` — a room's pinned notice,
@@ -54,6 +56,7 @@ from .backends import (
     make_live_digest_provider,
     make_live_rooms_provider,
     make_live_send,
+    make_live_upload,
     make_live_watcher_factory,
 )
 from .config import (
@@ -67,6 +70,7 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_UPLOAD_BYTES,
     MIN_TOKEN_LENGTH,
     validate_min_interval,
     validate_poll_interval,
@@ -86,6 +90,7 @@ __all__ = [
     "MAX_LIMIT",
     "MAX_QUEUED_SENDS",
     "MAX_STREAMS",
+    "MAX_UPLOAD_BYTES",
     "MIN_TOKEN_LENGTH",
     "QuietDisconnects",
     "ServeHTTPServer",
@@ -99,6 +104,7 @@ __all__ = [
     "make_live_digest_provider",
     "make_live_rooms_provider",
     "make_live_send",
+    "make_live_upload",
     "make_live_watcher_factory",
     "run",
     "validate_min_interval",

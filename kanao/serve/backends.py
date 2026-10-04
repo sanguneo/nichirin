@@ -7,9 +7,16 @@ platform-specific half of the server is one import away from the rest of it.
 
 from __future__ import annotations
 
+import os
+import secrets
+import shutil
+import tempfile
+import time
+from pathlib import Path
 from typing import Any, Callable
 
 from ..errors import ErrorCode, KanaoError
+from .config import UPLOAD_KEEP_SECONDS
 
 
 def make_live_rooms_provider(reader_factory) -> Callable[[], list[Any]]:
@@ -62,11 +69,11 @@ def make_live_room_opener(reader_factory) -> Callable[[int], None]:
     return opener
 
 
-def make_live_send() -> Callable[..., dict[str, Any]]:
-    """Build the send callable the server uses on a Windows host.
+def _live_writer() -> Callable[..., dict[str, Any]]:
+    """Build what the server's writes, text and files, go through on a Windows host.
 
     Each call opens a fresh reader, resolves the room exactly like the ``send``
-    command, refuses duplicate catalog titles, and hands the text to the real
+    command, refuses duplicate catalog titles, and hands the room to the real
     sender — but the snapshot cache and the key ring outlive the request.
 
     Without that, every ``POST /send`` decrypted the whole catalog and scanned
@@ -99,14 +106,7 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
     that does not come up, instead of one that comes up and says so.
     """
 
-    def send(
-        room: str,
-        text: str,
-        dry_run: bool = False,
-        open_if_needed: bool = False,
-        aliases=(),
-        hint=None,
-    ) -> dict[str, Any]:
+    def write(room: str, act: Callable[..., dict[str, Any]]) -> dict[str, Any]:
         from ..context import _resolve
         from ..winauto import make_sender
 
@@ -149,11 +149,9 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
                 None,
             )
             try:
-                result = make_sender().send(
+                result = act(
+                    make_sender(),
                     resolved.title,
-                    text,
-                    dry_run=dry_run,
-                    open_if_needed=open_if_needed,
                     aliases=window_aliases,
                     hint=position,
                     # The client's search lists rooms that merely have a
@@ -165,7 +163,84 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
                 raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
             return {**result, "roomId": str(resolved.id)}
 
+    return write
+
+
+def make_live_send() -> Callable[..., dict[str, Any]]:
+    """Build the send callable the server uses on a Windows host."""
+    write = _live_writer()
+
+    def send(
+        room: str,
+        text: str,
+        dry_run: bool = False,
+        open_if_needed: bool = False,
+        aliases=(),
+        hint=None,
+    ) -> dict[str, Any]:
+        return write(
+            room,
+            lambda sender, title, **where: sender.send(
+                title, text, dry_run=dry_run, open_if_needed=open_if_needed, **where
+            ),
+        )
+
     return send
+
+
+def make_live_upload() -> Callable[..., dict[str, Any]]:
+    """Build the file-send callable the server uses on a Windows host.
+
+    The bytes are written once under the name the room will see, in a folder
+    of their own, and the client is pointed at that path the way a person
+    points it at a file. The copy outlives the request because the client
+    uploads from it after its confirmation has closed.
+    """
+    write = _live_writer()
+
+    def upload(
+        room: str, name: str, data: bytes, open_if_needed: bool = False
+    ) -> dict[str, Any]:
+        path = stage_upload(_upload_folder(), name, data, now=time.time())
+        return write(
+            room,
+            lambda sender, title, **where: sender.upload(
+                title, str(path), open_if_needed=open_if_needed, **where
+            ),
+        )
+
+    return upload
+
+
+def _upload_folder() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "kanao-cli" / "uploads"
+
+
+def stage_upload(folder: Path, name: str, data: bytes, *, now: float) -> Path:
+    """Write *data* as *name* in a fresh folder under *folder*, sweeping old ones."""
+    sweep_uploads(folder, now=now)
+    target = folder / secrets.token_hex(8)
+    target.mkdir(parents=True)
+    path = target / name
+    path.write_bytes(data)
+    return path
+
+
+def sweep_uploads(folder: Path, *, now: float) -> None:
+    """Remove staged copies older than UPLOAD_KEEP_SECONDS.
+
+    A copy the client still holds open cannot be removed on Windows; it is
+    left for the next sweep rather than failing the upload that found it.
+    """
+    if not folder.is_dir():
+        return
+    for entry in folder.iterdir():
+        try:
+            if entry.is_dir() and now - entry.stat().st_mtime > UPLOAD_KEEP_SECONDS:
+                shutil.rmtree(entry)
+        except OSError:
+            continue
 
 
 def make_live_digest_provider(reader_factory) -> Callable[..., dict[str, Any]]:

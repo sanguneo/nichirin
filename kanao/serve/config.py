@@ -74,6 +74,60 @@ becomes a way to make this process read a whole history into memory.
 MAX_HIGHLIGHTS = 20
 """Most representative lines a digest slice may be asked for."""
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+"""Largest file ``POST /upload`` takes, and what ``/health`` declares.
+
+The body is held in memory while it is parsed and then written once to the
+folder the client reads it from, so this is a bound on this process rather than
+on the client, which takes larger files from a person. Fifty megabytes covers a
+phone's photos and short videos, which is what a remote send is for.
+"""
+
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
+"""What the parts around the file may add to an upload's body."""
+
+UPLOAD_KEEP_SECONDS = 3600
+"""How long a sent file's copy is kept for the client to finish reading it.
+
+Pressing send hands the client a path, and it uploads from that path after the
+confirmation has closed; deleting the copy then could cut the upload short.
+Copies older than this are swept by the next upload.
+"""
+
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+_MAX_NAME_LENGTH = 120
+
+
+def upload_name(filename: object) -> str:
+    """The name a sent file is written under, which is the name the room sees.
+
+    The name is the caller's text, so it is reduced to one Windows file name:
+    no folders, none of the characters Windows refuses, no device names, and
+    a length the open-file dialog's box holds whole.
+    """
+    if not isinstance(filename, str):
+        raise KanaoError(ErrorCode.INVALID_REQUEST, "the file part needs a file name")
+    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = "".join(
+        "_" if character in '<>:"|?*' or ord(character) < 32 or ord(character) == 127 else character
+        for character in base
+    ).strip(" .")
+    if not cleaned:
+        raise KanaoError(ErrorCode.INVALID_REQUEST, "the file part needs a file name")
+    stem, dot, extension = cleaned.rpartition(".")
+    if (stem if dot else cleaned).upper() in _RESERVED_NAMES:
+        cleaned = "_" + cleaned
+    if len(cleaned) > _MAX_NAME_LENGTH:
+        if dot and 0 < len(extension) <= 16:
+            cleaned = cleaned[: _MAX_NAME_LENGTH - len(extension) - 1].rstrip(" .") + "." + extension
+        else:
+            cleaned = cleaned[:_MAX_NAME_LENGTH].rstrip(" .")
+    return cleaned
+
 _SQLITE_INT_MIN = -(2 ** 63)
 _SQLITE_INT_MAX = 2 ** 63 - 1
 

@@ -345,7 +345,18 @@ curl -N -H "$H" -H 'Accept: text/event-stream' $T/stream
 | `GET /revisions?roomId=…&messageId=…` | 수정된 메시지의 버전 전부 |
 | `GET /file?roomId=…&messageId=…` | **파일 내려받기** — 바이트를 그대로 흘려보냅니다 (아래) |
 | `POST /send` | `{"room", "text", "dryRun?", "openRoom?"}` — `send` 명령과 같은 경로 |
+| `POST /upload` | **파일 보내기** — `multipart/form-data`로 `room`, `file`, `openRoom?`. 방 창의 파일 버튼·열기 창·"파일 전송" 확인을 사람처럼 누릅니다 (아래) |
 | `GET /stream` | **SSE** 실시간 새 메시지 — `event: ready` → `message` → `cursor` → `ping`, 실패 시 `event: error` 한 줄 뒤 종료. `?since=방id:logId`로 끊긴 지점부터 재개 |
+
+**파일은 보낼 수도 있습니다.** `POST /upload`는 사람이 파일을 보낼 때와 같은 세 단계를 밟습니다. 방 창 아래
+파일 버튼, 그것이 여는 Windows 열기 창, 카카오톡의 "파일 전송" 확인입니다. 사진과 동영상은 카카오톡이
+사람이 보낸 것처럼 보여 줍니다. 텍스트와 같은 줄에서 차례를 기다리고, `submitted: true`는 확인 창이
+닫혔다는 뜻일 뿐 전달이 아닙니다. 열기 창은 진짜 창이라 잠깐 키보드를 가져가고, 끝나면 원래 창에
+돌려줍니다. 한도는 `GET /health`의 `features.upload.maxBytes`(50MB)이고, macOS 빌드에는 아직 없습니다.
+
+```bash
+curl -s -H "$H" -F room=나와의\ 채팅 -F file=@photo.png $T/upload
+```
 
 **파일은 HTTP로 바로 받습니다.** 어떤 메시지가 파일인지는 `/attachments?kind=file`이
 알려주고, `/file`이 그 파일을 내려보냅니다.

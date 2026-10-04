@@ -370,6 +370,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             make_live_room_opener,
             make_live_rooms_provider,
             make_live_send,
+            make_live_upload,
             make_live_watcher_factory,
             run as serve_run,
             validate_token,
@@ -402,6 +403,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             attachments_provider=make_live_attachments_provider(lambda: Reader()),
             revisions_provider=make_live_revisions_provider(lambda: Reader()),
             file_provider=make_live_file_provider(lambda: Reader()),
+            upload=make_live_upload(),
         )
 
     if arguments.command == "search":

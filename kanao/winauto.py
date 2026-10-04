@@ -28,7 +28,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Protocol, TypedDict
+from typing import Callable, Iterable, Optional, Protocol, TypedDict, cast
 
 from .errors import ErrorCode, KanaoError
 
@@ -126,6 +126,47 @@ class SendResult(_Submission, total=False):
 
     clearedDraft: bool
     wouldClearDraft: bool
+
+
+class UploadResult(TypedDict):
+    """What a file send reports back.
+
+    ``submitted`` says the client's own file-send confirmation closed after
+    its send button was pressed, which is the client taking the file; it is
+    no more proof of delivery than an emptied input box is for text.
+    """
+
+    submitted: bool
+    room: str
+    name: str
+    size: int
+
+
+FILE_BUTTON = (88, 24)
+"""The toolbar's file button: from the room window's left edge, and up from its bottom.
+
+Measured on a live 380x640 room window at 100% scaling on 2026-10-04: the row
+under the input box holds +, the emoticon and the file buttons at 24, 56 and
+88, 24 px above the bottom edge. It is owner-drawn, so like a room-list row it
+can only be addressed by coordinate.
+"""
+FILE_POPUP_SIZE = (300, 185)
+"""The client's "파일 전송" confirmation at 100% scaling, measured with the button below."""
+FILE_POPUP_SEND = (150, 145)
+"""The confirmation's "1개 전송" button, from the popup's top-left corner."""
+DIALOG_CLASS = "#32770"
+DIALOG_FILENAME_ID = 1148
+"""The file name box of the Windows open-file dialog the file button shows."""
+DIALOG_OPEN_ID = 1
+DIALOG_CANCEL_ID = 2
+UPLOAD_ATTEMPTS = 80
+"""Looks for each step of a file send before giving up: four seconds at POLL_SECONDS."""
+
+
+def scaled(point: tuple[int, int], dpi: int) -> tuple[int, int]:
+    """A coordinate measured at 100% scaling, at a window's own scaling."""
+    scale = (dpi if dpi > 0 else MEASURED_DPI) / MEASURED_DPI
+    return round(point[0] * scale), round(point[1] * scale)
 
 
 class MessageSender(Protocol):
@@ -494,6 +535,72 @@ class RoomOpener:
         )
 
 
+class FileBackend(WindowBackend, Protocol):
+    """What a file send drives besides the input box: the client's own file path.
+
+    A person sends a file by pressing the room's file button, choosing it in
+    the Windows open-file dialog and pressing "1개 전송" in the client's
+    confirmation. These are those three steps; nothing is injected and nothing
+    of the client's is read or written beyond the windows a person sees.
+    """
+
+    def top_windows(self) -> set[int]:
+        """Every visible top-level window the client owns, by handle."""
+        ...
+
+    def show_unfocused(self, handle: int) -> bool:
+        """Restore a parked room without taking the keyboard; say if it was parked."""
+        ...
+
+    def is_minimized(self, handle: int) -> bool:
+        """Whether a room is still parked, so its buttons have no position yet."""
+        ...
+
+    def minimize_window(self, handle: int) -> None:
+        """Park a room again."""
+        ...
+
+    def foreground(self) -> Optional[int]:
+        """The window holding the keyboard, so it can be handed back."""
+        ...
+
+    def return_focus(self, handle: int) -> None:
+        """Hand the keyboard back to where the person left it."""
+        ...
+
+    def click_file_button(self, handle: int) -> None:
+        """Press the room's file button."""
+        ...
+
+    def file_dialog(self, handle: int) -> Optional[int]:
+        """The open-file dialog the client showed for this room, if it is up."""
+        ...
+
+    def choose_file(self, dialog: int, path: str) -> None:
+        """Name *path* in the dialog and press Open; raise if the name did not take."""
+        ...
+
+    def cancel_dialog(self, dialog: int) -> None:
+        """Dismiss the dialog, which sends nothing."""
+        ...
+
+    def file_popup(self, before: set[int]) -> Optional[int]:
+        """The client's file-send confirmation, if one appeared since *before*."""
+        ...
+
+    def press_popup_send(self, popup: int) -> None:
+        """Press the confirmation's send button."""
+        ...
+
+    def close_window(self, handle: int) -> None:
+        """Close a window the way its own close button would."""
+        ...
+
+    def is_visible(self, handle: int) -> bool:
+        """Whether a window still exists and is shown."""
+        ...
+
+
 class Sender:
     """Resolve a room's chat window and hand a message to its input."""
 
@@ -649,6 +756,121 @@ class Sender:
         }
 
 
+    def upload(
+        self,
+        room: str,
+        path: str,
+        open_if_needed: bool = False,
+        aliases: Iterable[str] = (),
+        hint: Optional[int] = None,
+        search_row: Optional[int] = None,
+    ) -> UploadResult:
+        """Send the file at *path* to *room* the way a person would.
+
+        The room's file button, the open-file dialog it shows, and the
+        client's own "파일 전송" confirmation. Until that confirmation's send
+        button is pressed nothing has left, so every failure before it closes
+        what was opened and says nothing was sent. After it, the only account
+        the client gives is the confirmation closing; a confirmation that
+        stays is closed and reported as an unknown outcome, never retried.
+
+        The open-file dialog is a real window and takes the keyboard while it
+        is up; the keyboard is handed back to where it was afterwards.
+        """
+        if not os.path.isfile(path):
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "there is no file at that path")
+        size = os.path.getsize(path)
+        if size <= 0:
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty file")
+        # Every backend this is built with drives files too; the text-only
+        # protocol is narrower only so the text tests need not fake files.
+        backend = cast(FileBackend, self._backend)
+        window = self.resolve(
+            room,
+            open_if_needed=open_if_needed,
+            aliases=aliases,
+            hint=hint,
+            search_row=search_row,
+        )
+        previous = backend.foreground()
+        parked = backend.show_unfocused(window.handle)
+        try:
+            if parked and self._wait_for(
+                lambda: None if backend.is_minimized(window.handle) else window.handle
+            ) is None:
+                raise KanaoError(
+                    ErrorCode.SEND_FAILED,
+                    f"the window for {window.title!r} could not be restored to press its "
+                    "file button; nothing was sent",
+                    room=window.title,
+                )
+            return self._upload_into(backend, window, path, size)
+        finally:
+            if parked:
+                backend.minimize_window(window.handle)
+            if previous is not None and previous != window.handle:
+                backend.return_focus(previous)
+
+    def _upload_into(
+        self, backend: FileBackend, window: ChatWindow, path: str, size: int
+    ) -> UploadResult:
+        def nothing_sent(step: str) -> KanaoError:
+            return KanaoError(
+                ErrorCode.SEND_FAILED,
+                f"{step} in {window.title!r}; nothing was sent",
+                room=window.title,
+            )
+
+        before = backend.top_windows()
+        try:
+            backend.click_file_button(window.handle)
+        except OSError as error:
+            raise nothing_sent(f"the file button could not be pressed ({error})") from error
+        dialog = self._wait_for(lambda: backend.file_dialog(window.handle))
+        if dialog is None:
+            raise nothing_sent("the file button showed no open-file dialog")
+        try:
+            backend.choose_file(dialog, path)
+        except OSError as error:
+            backend.cancel_dialog(dialog)
+            raise nothing_sent(f"the file could not be named in the dialog ({error})") from error
+        popup = self._wait_for(lambda: backend.file_popup(before))
+        if popup is None:
+            if backend.is_visible(dialog):
+                backend.cancel_dialog(dialog)
+            raise nothing_sent("the client showed no file-send confirmation")
+        try:
+            backend.press_popup_send(popup)
+        except OSError as error:
+            backend.close_window(popup)
+            raise nothing_sent(f"the confirmation's send button could not be pressed ({error})") from error
+        if self._wait_for(lambda: True if not backend.is_visible(popup) else None) is None:
+            backend.close_window(popup)
+            raise KanaoError(
+                ErrorCode.SEND_FAILED,
+                f"the file-send confirmation in {window.title!r} stayed open after its send "
+                "button was pressed and was closed; whether the file went is unknown, so read "
+                "the room back before trying again",
+                room=window.title,
+            )
+        return {
+            "submitted": True,
+            "room": window.title,
+            "name": os.path.basename(path),
+            "size": size,
+        }
+
+    def _wait_for(self, look: Callable[[], Optional[int]]) -> Optional[int]:
+        """Look up to UPLOAD_ATTEMPTS times, settling between looks."""
+        for attempt in range(UPLOAD_ATTEMPTS):
+            found = look()
+            if found is not None:
+                return found
+            if attempt + 1 < UPLOAD_ATTEMPTS:
+                self._settle()
+        return None
+
+
 # -- Win32 backend -----------------------------------------------------------
 
 _WM_CLOSE = 0x0010
@@ -672,6 +894,15 @@ _SWP_NOSIZE = 0x0001
 _SWP_NOMOVE = 0x0002
 _SWP_NOACTIVATE = 0x0010
 _WM_MOUSEWHEEL = 0x020A
+_WM_MOUSEMOVE = 0x0200
+_WM_SETTEXT = 0x000C
+_WM_GETTEXT = 0x000D
+_WM_GETTEXTLENGTH = 0x000E
+_BM_CLICK = 0x00F5
+_GW_OWNER = 4
+_POPUP_CLASS = "EVA_Window_Dblclk"
+_POPUP_SLACK = 0.2
+"""How far a confirmation may differ from FILE_POPUP_SIZE and still be it."""
 _WHEEL_UP = 120
 _WHEEL_NOTCHES = 8
 """Enough upward notches to pin a room list of any length to its top."""
@@ -1098,6 +1329,134 @@ class Win32Backend:
             raise OSError(f"PostMessage(WM_KEYDOWN) failed: {ctypes.get_last_error()}")
         if not self._user32.PostMessageW(control, _WM_KEYUP, _VK_RETURN, 0xC01C0001):
             raise OSError(f"PostMessage(WM_KEYUP) failed: {ctypes.get_last_error()}")
+
+    # -- the file path: button, open-file dialog, confirmation ----------------
+
+    def top_windows(self) -> set[int]:
+        found: set[int] = set()
+
+        def visit(handle: int, _param: int) -> bool:
+            if self._pid_of(handle) == self._pid and self._user32.IsWindowVisible(handle):
+                found.add(int(handle))
+            return True
+
+        self._user32.EnumWindows(self._proc(visit), 0)
+        return found
+
+    def show_unfocused(self, handle: int) -> bool:
+        # A parked room's buttons are at -32000; restored without activation
+        # they have a place to be clicked and the keyboard stays where it was.
+        if not self._user32.IsIconic(handle):
+            return False
+        self._user32.ShowWindow(handle, _SW_SHOWNOACTIVATE)
+        return True
+
+    def is_visible(self, handle: int) -> bool:
+        return bool(self._user32.IsWindow(handle) and self._user32.IsWindowVisible(handle))
+
+    def _rect(self, handle: int) -> tuple[int, int, int, int]:
+        from ctypes import wintypes
+
+        rect = wintypes.RECT()
+        if not self._user32.GetWindowRect(handle, ctypes.byref(rect)):
+            raise OSError(f"GetWindowRect failed: {ctypes.get_last_error()}")
+        return rect.left, rect.top, rect.right, rect.bottom
+
+    def _post_click(self, handle: int, x: int, y: int) -> None:
+        """Post a click at a point measured from the window's corner. No cursor moves."""
+        from ctypes import wintypes
+
+        left, top, _right, _bottom = self._rect(handle)
+        point = wintypes.POINT(left + x, top + y)
+        self._user32.ScreenToClient(handle, ctypes.byref(point))
+        position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
+        for message, button in (
+            (_WM_MOUSEMOVE, 0),
+            (_WM_LBUTTONDOWN, _MK_LBUTTON),
+            (_WM_LBUTTONUP, 0),
+        ):
+            if not self._user32.PostMessageW(handle, message, button, position):
+                raise OSError(f"PostMessage(click) failed: {ctypes.get_last_error()}")
+
+    def click_file_button(self, handle: int) -> None:
+        _left, top, _right, bottom = self._rect(handle)
+        x, up = scaled(FILE_BUTTON, self._dpi(handle))
+        self._post_click(handle, x, (bottom - top) - up)
+
+    def file_dialog(self, handle: int) -> Optional[int]:
+        # The client's own open-file dialog is owned by the room that asked
+        # for it; any other dialog the client has up is not this one.
+        dialogs = [
+            window for window in self.top_windows() if self._class(window) == DIALOG_CLASS
+        ]
+        owned = [
+            window for window in dialogs if int(self._user32.GetWindow(window, _GW_OWNER) or 0) == handle
+        ]
+        if len(owned) == 1:
+            return owned[0]
+        return dialogs[0] if not owned and len(dialogs) == 1 else None
+
+    def _dialog_child(self, dialog: int, class_name: str, control_id: int) -> Optional[int]:
+        found: list[int] = []
+
+        def visit(handle: int, _param: int) -> bool:
+            if (
+                self._class(handle) == class_name
+                and int(self._user32.GetDlgCtrlID(handle)) == control_id
+            ):
+                found.append(int(handle))
+                return False
+            return True
+
+        self._user32.EnumChildWindows(dialog, self._proc(visit), 0)
+        return found[0] if found else None
+
+    def _read(self, control: int) -> str:
+        count = self._message(control, _WM_GETTEXTLENGTH)
+        buffer = ctypes.create_unicode_buffer(count + 1)
+        self._message(control, _WM_GETTEXT, count + 1, ctypes.addressof(buffer))
+        return buffer.value
+
+    def choose_file(self, dialog: int, path: str) -> None:
+        # The dialog's name box is an ordinary Edit, so WM_SETTEXT is what it
+        # answers to, and reading it back is how a wrong name is caught before
+        # Open is pressed.
+        edit = self._dialog_child(dialog, "Edit", DIALOG_FILENAME_ID)
+        if edit is None:
+            raise OSError("the open-file dialog has no file name box")
+        buffer = ctypes.create_unicode_buffer(path)
+        self._message(edit, _WM_SETTEXT, 0, ctypes.addressof(buffer))
+        if self._read(edit) != path:
+            raise OSError("the file name box did not take the path")
+        button = self._dialog_child(dialog, "Button", DIALOG_OPEN_ID)
+        if button is None:
+            raise OSError("the open-file dialog has no Open button")
+        if not self._user32.PostMessageW(button, _BM_CLICK, 0, 0):
+            raise OSError(f"PostMessage(BM_CLICK) failed: {ctypes.get_last_error()}")
+
+    def cancel_dialog(self, dialog: int) -> None:
+        button = self._dialog_child(dialog, "Button", DIALOG_CANCEL_ID)
+        if button is not None:
+            self._user32.PostMessageW(button, _BM_CLICK, 0, 0)
+        else:
+            self._user32.PostMessageW(dialog, _WM_CLOSE, 0, 0)
+
+    def file_popup(self, before: set[int]) -> Optional[int]:
+        for handle in self.top_windows() - before:
+            if self._class(handle) != _POPUP_CLASS or self._title(handle):
+                continue
+            left, top, right, bottom = self._rect(handle)
+            width, height = scaled(FILE_POPUP_SIZE, self._dpi(handle))
+            if (
+                abs((right - left) - width) <= width * _POPUP_SLACK
+                and abs((bottom - top) - height) <= height * _POPUP_SLACK
+            ):
+                return handle
+        return None
+
+    def press_popup_send(self, popup: int) -> None:
+        x, y = scaled(FILE_POPUP_SEND, self._dpi(popup))
+        self._post_click(popup, x, y)
 
 
 def make_sender() -> Sender:

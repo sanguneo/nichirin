@@ -19,7 +19,7 @@ from kanao.model import ROOM_KINDS
 from kanao.serve import config
 from kanao.tui.digest import parse_duration
 
-from tests.serve.helpers import StubSender, ServedCase, _request, _start_server
+from tests.serve.helpers import TOKEN, StubSender, ServedCase, _raw_request, _request, _start_server
 
 SPEC_PATH = Path(__file__).resolve().parents[2] / "openapi.json"
 
@@ -71,6 +71,13 @@ class DocumentTests(unittest.TestCase):
         port = self.spec["servers"][0]["variables"]["port"]["default"]
         self.assertEqual(port, str(config.DEFAULT_PORT))
 
+        health = paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]
+        self.assertEqual(
+            health["example"]["features"]["upload"]["maxBytes"], config.MAX_UPLOAD_BYTES
+        )
+        form = self.spec["components"]["schemas"]["UploadRequest"]
+        self.assertEqual(set(form["properties"]), {"room", "file", "openRoom"})
+
     def test_every_error_code_this_build_can_raise_is_documented(self) -> None:
         documented = set(self.spec["components"]["schemas"]["ErrorCode"]["enum"])
         self.assertEqual(set(code.value for code in ErrorCode) - documented, set())
@@ -90,7 +97,9 @@ class DocumentTests(unittest.TestCase):
     def test_the_platform_differences_are_the_ones_that_are_known(self) -> None:
         """Another divergence has to be declared here, not discovered later.
 
-        Two are macOS-only (a room key and an error code). The reads added
+        Two are macOS-only (a room key and an error code), and the file send
+        added in 0.22.0 is Windows-only with the health key that declares it
+        until the macOS build answers it. The reads added
         in 0.15.0 are answered by both builds since contract 0.16.0, and the
         profile pictures added in 0.17.0 since 0.18.1, and a cut-off
         notice's whole text since 0.20.0, because both clients cut the
@@ -114,6 +123,8 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
+                "paths//upload/post",
+                "paths//health/get/responses/200/content/application/json/schema/properties/features",
             },
         )
 
@@ -167,6 +178,37 @@ class RouteTests(ServedCase):
         )
         self.assertEqual(status, 404)
         self.assertTrue(self.missing(body))
+
+    def test_upload_is_routed_where_health_declares_it(self) -> None:
+        calls = []
+
+        def upload(room, name, data, open_if_needed=False):
+            calls.append(name)
+            return {"submitted": True, "room": room, "name": name, "size": len(data), "roomId": "1"}
+
+        self.tearDown()
+        self.serve(_start_server(StubSender(), upload=upload))
+        _status, health, _headers = _request(self.base, "GET", "/health", token=None)
+        self.assertEqual(health["features"]["upload"]["maxBytes"], config.MAX_UPLOAD_BYTES)
+        body = (
+            b"--b\r\nContent-Disposition: form-data; name=\"room\"\r\n\r\nRoom\r\n"
+            b"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\r\nx\r\n"
+            b"--b--\r\n"
+        )
+        status, answer = _raw_request(
+            self.base,
+            "POST",
+            "/upload",
+            body,
+            {
+                "Content-Type": "multipart/form-data; boundary=b",
+                "Content-Length": str(len(body)),
+                "Authorization": f"Bearer {TOKEN}",
+            },
+        )
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(set(answer), set(self.spec["components"]["schemas"]["UploadResult"]["required"]))
+        self.assertEqual(calls, ["a.png"])
 
     def test_health_needs_no_token_exactly_as_documented(self) -> None:
         self.assertEqual(self.spec["paths"]["/health"]["get"]["security"], [])

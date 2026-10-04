@@ -2,9 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "KakaoTalk local bridge — serve",
-    "version": "0.21.1",
+    "version": "0.22.0",
     "summary": "The HTTP + SSE surface that kanao-cli (Windows) and kamado-cli (macOS) both answer.",
-    "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only. A cut-off notice's whole text — `Notice.truncated`, `fullText`, `fullTextMessageId`, `fullTextSource`, `fullTextTruncated` and `fullTextCandidates` — is answered by both builds since 0.20.0, because both clients cut the notice row at the same 100 characters. The profile pictures added in 0.17.0 — `Room.images` and `Message.senderImage` — are answered by both builds since 0.18.1. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
+    "description": "One contract, two builds. `kanao serve` and `kamado serve` expose the same routes, the same query parameters and defaults, the same request bodies, the same JSON payloads and the same limits; a client written against this document works with either.\n\nWhat is *not* shared is marked `x-platform` on the member itself: today that is one additive room key (`typeCode`) and one error code (`PERMISSION_REQUIRED`), both macOS-only, and one route (`POST /upload`, with the `features` key of `GET /health` that declares it), Windows-only until the macOS build answers it. A cut-off notice's whole text — `Notice.truncated`, `fullText`, `fullTextMessageId`, `fullTextSource`, `fullTextTruncated` and `fullTextCandidates` — is answered by both builds since 0.20.0, because both clients cut the notice row at the same 100 characters. The profile pictures added in 0.17.0 — `Room.images` and `Message.senderImage` — are answered by both builds since 0.18.1. The reads added in 0.15.0 are answered by both builds since 0.16.0; where the two clients store less than each other, the route says so in its own description. Anything else differing is a defect in one of the builds rather than a variation this document blesses.\n\n**Every response is an envelope.** Success carries `\"ok\": true` beside its payload; failure carries `\"ok\": false` and an `error` object with a machine-readable `code`. The HTTP status and the code say the same thing twice on purpose — the status so a proxy or a `curl` script can branch, the code so a program does not have to guess which of two 503s it got.\n\n**Consumers must ignore keys they do not know.** Adding a key is not a breaking change here; removing one, renaming one, or changing what an existing one means is, and lands in a minor version with the reason in `CHANGELOG.md`. The same applies to error codes: have a default branch, because the two builds' sets are not identical and both may grow.\n\n**Security posture.** A shared bearer token (`--token`, or `KANAO_TOKEN` / `KAMADO_TOKEN`), loopback binding by default, and no TLS of its own. Reach it from another machine over SSH port forwarding, a VPN, or a reverse proxy that terminates TLS — never by binding a wildcard address with a weak token.\n\n**Reads are local.** The server answers from databases the desktop client already wrote; it opens no network connection of its own. Sending drives the client's own window, and `submitted` means the client accepted the text, not that the network delivered it.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -75,11 +75,35 @@
                   "properties": {
                     "ok": {
                       "const": true
+                    },
+                    "features": {
+                      "type": "object",
+                      "description": "The optional routes this build answers, each with its limits. A route not named here is not answered, and a client must not draw a control for it.",
+                      "x-platform": "Windows (kanao-cli) only for now: the macOS build answers no optional route yet and leaves the key out.",
+                      "properties": {
+                        "upload": {
+                          "type": "object",
+                          "description": "`POST /upload` is answered.",
+                          "required": ["maxBytes"],
+                          "properties": {
+                            "maxBytes": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "description": "Largest file it takes, in bytes. A larger one is refused with `400` before it is read."
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 },
                 "example": {
-                  "ok": true
+                  "ok": true,
+                  "features": {
+                    "upload": {
+                      "maxBytes": 52428800
+                    }
+                  }
                 }
               }
             }
@@ -590,6 +614,74 @@
             "schema": {
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
+          }
+        }
+      }
+    },
+    "/upload": {
+      "post": {
+        "tags": ["send"],
+        "summary": "Send one file through the room's own file button",
+        "description": "Drives the desktop client the way a person sends a file: the room's file button, the Windows open-file dialog it shows, and the client's own \"파일 전송\" confirmation. Nothing is injected; the client uploads the file itself and shows a picture or video the way it shows one a person sent. The room resolves exactly as `POST /send`'s does, and `openRoom` lets the server open its window.\n\n**Files wait in the same line as texts**: one lock, the same minimum interval, and the same `429 RATE_LIMITED` when the line is full.\n\n**`submitted: true` means the confirmation closed after its send button was pressed**, which is the client taking the file, not delivery: read the room back for a new `fromMe` message. A failure before that button is pressed sends nothing and says so. A confirmation that stays open is closed and answered `500 SEND_FAILED` with an unknown outcome; never retry it without reading the room back.\n\nThe open-file dialog is a real window and holds the keyboard while it is up; the keyboard is handed back afterwards. A file larger than `features.upload.maxBytes` in `GET /health` is refused with `400` before it is read.",
+        "x-platform": "Windows (kanao-cli) only: the macOS build does not answer it yet. `GET /health` names it under `features` where it is answered.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The client's confirmation closed after its send button was pressed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "description": "The caller promised a body in `Content-Length` and then went quiet, exactly as for `POST /send`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Ambiguous"
+          },
+          "429": {
+            "description": "The send queue texts and files share is full. Retry once the sends already in line have gone through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/NotReady"
           }
         }
       }
@@ -1479,6 +1571,56 @@
           "wouldClearDraft": {
             "type": "boolean",
             "description": "The dry-run form of `clearedDraft`."
+          }
+        }
+      },
+      "UploadRequest": {
+        "type": "object",
+        "required": ["room", "file"],
+        "additionalProperties": false,
+        "properties": {
+          "room": {
+            "type": "string",
+            "description": "The room's title, or its id as a string, exactly as `SendRequest.room`."
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "One file. Its part's file name is the name the room sees, reduced to one Windows file name: no folders, none of `<>:\"|?*`, no device names, at most 120 characters."
+          },
+          "openRoom": {
+            "type": "string",
+            "enum": ["true", "false"],
+            "default": "false",
+            "description": "Let the server open the room's window first, as `SendRequest.openRoom`."
+          }
+        }
+      },
+      "UploadResult": {
+        "type": "object",
+        "required": ["ok", "submitted", "room", "roomId", "name", "size"],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "submitted": {
+            "type": "boolean",
+            "description": "The client's file-send confirmation closed after its send button was pressed. **The client taking the file, not delivery** — read the room back and look for a new `fromMe` message before claiming it arrived."
+          },
+          "room": {
+            "type": "string",
+            "description": "The window title the file was sent from."
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name the room sees."
+          },
+          "size": {
+            "type": "integer",
+            "description": "Bytes handed over."
           }
         }
       },

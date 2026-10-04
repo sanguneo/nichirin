@@ -29,7 +29,10 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_UPLOAD_BYTES,
+    MULTIPART_OVERHEAD_BYTES,
     _status_for,
+    upload_name,
     validate_count,
     validate_flag,
     validate_cursor,
@@ -41,6 +44,7 @@ from .config import (
     validate_room_id,
     validate_token,
 )
+from .multipart import Part, boundary_of, parse
 from .stream import serve_stream
 
 
@@ -197,6 +201,8 @@ def build_handler(
     attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
     revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     file_provider: Optional[Callable[[int, int], Any]] = None,
+    upload: Optional[Callable[..., dict[str, Any]]] = None,
+    max_upload_bytes: int = MAX_UPLOAD_BYTES,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -214,6 +220,10 @@ def build_handler(
     *watcher_factory* returns an object with ``prime()`` and ``poll()``
     (the two halves of ``watch.Watcher`` kept separate precisely so streaming
     can be tested here without ever sleeping).
+    *upload* takes ``(room, name, data, open_if_needed=...)`` and returns the
+    file sender's envelope; without it ``POST /upload`` is not routed and
+    ``/health`` declares no ``features``, which is how a build that cannot
+    send files says so.
 
     Raises :class:`KanaoError` for a bad token, interval, or poll interval.
     """
@@ -288,6 +298,15 @@ def build_handler(
         # -- small helpers ------------------------------------------------
 
         def _read_json_body(self) -> Any:
+            raw = self._read_body(MAX_BODY_BYTES)
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "request body is not JSON")
+
+        def _read_body(self, limit: int, too_large: str = "request body too large") -> bytes:
             declared = self.headers.get("Content-Length")
             if declared is None:
                 raise KanaoError(ErrorCode.INVALID_REQUEST, "Content-Length is required")
@@ -297,8 +316,8 @@ def build_handler(
                 raise KanaoError(ErrorCode.INVALID_REQUEST, "invalid Content-Length")
             if length < 0:
                 raise KanaoError(ErrorCode.INVALID_REQUEST, "negative Content-Length")
-            if length > MAX_BODY_BYTES:
-                raise KanaoError(ErrorCode.INVALID_REQUEST, "request body too large")
+            if length > limit:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, too_large)
             encoding = self.headers.get("Transfer-Encoding")
             if encoding is not None and encoding.strip().lower() != "identity":
                 raise KanaoError(
@@ -316,12 +335,7 @@ def build_handler(
                     ErrorCode.INVALID_REQUEST, "request body ended before Content-Length"
                 )
             self._body_read = True
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                raise KanaoError(ErrorCode.INVALID_REQUEST, "request body is not JSON")
+            return raw
 
         def _reply(self, status: int, payload: dict[str, Any]) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -372,7 +386,10 @@ def build_handler(
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib name
             if self._is_health():
-                self._reply(200, {"ok": True})
+                health: dict[str, Any] = {"ok": True}
+                if upload is not None:
+                    health["features"] = {"upload": {"maxBytes": max_upload_bytes}}
+                self._reply(200, health)
                 return
             if not self._require_auth():
                 return
@@ -401,12 +418,15 @@ def build_handler(
         def do_POST(self) -> None:  # noqa: N802 - stdlib name
             if not self._require_auth():
                 return
-            if urllib.parse.urlparse(self.path).path != "/send":
+            path = urllib.parse.urlparse(self.path).path
+            if path == "/send":
+                self._handle_send()
+            elif path == "/upload" and upload is not None:
+                self._handle_upload()
+            else:
                 self._reply(
                     404, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, "not found"))
                 )
-                return
-            self._handle_send()
 
         def do_PUT(self) -> None:  # noqa: N802 - stdlib name
             self._method_not_allowed()
@@ -725,6 +745,18 @@ def build_handler(
             finally:
                 stream_slots.release()
 
+        def _reply_body_timeout(self) -> None:
+            self._reply(
+                408,
+                as_envelope(
+                    KanaoError(
+                        ErrorCode.INVALID_REQUEST,
+                        "the request body did not arrive in time",
+                    )
+                ),
+            )
+            self.close_connection = True
+
         def _handle_send(self) -> None:
             try:
                 body = self._read_json_body()
@@ -732,16 +764,7 @@ def build_handler(
                 self._reply(_status_for(error), as_envelope(error))
                 return
             except _BodyTimeout:
-                self._reply(
-                    408,
-                    as_envelope(
-                        KanaoError(
-                            ErrorCode.INVALID_REQUEST,
-                            "the request body did not arrive in time",
-                        )
-                    ),
-                )
-                self.close_connection = True
+                self._reply_body_timeout()
                 return
             room = body.get("room", "") if isinstance(body, dict) else ""
             text = body.get("text", "") if isinstance(body, dict) else ""
@@ -774,10 +797,95 @@ def build_handler(
                         ),
                     )
                     return
+            result = self._in_line(
+                lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room),
+                paced=not dry_run,
+                what="message",
+            )
+            if result is not None:
+                self._reply(200, {"ok": True, **result})
+
+        def _handle_upload(self) -> None:
+            try:
+                room, name, data, open_room = self._read_upload()
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            except _BodyTimeout:
+                self._reply_body_timeout()
+                return
+            deliver = upload
+            assert deliver is not None
+            result = self._in_line(
+                lambda: deliver(room, name, data, open_if_needed=open_room),
+                paced=True,
+                what="file",
+            )
+            if result is not None:
+                self._reply(200, {"ok": True, **result})
+
+        def _read_upload(self) -> tuple[str, str, bytes, bool]:
+            """The room, the file's name and bytes, and ``openRoom``, or a refusal.
+
+            Checked whole before anything is queued: a form that is wrong in
+            any part sends nothing, and says which part.
+            """
+            boundary = boundary_of(self.headers.get("Content-Type"))
+            too_large = f"the file is larger than {max_upload_bytes} bytes"
+            body = self._read_body(max_upload_bytes + MULTIPART_OVERHEAD_BYTES, too_large)
+            fields: dict[str, Part] = {}
+            for part in parse(body, boundary):
+                if part.name not in ("room", "file", "openRoom"):
+                    raise KanaoError(
+                        ErrorCode.INVALID_REQUEST, f"unknown form field {part.name!r}"
+                    )
+                if part.name in fields:
+                    raise KanaoError(ErrorCode.INVALID_REQUEST, f"{part.name} was given twice")
+                fields[part.name] = part
+            room_part = fields.get("room")
+            if room_part is None or room_part.filename is not None:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "a room field is required")
+            try:
+                room = room_part.data.decode("utf-8")
+            except UnicodeDecodeError:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "room must be UTF-8")
+            if not room.strip():
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room is required")
+            file_part = fields.get("file")
+            if file_part is None or file_part.filename is None:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "a file part is required")
+            if not file_part.data:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty file")
+            if len(file_part.data) > max_upload_bytes:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, too_large)
+            name = upload_name(file_part.filename)
+            open_room = False
+            flag = fields.get("openRoom")
+            if flag is not None:
+                if flag.data not in (b"true", b"false"):
+                    raise KanaoError(
+                        ErrorCode.INVALID_REQUEST, "openRoom must be true or false"
+                    )
+                open_room = flag.data == b"true"
+            return room, name, file_part.data, open_room
+
+        def _in_line(
+            self,
+            write: Callable[[], dict[str, Any]],
+            *,
+            paced: bool,
+            what: str,
+        ) -> Optional[dict[str, Any]]:
+            """Run one write under the send lock, in the queue when *paced*.
+
+            Texts and files share the one client, so they share the one line.
+            Returns the write's result, or ``None`` having already answered
+            the caller with why nothing was written.
+            """
             # The place in line is taken *before* the lock, so the line has a
             # length to report; waiting for the turn happens under it, where
             # the order a caller is given is the order the input box serves.
-            if not dry_run:
+            if paced:
                 in_line = queue.reserve()
                 if in_line is not None:
                     self._reply(
@@ -790,10 +898,10 @@ def build_handler(
                             )
                         ),
                     )
-                    return
+                    return None
             try:
                 with send_lock:
-                    if not dry_run:
+                    if paced:
                         try:
                             queue.wait_for_turn()
                         except _ShuttingDown:
@@ -803,35 +911,33 @@ def build_handler(
                                     KanaoError(
                                         ErrorCode.BUSY,
                                         "the server is shutting down; this "
-                                        "message was not sent",
+                                        f"{what} was not sent",
                                     )
                                 ),
                             )
-                            return
+                            return None
                     started = queue.begin()
                     try:
-                        result = send(
-                            room, text, dry_run=dry_run, open_if_needed=open_room
-                        )
+                        result = write()
                     except KanaoError as error:
                         self._reply(_status_for(error), as_envelope(error))
-                        return
+                        return None
                     except OSError as error:
                         self._reply(
                             500,
                             as_envelope(KanaoError(ErrorCode.SEND_FAILED, str(error))),
                         )
-                        return
-                    if not dry_run:
+                        return None
+                    if paced:
                         # Only a send that was handed over spends the pacing.
                         # The failures above put text nowhere, and there is no
                         # reason to hold back somebody retrying a room they
                         # have just gone and opened.
                         queue.commit(started)
+                    return result
             finally:
-                if not dry_run:
+                if paced:
                     queue.release()
-            self._reply(200, {"ok": True, **result})
 
     # Bind the validated secret and validated tunables onto the class so a
     # reviewer can see what each connection closes over. The queue is bound

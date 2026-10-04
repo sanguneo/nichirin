@@ -1115,6 +1115,29 @@ on a live client, newest 4,000 rows of each readable room.
   settle. `openapi.json` needed no change: it already said `submitted` means
   the client accepted the text, and it is this build that had been reporting
   something weaker.
+- **A file goes through the same three windows a person uses** (contract
+  0.22.0, `POST /upload`). Measured live on 2026-10-04 against the self-chat
+  with a synthetic 64x64 PNG, which read back as a new `fromMe` photo, 64x64:
+  - Pasting does not work from a background process. `WM_PASTE` with `CF_HDROP`
+    or `CF_DIB` on the clipboard, a posted Ctrl+V, and a sent or posted `V`
+    under `AttachThreadInput` with Ctrl set in the shared key state all did
+    nothing — no window, no change in the box. A posted Ctrl+V types a `v`.
+  - The room's toolbar row under the input box holds +, emoticon and file
+    buttons at x 24, 56, 88, 24 px above the window's bottom edge (380x640
+    room at 100%). A posted click on the file button opens the Windows
+    open-file dialog (`#32770`), whose name box is the `Edit` with id 1148 and
+    whose Open button is id 1: `WM_SETTEXT` plus a read-back, then `BM_CLICK`.
+  - The client then shows its own "파일 전송" confirmation, an untitled
+    `EVA_Window_Dblclk` of 300x185 listing the file, with "1개 전송" at
+    (150, 145). A posted click there sends it and the confirmation closes;
+    that closing is all `submitted` means.
+  - A parked room's buttons are at -32000, so it is restored with
+    `SW_SHOWNOACTIVATE` first and parked again afterwards. The open-file
+    dialog does take the keyboard while it is up; `Sender.upload` hands it
+    back to the window that had it.
+  - The client uploads from the path after the confirmation closes, so the
+    staged copy under `%LOCALAPPDATA%\kanao-cli\uploads` is kept an hour and
+    swept by a later upload.
 - Confirm recipient and content before sending to real people. Callers must
   keep at least two seconds between sends. Real tests use only self-chat or a
   room explicitly authorized by the user; unit tests never call the desktop.
