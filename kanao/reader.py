@@ -1247,7 +1247,7 @@ class Reader:
     def _full_text(
         self, room_id: int, preview: str
     ) -> tuple[Optional[tuple[int, str, bool]], tuple[int, ...]]:
-        """The message a cut-off board post was pinned from, by its words.
+        """The message a cut-off notice was pinned from, by its words.
 
         The post records no message id, so the only link is the text: a live
         text or reply message beginning with the whole stored preview. Exactly
@@ -1294,11 +1294,74 @@ class Reader:
             return usable[0], ()
         return None, tuple(sorted(log_id for log_id, _message, _cut in usable))
 
+    def _shared_text(
+        self, room_id: int, post_id: Optional[str], preview: str
+    ) -> Optional[tuple[int, str, bool]]:
+        """The share of a cut-off notice's post: its id, its text, whether that is cut.
+
+        A board post is matched to its share by the post id, and a notice
+        row that records none (the older row) by its words. Either way the
+        share has to begin with the whole stored preview, because a post
+        edited after it was shared still carries the old text in its share.
+        When the words alone are the link, two shares saying different
+        things are no answer. The same room key rule as :meth:`_full_text`.
+        """
+        name = paths.chat_log_name(room_id)
+        try:
+            if not self.keyring.has(name):
+                return None
+            connection = self._logs(room_id)
+            rows = connection.execute(
+                f"SELECT logId, attachement FROM chatLogs "
+                f"WHERE {self._live(room_id, connection)} AND type = ? ORDER BY logId DESC",
+                (model.BOARD_SHARE_MESSAGE,),
+            ).fetchall()
+        except (KanaoError, sqlite3.DatabaseError):
+            return None
+        found: list[tuple[int, str]] = []
+        for log_id, attachment in rows:
+            extra = model.parse_attachment(attachment)
+            if not self.reveal_covered and model.covered_in(extra) is not None:
+                continue
+            shared_post, text = model.board_share(extra)
+            if text is None or not text.startswith(preview):
+                continue
+            if post_id is not None and shared_post != post_id:
+                continue
+            found.append((int(log_id), text))
+        if not found or len({text for _log_id, text in found}) > 1:
+            return None
+        log_id, text = found[0]
+        return log_id, text, len(text) >= model.BOARD_SHARE_CHARACTERS
+
+    def _rest_of(
+        self, room_id: int, post_id: Optional[str], preview: str
+    ) -> dict[str, Any]:
+        """Whatever this room holds of a notice past its cut, as Notice fields.
+
+        The share and the pinned message are both asked, and the longer text
+        wins. Equal lengths go to the share, which is linked by an id where
+        the message is linked only by its words.
+        """
+        found, candidates = self._full_text(room_id, preview)
+        shared = self._shared_text(room_id, post_id, preview)
+        chosen, source = (found, "message") if found is not None else (None, None)
+        if shared is not None and (chosen is None or len(shared[1]) >= len(chosen[1])):
+            chosen, source = shared, "share"
+        return {
+            "full_text": None if chosen is None else chosen[1],
+            "full_text_message_id": None if chosen is None else chosen[0],
+            "full_text_truncated": chosen is not None and chosen[2],
+            "full_text_candidates": candidates,
+            "full_text_source": source,
+        }
+
     def notice(self, room_id: int) -> Optional[model.Notice]:
         """The notice pinned in a room, or None when it has none.
 
         A board post wins over the older notice row; see :class:`model.Notice`
-        for why. Both live in the catalog, so this needs no room key.
+        for why. Both live in the catalog, so this needs no room key; what
+        lies past a cut is looked for only in a room whose key is in memory.
         """
         catalog = self._catalog()
         tables = {
@@ -1320,7 +1383,12 @@ class Reader:
                 # one is cut there, and its whole text may still be the message
                 # that was pinned.
                 truncated = kind == "text" and len(text) >= model.BOARD_PREVIEW_CHARACTERS
-                found, candidates = self._full_text(room_id, text) if truncated else (None, ())
+                post_id = post.get("id")
+                rest = (
+                    self._rest_of(room_id, post_id if isinstance(post_id, str) else None, text)
+                    if truncated
+                    else {}
+                )
                 return model.Notice(
                     text=text,
                     kind=kind,
@@ -1329,10 +1397,7 @@ class Reader:
                     posted_at=model.instant_of(post.get("created_at")),
                     source="board",
                     truncated=truncated,
-                    full_text=None if found is None else found[1],
-                    full_text_message_id=None if found is None else found[0],
-                    full_text_truncated=found is not None and found[2],
-                    full_text_candidates=candidates,
+                    **rest,
                 )
         if "chatMetas" in tables:
             row = catalog.execute(
@@ -1341,6 +1406,8 @@ class Reader:
             ).fetchone()
             if row is not None and isinstance(row[1], str) and row[1].strip():
                 author = model._identifier(row[0])
+                # The older row is cut at the same 100 characters as a post.
+                truncated = len(row[1]) >= model.BOARD_PREVIEW_CHARACTERS
                 return model.Notice(
                     text=row[1],
                     kind="text",
@@ -1348,6 +1415,8 @@ class Reader:
                     author=None if author is None else known.get(author),
                     posted_at=model.instant_of(row[2]),
                     source="legacy",
+                    truncated=truncated,
+                    **(self._rest_of(room_id, None, row[1]) if truncated else {}),
                 )
         return None
 

@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Final, Optional, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 DIRECT_CHAT: Final = "DirectChat"
 GROUP_CHAT: Final = "MultiChat"
@@ -739,6 +740,22 @@ def links_in(text: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def board_share(attachment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Read a board share's ``(post id, text)`` out of its attachment."""
+    segments = attachment.get("os")
+    post_id: Optional[str] = None
+    text: Optional[str] = None
+    for segment in segments if isinstance(segments, list) else []:
+        if not isinstance(segment, dict):
+            continue
+        if segment.get("t") == 1 and isinstance(segment.get("ct"), str):
+            text = segment["ct"]
+        elif segment.get("t") == 2 and isinstance(segment.get("url"), str):
+            found = parse_qs(urlsplit(segment["url"]).query).get("post_id")
+            post_id = found[0] if found else None
+    return post_id, text
+
+
 def instant_of(value: object) -> Optional[int]:
     """Read a client-written moment as epoch seconds, or None.
 
@@ -802,6 +819,9 @@ class Notice:
     """
     full_text_candidates: tuple[int, ...] = ()
     """Messages that each begin with the preview, when more than one does; none is picked."""
+    full_text_source: Optional[str] = None
+    """``share`` when :attr:`full_text` came from the board post's share, ``message``
+    when it came from the message the notice was pinned from."""
 
     def as_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -818,6 +838,8 @@ class Notice:
         if self.full_text is not None and self.full_text_message_id is not None:
             payload["fullText"] = self.full_text
             payload["fullTextMessageId"] = str(self.full_text_message_id)
+            if self.full_text_source is not None:
+                payload["fullTextSource"] = self.full_text_source
             if self.full_text_truncated:
                 payload["fullTextTruncated"] = True
         if self.full_text_candidates:
@@ -826,13 +848,33 @@ class Notice:
 
 
 BOARD_PREVIEW_CHARACTERS: Final = 100
-"""How much of a board post the client keeps on this machine.
+"""How much of a notice the client keeps in the row that names it.
 
 Measured: the eleven board notices on a live account were 0, 23, 28, 33, 48,
 52 and 100 characters long, and both ``content`` and ``json_content`` stopped
-at exactly 100 in the posts that were longer. The rest of the post is not on
-disk anywhere; a message that was pinned as the notice still is.
+at exactly 100 in the posts that were longer. The older ``chatMetas`` notice
+row stops there too. Its longest of 15 rows was exactly 100, and it was a
+2022 notice that the macOS client's own row also stops at exactly 100
+(2026-10-02). What is past the cut may be in the share of the post or in
+the message that was pinned.
 """
+
+BOARD_SHARE_MESSAGE: Final = 98
+"""A board post shared into the room, written when the post is made.
+
+Its attachment's ``os`` segments are the author (``t`` 3), the text (``t`` 1,
+``ct`` and the same words as ``jct``) and the post's address (``t`` 2,
+``kakaomoim://post?...&post_id=``), whose ``post_id`` is the board post's
+``id``. Measured 2026-10-02: 10 shares, every ``jct`` saying exactly what
+``ct`` said. In the two rooms with a cut board notice, a share carried the
+notice's ``post_id``. One share began with the stored preview. The other
+shared its first 4 characters only, so the post had been edited since it
+was shared.
+"""
+
+BOARD_SHARE_CHARACTERS: Final = 500
+"""How much of a post its share carries: the 10 measured were 23 to 447
+characters long, or exactly 500."""
 
 LONG_MESSAGE_CHARACTERS: Final = 3999
 """How much of a long message the client keeps in its row.

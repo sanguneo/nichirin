@@ -86,9 +86,9 @@ class DocumentTests(unittest.TestCase):
 
         Two are macOS-only (a room key and an error code). The reads added
         in 0.15.0 are answered by both builds since contract 0.16.0, and the
-        profile pictures added in 0.17.0 since 0.18.1. A cut-off board
-        notice's whole text stays Windows-only: the macOS client keeps no
-        board.
+        profile pictures added in 0.17.0 since 0.18.1, and a cut-off
+        notice's whole text since 0.20.0, because both clients cut the
+        notice row at the same 100 characters.
         """
         marked = set()
         def walk(node, trail=()):
@@ -108,11 +108,6 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
-                "components/schemas/Notice/properties/truncated",
-                "components/schemas/Notice/properties/fullText",
-                "components/schemas/Notice/properties/fullTextMessageId",
-                "components/schemas/Notice/properties/fullTextTruncated",
-                "components/schemas/Notice/properties/fullTextCandidates",
             },
         )
 

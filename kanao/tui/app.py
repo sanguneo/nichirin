@@ -1699,9 +1699,13 @@ class App:
         source = "톡게시판" if pinned.source == "board" else "예전 공지"
         rows: list[tuple[str, str]] = [
             ("dim", " · ".join(part for part in (who, when, source) if part)),
-            ("", ""),
         ]
-        rows.extend(("body", line) for line in (pinned.text or f"[{pinned.kind}]").splitlines())
+        said = _notice_provenance(pinned)
+        if said:
+            rows.append(("dim", said))
+        rows.append(("", ""))
+        whole = pinned.full_text if pinned.full_text is not None else pinned.text
+        rows.extend(("body", line) for line in (whole or f"[{pinned.kind}]").splitlines())
         self._show_panel(chat, "공지", rows)
 
     def _show_attachments(self, chat: ChatState, kind: str, title: str) -> None:
@@ -2546,6 +2550,32 @@ def _said(messages: Sequence[Message]) -> list[Message]:
     a digest counts and quotes what was said, and that was unsaid.
     """
     return [message for message in messages if not message.erased]
+
+
+def _notice_provenance(pinned: Notice) -> str:
+    """Say where a cut notice's text came from, and where it still stops."""
+    if not pinned.truncated:
+        return ""
+    if pinned.full_text is None:
+        said = (
+            f"카카오톡이 공지를 앞 {len(pinned.text)}자만 저장해 두었고, "
+            "나머지가 담긴 메시지는 이 방에서 찾지 못했습니다"
+        )
+        if pinned.full_text_candidates:
+            said += (
+                f" (앞부분이 같은 메시지 {len(pinned.full_text_candidates)}개 중 "
+                "어느 것인지 알 수 없어 고르지 않았습니다)"
+            )
+        return said
+    where = (
+        "방에 공유된 게시글"
+        if pinned.full_text_source == "share"
+        else "같은 말로 시작하는 메시지"
+    )
+    said = f"공지 줄에는 앞 {len(pinned.text)}자만 있어, {where}에서 본문을 읽었습니다"
+    if pinned.full_text_truncated:
+        said += f". 그 글도 이 PC에는 {len(pinned.full_text)}자까지만 있어 뒤는 읽을 수 없습니다"
+    return said
 
 
 def _counts_as_unread(message: Message) -> bool:

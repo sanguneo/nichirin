@@ -344,6 +344,24 @@ crossed over.
   older plain-text row. In all four rooms holding both, the older row was
   2019–2023 and the post 2025–2026, and the texts never matched — so the older
   row is read only when there is no post. Reading it needs no room key.
+- **Both notice rows stop at 100 characters, and the rest is looked for in
+  two places** (2026-10-02). A post's `content` and the older row both top out
+  at exactly 100. The one older row that long was a 2022 notice that the
+  macOS row also cuts at exactly 100, so both count as `truncated`. A
+  **board share** is `type = 98`, written when a post is made. Its
+  attachment's `os` segments carry the text (`t` 1, `ct`, at most 500) and
+  `kakaomoim://post?...&post_id=`, and that `post_id` is the post's `id`.
+  That matched in both rooms with a cut post. In one room the share began
+  with the preview. In the other only 4 characters agreed, because the post
+  was edited after it was shared. So a share counts only when it begins
+  with the whole preview. The pinned message (by words, up to 3,999) is the
+  other place, and the longer text wins. Of three cut posts here, one
+  matched a 3,999-character message and a 500-character share, one had only
+  an edited share, and one sat in a locked room that was not looked in. The
+  rest of a post is on the server, which this tool does not ask.
+  `/notice` in the interface shows `fullText` and says where it came from.
+  It once showed only the 100-character preview even when `fullText` was
+  there.
 - **A file is `type = 18`** with `url`, `name`, `size` (also `s`), `expire` in
   ms and a checksum `cs`, on `talk.kakaocdn.net` or `dn.talk.kakao.com`. A live
   address answered a ranged GET with 206; expired ones 410 and 403. So

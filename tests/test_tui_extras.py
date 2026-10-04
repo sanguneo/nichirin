@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 
 from kanao import __version__
-from kanao.model import COVERED_PLACEHOLDER
+from kanao.model import COVERED_PLACEHOLDER, Notice
 from tests.platform import require_windows_console
 
 require_windows_console()
@@ -106,6 +106,34 @@ class ExtrasScreenTests(unittest.TestCase):
         self.command("/time")
         self.assertTrue(self.app.show_timestamps)
         self.assertEqual(line(), shown)
+
+    def test_notice_shows_the_whole_text_and_says_where_it_came_from(self) -> None:
+        whole = "가상 공지 철 줄\n" + "합성 본문이 이어집니다. " * 12 + "\n끝 줄입니다"
+        pinned = Notice(
+            text=whole[:100],
+            kind="text",
+            author_id=None,
+            author="작성자",
+            posted_at=None,
+            source="board",
+            truncated=True,
+            full_text=whole,
+            full_text_message_id=9201,
+            full_text_source="share",
+        )
+        self.reader.notice = lambda room_id: pinned  # type: ignore[method-assign]
+        self.command("/notice")
+        frame = self.frame(60)
+        self.assertTrue(any("끝 줄입니다" in line for line in frame), frame)
+        self.assertTrue(any("공유된 게시글에서 본문" in line for line in frame), frame)
+
+        missing = replace(pinned, full_text=None, full_text_message_id=None, full_text_source=None)
+        self.reader.notice = lambda room_id: missing  # type: ignore[method-assign]
+        self.app.handle(Key.ESCAPE, "")
+        self.command("/notice")
+        frame = self.frame(60)
+        self.assertFalse(any("끝 줄입니다" in line for line in frame))
+        self.assertTrue(any("앞 100자만" in line for line in frame), frame)
 
     def test_ctrl_s_and_status_give_the_footer_row_to_the_conversation(self) -> None:
         version = "v" + __version__
