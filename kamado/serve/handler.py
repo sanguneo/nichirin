@@ -194,6 +194,7 @@ def build_handler(
     attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
     revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     file_provider: Optional[Callable[[int, int], Any]] = None,
+    session_provider: Optional[Callable[[], str]] = None,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -227,6 +228,27 @@ def build_handler(
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib name
             pass
+
+        def end_headers(self) -> None:
+            # Private macOS headers leave the shared JSON/SSE payloads intact.
+            # Health is public, so expose no account or activity timestamps.
+            if session_provider is not None and self.command == "GET" and (
+                urllib.parse.urlparse(self.path).path in ("/health", "/rooms", "/stream")
+            ) and getattr(self, "headers", None) is not None and self._authorized():
+                try:
+                    session = session_provider()
+                except (OSError, RuntimeError):
+                    session = "unknown"
+                ready, stale = {
+                    "signed-in": ("true", "false"),
+                    "logged-out": ("false", "true"),
+                    "closed": ("false", "true"),
+                    "unknown": ("unknown", "unknown"),
+                }.get(session, ("unknown", "unknown"))
+                self.send_header("X-Kamado-Ready", ready)
+                self.send_header("X-Kamado-Stale", stale)
+                self.send_header("X-Kamado-Detail", "kakaotalk-" + session)
+            super().end_headers()
 
         def finish(self) -> None:
             try:

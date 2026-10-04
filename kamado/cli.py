@@ -375,6 +375,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "serve":
         from . import snapshot
+        from .macauto import client_session
         from .serve import (
             make_live_attachments_provider,
             make_live_context_provider,
@@ -419,6 +420,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             attachments_provider=make_live_attachments_provider(lambda: Reader()),
             revisions_provider=make_live_revisions_provider(lambda: Reader()),
             file_provider=make_live_file_provider(lambda: Reader()),
+            session_provider=client_session,
         )
 
     if arguments.command == "search":

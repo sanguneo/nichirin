@@ -71,6 +71,7 @@ def run(
     attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
     revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     file_provider: Optional[Callable[[int, int], Any]] = None,
+    session_provider: Optional[Callable[[], str]] = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -89,6 +90,7 @@ def run(
         attachments_provider=attachments_provider,
         revisions_provider=revisions_provider,
         file_provider=file_provider,
+        session_provider=session_provider,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kamado serve listening on {host}:{server.server_port}", flush=True)

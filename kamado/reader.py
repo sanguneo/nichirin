@@ -33,7 +33,7 @@ import plistlib
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterable, Iterator, Optional, Sequence
 
 from . import model, names as names_module, paths
 from .errors import ErrorCode, KamadoError
@@ -266,6 +266,8 @@ class Reader:
         Off by default, the way the client shows it; the interface's
         ``/safebot`` and the commands' ``--show-covered`` turn it on.
         """
+        self.session_probe: Optional[Callable[[], str]] = None
+        """Override native diagnostics when a reader belongs to a synthetic host."""
 
     @property
     def keyring(self) -> Keyring:
@@ -339,6 +341,18 @@ class Reader:
 
     def status(self) -> dict[str, object]:
         """Describe access without requiring any of it to be working."""
+        from .macauto import client_session
+
+        session = self.session_probe or client_session
+        if session() == "logged-out":
+            return {
+                "ready": False,
+                "account": None,
+                "database": None,
+                "rooms": 0,
+                "detail": "kakaotalk-logged-out",
+                "stale": True,
+            }
         try:
             ring = self.keyring
         except KamadoError as error:

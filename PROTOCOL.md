@@ -109,6 +109,27 @@ streams as it will.
 
 ## Compatibility
 
+### macOS session diagnostics
+
+`status` reports `ready: false`, `stale: true` and
+`detail: "kakaotalk-logged-out"` when read-only Accessibility inspection finds
+both a password field and a login button in KakaoTalk's main window. This does not disable
+local history commands. Closing KakaoTalk still permits offline reads.
+An inaccessible or absent main window cannot prove either login or logout.
+
+For authenticated requests the macOS server adds private response headers on `/health`, `/rooms` and
+`/stream`: `X-Kamado-Ready`, `X-Kamado-Stale` (`true`, `false`, or `unknown`)
+and `X-Kamado-Detail` (`kakaotalk-logged-out`, `kakaotalk-closed`,
+`kakaotalk-signed-in`, or `kakaotalk-unknown`). These describe the client's
+session, not a guarantee that a server sync finished. The JSON/SSE contract
+is unchanged: `/health` still reports process liveness through `ok`, and
+offline rooms remain readable. Windows need not emit these private headers.
+No age threshold treats a quiet conversation as stale. Unauthenticated health
+remains liveness-only and runs no native probe. Stream headers describe its
+opening session, not later changes during that connection. The session probe
+stops starting AX reads after three seconds; an in-flight read may take the
+AX messaging timeout (five seconds), in addition to the bounded process lookup.
+
 - **Adding a key is not a breaking change.** A consumer must ignore keys it
   does not know. This build carries one the Windows sibling does not (`typeCode` on a
   room) and one more error code (`PERMISSION_REQUIRED`).
