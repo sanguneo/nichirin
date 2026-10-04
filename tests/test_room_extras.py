@@ -54,6 +54,10 @@ class ReaderTests(unittest.TestCase):
             reacted.as_json()["reactions"][0], {"label": "사랑", "count": 3, "code": "1200509_021"}
         )
 
+    def test_a_file_message_is_of_kind_file(self) -> None:
+        """A client draws its download button on `kind == "file"`, not `other:18`."""
+        self.assertEqual(self.window()[FILE].as_json()["kind"], "file")
+
     def test_a_reaction_belongs_to_its_own_room(self) -> None:
         """The key is (logId, chatId, type): the same id elsewhere is not this message."""
         self.assertNotIn("reactions", self.window()[LINKS].as_json())
