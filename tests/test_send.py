@@ -145,8 +145,8 @@ class SendTests(unittest.TestCase):
 class AXMessageTests(unittest.TestCase):
     def setUp(self) -> None:
         # Patch only the AX boundary; no live app and no Accessibility grant.
-        # Nothing here stubs activation, because the send path never activates.
-        self.element = Mock()
+        # The button path stays in the background; fallback tests stub activation.
+        self.element = Mock(spec=ax.Element)
         self.element.value = "draft"
         with patch("kamado.macauto.ax.application", return_value=Mock()):
             self.backend = AXBackend(99)
@@ -217,6 +217,137 @@ class AXMessageTests(unittest.TestCase):
         button.perform.assert_called_once_with("AXPress")
         run.assert_not_called()  # sending never activates the client
 
+    def _window_without_send_button(self) -> Mock:
+        window = Mock(spec=ax.Element)
+        window.children.return_value = []
+        window.same_as.side_effect = lambda other: other is window
+        self.backend._windows_by_control[self.control] = window
+        self.element.same_as.side_effect = lambda other: other is self.element
+        self.element.attribute.side_effect = lambda name: (
+            window if name == "AXWindow" else None
+        )
+        self.element.value = "synthetic message"
+        self.element.set_attribute.return_value = True
+        self.backend.set_text(self.control, "synthetic message")
+        self.backend._app.attribute = Mock(return_value=self.element)
+        return window
+
+    def test_missing_button_with_verified_focus_posts_return(self) -> None:
+        window = self._window_without_send_button()
+        actions = []
+        window.perform.side_effect = lambda action: actions.append(action)
+        self.element.set_attribute.side_effect = lambda name, value: (
+            actions.append(name) or True
+        )
+
+        def post(pid: int, key: int) -> None:
+            actions.append("Return")
+            self.element.value = ""
+
+        with patch("kamado.macauto.activate", side_effect=lambda: actions.append("activate")):
+            with patch("kamado.macauto.ax.post_key", side_effect=post) as post_key:
+                self.backend.submit(self.control)
+        post_key.assert_called_once_with(99, 36)
+        self.assertEqual(actions, ["AXRaise", "activate", "AXFocused", "Return"])
+        self.assertEqual(self.element.value, "")
+
+    def test_return_accepts_distinct_wrappers_for_the_same_native_elements(self) -> None:
+        window = self._window_without_send_button()
+        focused = Mock(spec=ax.Element)
+        focused.same_as.side_effect = lambda other: other is self.element
+        focused.value = "synthetic message"
+        owning_window = Mock(spec=ax.Element)
+        owning_window.same_as.side_effect = lambda other: other is window
+        focused.attribute.return_value = owning_window
+        self.backend._app.attribute = Mock(return_value=focused)
+        with patch("kamado.macauto.activate"):
+            with patch(
+                "kamado.macauto.ax.post_key",
+                side_effect=lambda pid, key: setattr(self.element, "value", ""),
+            ) as post_key:
+                self.backend.submit(self.control)
+        post_key.assert_called_once_with(99, 36)
+        self.assertEqual(self.element.value, "")
+
+    def test_focus_elsewhere_refuses_return_even_with_the_same_text(self) -> None:
+        window = self._window_without_send_button()
+        elsewhere = Mock(spec=ax.Element)
+        elsewhere.same_as.return_value = False
+        elsewhere.value = "synthetic message"
+        elsewhere.attribute.return_value = window
+        self.backend._app.attribute = Mock(return_value=elsewhere)
+        with patch("kamado.macauto.activate"):
+            with patch("kamado.macauto.ax.post_key") as post_key:
+                with self.assertRaises(OSError):
+                    self.backend.submit(self.control)
+        post_key.assert_not_called()
+        self.assertEqual(self.element.value, "synthetic message")
+
+    def test_wrong_owning_window_refuses_return_even_with_the_same_title(self) -> None:
+        window = self._window_without_send_button()
+        window.title = "Synthetic room"
+        elsewhere = Mock(spec=ax.Element)
+        elsewhere.title = "Synthetic room"
+        elsewhere.same_as.return_value = False
+        self.element.attribute.return_value = elsewhere
+        self.element.attribute.side_effect = None
+        with patch("kamado.macauto.activate"):
+            with patch("kamado.macauto.ax.post_key") as post_key:
+                with self.assertRaises(OSError):
+                    self.backend.submit(self.control)
+        post_key.assert_not_called()
+
+    def test_changed_composer_value_refuses_return(self) -> None:
+        self._window_without_send_button()
+        self.element.value = "changed after placement"
+        with patch("kamado.macauto.activate"):
+            with patch("kamado.macauto.ax.post_key") as post_key:
+                with self.assertRaises(OSError):
+                    self.backend.submit(self.control)
+        post_key.assert_not_called()
+        self.assertEqual(self.element.value, "changed after placement")
+
+    def test_unreadable_focus_or_window_refuses_return(self) -> None:
+        for missing in ("focus", "window", "value"):
+            with self.subTest(missing=missing):
+                self._window_without_send_button()
+                if missing == "focus":
+                    self.backend._app.attribute = Mock(return_value=None)
+                elif missing == "window":
+                    self.element.attribute.side_effect = None
+                    self.element.attribute.return_value = None
+                else:
+                    self.element.value = None
+                with patch("kamado.macauto.activate"):
+                    with patch("kamado.macauto.ax.post_key") as post_key:
+                        with self.assertRaises(OSError):
+                            self.backend.submit(self.control)
+                post_key.assert_not_called()
+
+    def test_focus_can_settle_before_return_without_a_fixed_delay(self) -> None:
+        self._window_without_send_button()
+        self.backend._app.attribute = Mock(side_effect=[None, self.element])
+        with patch("kamado.macauto.activate"):
+            with patch(
+                "kamado.macauto.ax.post_key",
+                side_effect=lambda pid, key: setattr(self.element, "value", ""),
+            ) as post_key:
+                self.backend.submit(self.control)
+        post_key.assert_called_once_with(99, 36)
+
+    def test_return_requires_a_readable_emptied_composer(self) -> None:
+        for remaining in ("synthetic message", None):
+            with self.subTest(remaining=remaining):
+                self._window_without_send_button()
+                with patch("kamado.macauto.activate"):
+                    with patch(
+                        "kamado.macauto.ax.post_key",
+                        side_effect=lambda pid, key: setattr(self.element, "value", remaining),
+                    ) as post_key:
+                        with self.assertRaises(OSError):
+                            self.backend.submit(self.control)
+                post_key.assert_called_once_with(99, 36)
+
     def test_the_button_is_found_among_direct_children_not_by_crawling(self) -> None:
         button = self._window_with_send_button()
         # The test put a Mock in there; the mapping is typed with the real
@@ -255,8 +386,10 @@ class AXMessageTests(unittest.TestCase):
                 button = self._window_with_send_button()
                 button.attribute.return_value = enabled
                 self.element.value = ""
-                with self.assertRaises(OSError):
-                    self.backend.submit(self.control)
+                with patch("kamado.macauto.ax.post_key") as post_key:
+                    with self.assertRaises(OSError):
+                        self.backend.submit(self.control)
+                post_key.assert_not_called()
                 button.perform.assert_not_called()
 
     def test_the_button_can_enable_after_the_write_without_a_fixed_delay(self) -> None:

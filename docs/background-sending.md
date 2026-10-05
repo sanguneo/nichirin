@@ -3,6 +3,15 @@
 Measured on 2026-09-19, macOS, KakaoTalk 26.7.0 (1194), one active display.
 No private conversation content or identifiers are recorded here.
 
+These measurements describe the AX send-button path. KakaoTalk for Mac 26.4.1
+was separately observed on 2026-10-02 without an accessible send button. For
+that layout, submission uses a guarded Return after raising the target window,
+activating the app and verifying the focused composer, its owning window and
+the placed text. That path does not preserve `B` below. Synthetic submission
+tests passed. A live dry-run was attempted, but the previously open target was
+unavailable (`WINDOW_NOT_FOUND`); no live message was sent, and the new Return
+path has not been exercised against the live client in this change.
+
 ## The condition to preserve
 
 For room `r`, message `m`, and desktop state `s`, distinguish:
