@@ -375,6 +375,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "serve":
         from . import paths, snapshot
+        from .macauto import client_session
         from .serve import (
             UploadStage,
             make_live_account_reader,
@@ -426,6 +427,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             file_provider=make_live_file_provider(lambda: Reader()),
             upload=make_live_upload(send_reader),
             upload_stage=UploadStage(paths.state_directory() / "uploads"),
+            session_provider=client_session,
         )
 
     if arguments.command == "search":

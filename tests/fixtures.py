@@ -338,7 +338,9 @@ def build_reader(ledger=None, **kwargs) -> Reader:
     synthetic name to the real history under Application Support.
     """
     cache, keyring = build_profile(**kwargs)
-    return Reader(cache=cache, keyring=keyring, ledger=ledger)
+    reader = Reader(cache=cache, keyring=keyring, ledger=ledger)
+    reader.session_probe = lambda: "closed"
+    return reader
 
 
 def build_reader_on_disk(root: Path, **kwargs) -> tuple[Reader, StubCache]:
@@ -354,7 +356,9 @@ def build_reader_on_disk(root: Path, **kwargs) -> tuple[Reader, StubCache]:
     database.with_name(database.name + "-wal").write_bytes(b"log")
 
     cache = StubCache(build_database(**kwargs), path=database)
-    return Reader(cache=cache, keyring=build_keyring(database)), cache
+    reader = Reader(cache=cache, keyring=build_keyring(database))
+    reader.session_probe = lambda: "closed"
+    return reader, cache
 
 
 def touch_log(root: Path, room_id: int, payload: bytes) -> None:

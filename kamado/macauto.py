@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Protocol, TypedDict
+from typing import Callable, Iterable, Literal, Optional, Protocol, TypedDict
 
 from . import ax, paths
 from .errors import ErrorCode, KamadoError
@@ -226,6 +226,69 @@ def client_pid(runner=subprocess.run) -> Optional[int]:
 def running(runner=subprocess.run) -> bool:
     """Whether the KakaoTalk client is running at all."""
     return client_pid(runner) is not None
+
+
+def client_session() -> Literal["closed", "signed-in", "logged-out", "unknown"]:
+    """Read the main window's login shape, without opening or focusing it.
+
+    A missing window or permission is not proof of login. Never read a field's
+    value (it may hold an email), or walk the rows beneath a chat table.
+    """
+    pid = client_pid()
+    if pid is None:
+        return "closed"
+    if not ax.is_trusted():
+        return "unknown"
+    deadline = time.monotonic() + 3.0
+
+    def attribute(element, name):
+        # The deadline stops new IPC; one in-flight read may take the AX
+        # messaging timeout (5 s). Do not call windows(), which reads per row.
+        if time.monotonic() >= deadline:
+            raise TimeoutError("session inspection deadline")
+        return element.attribute(name)
+
+    try:
+        app = ax.application(pid)
+        windows = list(attribute(app, "AXWindows") or [])
+        for window in attribute(app, "AXChildrenInNavigationOrder") or []:
+            if attribute(window, "AXRole") == "AXWindow" and not any(
+                window.same_as(known) for known in windows
+            ):
+                windows.append(window)
+        for name in ("AXMainWindow", "AXFocusedWindow"):
+            window = attribute(app, name)
+            if isinstance(window, ax.Element) and not any(
+                window.same_as(known) for known in windows
+            ):
+                windows.append(window)
+        pending = []
+        for window in windows:
+            if attribute(window, "AXIdentifier") == MAIN_WINDOW_IDENTIFIER:
+                pending.append((window, 0))
+        visited = 0
+        password = login = False
+        while pending and visited < 30 and time.monotonic() < deadline:
+            node, depth = pending.pop(0)
+            visited += 1
+            role = attribute(node, "AXRole")
+            if role == "AXTable":
+                return "signed-in"
+            if attribute(node, "AXSubrole") == "AXSecureTextField":
+                password = True
+            if role == "AXButton" and attribute(node, "AXTitle") in (
+                "로그인", "Log In", "Login",
+            ):
+                login = True
+            if password and login:
+                return "logged-out"
+            if depth < 4:
+                pending.extend(
+                    (child, depth + 1) for child in attribute(node, "AXChildren") or []
+                )
+    except (RuntimeError, OSError):
+        return "unknown"
+    return "unknown"
 
 
 def activate(runner=subprocess.run) -> None:

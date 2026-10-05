@@ -366,7 +366,9 @@ def build_reader() -> Reader:
         account=Account(user_id=ME, database=DATABASE, geometry=geometry),
     )
     # ledger stays unset: this reader must never write a name anywhere.
-    return Reader(cache=Cache(database), keyring=keyring)
+    reader = Reader(cache=Cache(database), keyring=keyring)
+    reader.session_probe = lambda: "closed"
+    return reader
 
 
 def arrange(app, scene: str) -> None:

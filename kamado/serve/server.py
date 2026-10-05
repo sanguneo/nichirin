@@ -74,6 +74,7 @@ def run(
     file_provider: Optional[Callable[[int, int], Any]] = None,
     upload: Optional[Callable[..., dict[str, Any]]] = None,
     upload_stage: Optional[UploadStage] = None,
+    session_provider: Optional[Callable[[], str]] = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -94,6 +95,7 @@ def run(
         file_provider=file_provider,
         upload=upload,
         upload_stage=upload_stage,
+        session_provider=session_provider,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kamado serve listening on {host}:{server.server_port}", flush=True)
