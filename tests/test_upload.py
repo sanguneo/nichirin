@@ -8,6 +8,7 @@ being returned whatever happened.
 """
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -176,6 +177,43 @@ class PasteboardTests(unittest.TestCase):
         board.restore(saved)
         self.assertEqual(board.save(), original)
         self.assertIsNone(board.file_url())
+
+
+class FrontmostTests(unittest.TestCase):
+    """The app to give the front back to is asked for afresh on every upload."""
+
+    @staticmethod
+    def runner(answers):
+        calls = []
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=answers[len(calls) - 1])
+
+        return run, calls
+
+    def test_each_call_reads_the_front_application_now(self) -> None:
+        from kamado.macupload import _frontmost_pid
+
+        run, calls = self.runner(
+            ['ASN:0x0-0x31031:\n', '"pid"=626\n', 'ASN:0x0-0x1a01a:\n', '"pid"=3616\n']
+        )
+        self.assertEqual(_frontmost_pid(run), 626)
+        self.assertEqual(_frontmost_pid(run), 3616)
+        self.assertEqual(calls[1][-1], "ASN:0x0-0x31031:")
+
+    def test_an_unreadable_answer_is_no_app_rather_than_a_guess(self) -> None:
+        from kamado.macupload import _frontmost_pid
+
+        run, _calls = self.runner([""])
+        self.assertIsNone(_frontmost_pid(run))
+        run, _calls = self.runner(["ASN:0x0-0x1:\n", "\n"])
+        self.assertIsNone(_frontmost_pid(run))
+
+        def missing(argv, **_kwargs):
+            raise FileNotFoundError(argv[0])
+
+        self.assertIsNone(_frontmost_pid(missing))
 
 
 if __name__ == "__main__":

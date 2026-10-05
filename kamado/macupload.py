@@ -26,6 +26,8 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import os
+import re
+import subprocess
 import time
 from typing import Any, Callable, Iterable, Optional, Protocol, TypedDict
 
@@ -369,17 +371,30 @@ def _activate_pid(pid: int) -> None:
         objc.lib.objc_autoreleasePoolPop(pool)
 
 
-def _frontmost_pid() -> Optional[int]:
-    objc = _ObjC()
-    pool = objc.lib.objc_autoreleasePoolPush()
+def _frontmost_pid(runner=subprocess.run) -> Optional[int]:
+    """The application in front now, asked of LaunchServices each time.
+
+    ``NSWorkspace.frontmostApplication`` is kept current by notifications
+    delivered on the main run loop, which neither this process nor ``serve``'s
+    handler threads run: it answered the first app it saw for the life of the
+    process, so a server that once uploaded with KakaoTalk in front never put
+    the terminal back again. Draining the run loop helped on the main thread
+    only. ``lsappinfo`` asks the same service afresh, from any thread.
+    """
     try:
-        workspace = objc.send(objc.cls("NSWorkspace"), "sharedWorkspace")
-        app = objc.send(workspace, "frontmostApplication")
-        if not app:
+        front = runner(
+            ["/usr/bin/lsappinfo", "front"], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        if not front:
             return None
-        return int(objc.send(app, "processIdentifier", restype=ctypes.c_int))
-    finally:
-        objc.lib.objc_autoreleasePoolPop(pool)
+        info = runner(
+            ["/usr/bin/lsappinfo", "info", "-only", "pid", front],
+            capture_output=True, text=True, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'"pid"\s*=\s*(\d+)', info)
+    return int(match.group(1)) if match else None
 
 
 # -- the accessibility backend -----------------------------------------------

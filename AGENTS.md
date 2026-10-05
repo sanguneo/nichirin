@@ -464,17 +464,25 @@ keep rather than one to rediscover.
 
 `macupload.py` drives the client for an upload; `serve` only stages the bytes.
 
-- **`POST /upload` pastes, and the paste is unproven on a live client.** The
+- **`POST /upload` pastes, and the paste works on a live client.** The
   Windows build presses the file button and fills the open-file dialog. This
   one puts a file URL on the pasteboard, presses 편집 › 붙여넣기 with the
   composer verified as focused (`same_as`), and presses the button saying
   전송 in a *new* sheet or window — never the room window's own children,
   which hold the text send button. The pasteboard is saved type by type and
-  put back (round trip measured on a private named pasteboard). On 2026-10-04
-  the only Mac at hand was locked, so no step past the lock check has run
-  against the client: a locked session is refused first, verified live as
-  `SEND_FAILED … nothing was sent`. The first live run should be a synthetic
-  file to the memo chat, read back with `/context` for a `fromMe` row.
+  put back (round trip measured on a private named pasteboard). A locked
+  session is refused first, verified live as `SEND_FAILED … nothing was
+  sent`. On 2026-10-05 synthetic PNG and TXT files went through `serve` to
+  the memo chat, and `/context` read each back as `fromMe` `photo` / `file`.
+- **The app to put back in front is asked of LaunchServices, not
+  `NSWorkspace`.** `frontmostApplication` is kept current by notifications
+  on the main run loop, which neither the CLI nor `serve`'s handler threads
+  run, so it answered the first app it saw for the life of the process.
+  Measured: iTerm in front, then KakaoTalk, then iTerm again were all reported
+  as iTerm, and a server that had once uploaded with KakaoTalk in front left
+  KakaoTalk in front after every later upload. Draining the run loop fixed
+  it on the main thread only. `_frontmost_pid` runs `lsappinfo front`, which
+  answered correctly from a worker thread.
 
 - **Only the commands the daemon answers are forwarded to it.** `cli.main`
   used to forward everything not on an exclusion list, and the daemon answered
