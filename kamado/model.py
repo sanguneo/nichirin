@@ -65,6 +65,13 @@ Its attachment carries parallel lists -- ``thumbnailUrls``, ``imageUrls`` and
 the per-picture sizes -- rather than the single-photo keys.
 """
 
+FILE_MESSAGE: Final = 18
+"""A file somebody sent: ``{url, name, size|s, expire, cs, k}`` in the attachment.
+
+Measured on this client: 115 file rows, every one on ``talk.kakaocdn.net`` or
+``dn.talk.kakao.com``, the same keys the Windows build found.
+"""
+
 _STILL_MESSAGE_TYPES: Final = frozenset({PHOTO_MESSAGE, MULTI_PHOTO_MESSAGE, 16386})
 """Type codes observed carrying a still picture on a live client.
 
@@ -81,6 +88,7 @@ _MESSAGE_KINDS: Final = {
     VIDEO_MESSAGE: "video",
     REPLY_MESSAGE: "reply",
     MULTI_PHOTO_MESSAGE: "photos",
+    FILE_MESSAGE: "file",
 }
 
 
@@ -97,12 +105,6 @@ is the server's, not the platform's. Other codes stay numbers.
 
 ERASED_PLACEHOLDER: Final = "삭제된 메시지입니다"
 """What the client shows where a message deleted for everyone was."""
-FILE_MESSAGE: Final = 18
-"""A file somebody sent: ``{url, name, size|s, expire, cs, k}`` in the attachment.
-
-Measured on this client: 115 file rows, every one on ``talk.kakaocdn.net`` or
-``dn.talk.kakao.com``, the same keys the Windows build found.
-"""
 COVERED_PLACEHOLDER: Final = "세이프봇에 의해 가려진 메시지입니다."
 """What stands where an open chat's SafeBot covered a message.
 

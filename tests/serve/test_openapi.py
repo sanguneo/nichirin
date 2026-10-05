@@ -62,6 +62,12 @@ class DocumentTests(unittest.TestCase):
 
         self.assertEqual(parameter("/digest", "span")["default"], "30m")
 
+        health = paths["/health"]["get"]["responses"]["200"]["content"]
+        example = health["application/json"]["example"]
+        self.assertEqual(
+            example["features"]["upload"]["maxBytes"], config.MAX_UPLOAD_BYTES
+        )
+
         port = self.spec["servers"][0]["variables"]["port"]["default"]
         self.assertEqual(port, str(config.DEFAULT_PORT))
 
@@ -86,7 +92,9 @@ class DocumentTests(unittest.TestCase):
 
         Two are macOS-only (a room key and an error code). The reads added
         in 0.15.0 were Windows-only until this schema was checked for them;
-        since 0.16.0 both builds answer them.
+        since 0.16.0 both builds answer them. Contract 0.22.0 still marks
+        `POST /upload` and the `features` that declares it Windows-only; the
+        marks go in a contract change made on both sides together.
         """
         marked = set()
         def walk(node, trail=()):
@@ -106,11 +114,8 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
-                "components/schemas/Notice/properties/truncated",
-                "components/schemas/Notice/properties/fullText",
-                "components/schemas/Notice/properties/fullTextMessageId",
-                "components/schemas/Notice/properties/fullTextTruncated",
-                "components/schemas/Notice/properties/fullTextCandidates",
+                "paths//upload/post",
+                "paths//health/get/responses/200/content/application/json/schema/properties/features",
             },
         )
 

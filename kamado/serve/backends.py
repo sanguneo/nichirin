@@ -7,7 +7,7 @@ platform-specific half of the server is one import away from the rest of it.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from ..errors import ErrorCode, KamadoError
 
@@ -35,7 +35,106 @@ def make_live_context_provider(reader_factory) -> Callable[[int, int], dict[str,
     return provider
 
 
-def make_live_send() -> Callable[..., dict[str, Any]]:
+def make_live_account_reader() -> Callable[[], Any]:
+    """Open readers that share one snapshot cache and one account.
+
+    For the send line only: ``SnapshotCache`` takes no lock, and texts and
+    files are both handed over under the handler's ``send_lock``. See
+    :func:`make_live_send` for what sharing them buys.
+    """
+    from ..names import NameLedger
+    from ..reader import Reader
+    from ..snapshot import SnapshotCache
+
+    snapshots = SnapshotCache()
+    account: dict[str, Any] = {}
+
+    def keyring():
+        """Resolve the account once, on the first send rather than at startup.
+
+        Doing it when the server is built would make an unreadable install a
+        server that refuses to start, instead of one that explains itself.
+        """
+        if "keyring" not in account:
+            from ..keyring import Keyring
+
+            account["keyring"] = Keyring.discover()
+        return account["keyring"]
+
+    def open_reader():
+        return Reader(cache=snapshots, keyring=keyring(), ledger=NameLedger())
+
+    return open_reader
+
+
+def _send_target(reader, room: str):
+    """Resolve *room* for a send: the room, its window aliases, its list hint."""
+    from ..context import _resolve
+
+    # cli._selected_room is this line plus an argparse namespace built
+    # to carry two values; importing cli from here is a cycle, and the
+    # cycle is the only thing that namespace was for.
+    #
+    # openapi.json calls `room` "the room's title, or its id as a
+    # string", and a JSON body carries both as a string, while
+    # `_resolve` takes the id path for an int alone. A client sending
+    # back the id `/rooms` gave it was answered CHAT_NOT_FOUND. The id
+    # is tried first and only when it names a room, so a room whose
+    # title is a number still resolves by title.
+    resolved = None
+    if room.strip().isdigit():
+        resolved = reader.room(int(room.strip()))
+    if resolved is None:
+        resolved = _resolve(reader, room)
+    catalogued = reader.rooms()
+    duplicates = [
+        r for r in catalogued if r.title.casefold() == resolved.title.casefold()
+    ]
+    if len(duplicates) != 1:
+        raise KamadoError(
+            ErrorCode.AMBIGUOUS_CHAT,
+            "multiple catalog rooms share this window title; "
+            "give the target a unique title",
+            candidates=[r.as_json() for r in duplicates],
+        )
+    stored = reader.stored_title(resolved.id)
+    window_aliases = [stored] if stored and stored != resolved.title else []
+    position = next(
+        (index for index, r in enumerate(catalogued) if r.id == resolved.id),
+        None,
+    )
+    return resolved, window_aliases, position
+
+
+def make_live_upload(open_reader: Callable[[], Any]) -> Callable[..., dict[str, Any]]:
+    """Build the upload callable: the send's room resolution, then the file."""
+
+    def upload(room: str, path: str, name: str, open_if_needed: bool = False) -> dict[str, Any]:
+        from ..macupload import make_uploader
+
+        with open_reader() as reader:
+            resolved, window_aliases, position = _send_target(reader, room)
+            try:
+                result = make_uploader().upload(
+                    resolved.title,
+                    path,
+                    name,
+                    open_if_needed=open_if_needed,
+                    aliases=window_aliases,
+                    hint=position,
+                )
+            except OSError as error:
+                raise KamadoError(
+                    ErrorCode.SEND_FAILED, f"{error}; nothing was sent"
+                ) from error
+            return {**result, "roomId": str(resolved.id)}
+
+    return upload
+
+
+def make_live_send(
+    open_reader: Optional[Callable[[], Any]] = None,
+) -> Callable[..., dict[str, Any]]:
     """Build the send callable the server uses on a macOS host.
 
     Each call opens a fresh reader (so nothing a reader remembers on itself --
@@ -57,24 +156,8 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
     ``send_lock``, so exactly one thread is ever inside it. The read paths run
     concurrently and keep a cache per request for that reason.
     """
-    from ..names import NameLedger
-    from ..reader import Reader
-    from ..snapshot import SnapshotCache
-
-    snapshots = SnapshotCache()
-    account: dict[str, Any] = {}
-
-    def keyring():
-        """Resolve the account once, on the first send rather than at startup.
-
-        Doing it when the server is built would make an unreadable install a
-        server that refuses to start, instead of one that explains itself.
-        """
-        if "keyring" not in account:
-            from ..keyring import Keyring
-
-            account["keyring"] = Keyring.discover()
-        return account["keyring"]
+    if open_reader is None:
+        open_reader = make_live_account_reader()
 
     def send(
         room: str,
@@ -84,44 +167,10 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
         aliases=(),
         hint=None,
     ) -> dict[str, Any]:
-        from ..context import _resolve
         from ..macauto import make_sender
 
-        with Reader(
-            cache=snapshots, keyring=keyring(), ledger=NameLedger()
-        ) as reader:
-            # cli._selected_room is this line plus an argparse namespace built
-            # to carry two values; importing cli from here is a cycle, and the
-            # cycle is the only thing that namespace was for.
-            #
-            # openapi.json calls `room` "the room's title, or its id as a
-            # string", and a JSON body carries both as a string, while
-            # `_resolve` takes the id path for an int alone. A client sending
-            # back the id `/rooms` gave it was answered CHAT_NOT_FOUND. The id
-            # is tried first and only when it names a room, so a room whose
-            # title is a number still resolves by title.
-            resolved = None
-            if room.strip().isdigit():
-                resolved = reader.room(int(room.strip()))
-            if resolved is None:
-                resolved = _resolve(reader, room)
-            catalogued = reader.rooms()
-            duplicates = [
-                r for r in catalogued if r.title.casefold() == resolved.title.casefold()
-            ]
-            if len(duplicates) != 1:
-                raise KamadoError(
-                    ErrorCode.AMBIGUOUS_CHAT,
-                    "multiple catalog rooms share this window title; "
-                    "give the target a unique title",
-                    candidates=[r.as_json() for r in duplicates],
-                )
-            stored = reader.stored_title(resolved.id)
-            window_aliases = [stored] if stored and stored != resolved.title else []
-            position = next(
-                (index for index, r in enumerate(catalogued) if r.id == resolved.id),
-                None,
-            )
+        with open_reader() as reader:
+            resolved, window_aliases, position = _send_target(reader, room)
             try:
                 result = make_sender().send(
                     resolved.title,

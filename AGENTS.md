@@ -460,6 +460,21 @@ keep rather than one to rediscover.
 | `serve/stream.py` | The SSE connection's own lifetime, and the watcher it owns |
 | `serve/backends.py` | Reader, Sender and Watcher wiring for a live host |
 | `serve/server.py` | Binding the socket and serving until interrupted |
+| `serve/upload.py` | `POST /upload`'s form, the file's name, and the staged copy |
+
+`macupload.py` drives the client for an upload; `serve` only stages the bytes.
+
+- **`POST /upload` pastes, and the paste is unproven on a live client.** The
+  Windows build presses the file button and fills the open-file dialog. This
+  one puts a file URL on the pasteboard, presses 편집 › 붙여넣기 with the
+  composer verified as focused (`same_as`), and presses the button saying
+  전송 in a *new* sheet or window — never the room window's own children,
+  which hold the text send button. The pasteboard is saved type by type and
+  put back (round trip measured on a private named pasteboard). On 2026-10-04
+  the only Mac at hand was locked, so no step past the lock check has run
+  against the client: a locked session is refused first, verified live as
+  `SEND_FAILED … nothing was sent`. The first live run should be a synthetic
+  file to the memo chat, read back with `/context` for a `fromMe` row.
 
 - **Only the commands the daemon answers are forwarded to it.** `cli.main`
   used to forward everything not on an exclusion list, and the daemon answered

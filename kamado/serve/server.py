@@ -14,6 +14,7 @@ from .config import (
     MAX_STREAMS,
 )
 from .handler import build_handler
+from .upload import UploadStage
 
 _ORDINARY = (
     BrokenPipeError,
@@ -71,6 +72,8 @@ def run(
     attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
     revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     file_provider: Optional[Callable[[int, int], Any]] = None,
+    upload: Optional[Callable[..., dict[str, Any]]] = None,
+    upload_stage: Optional[UploadStage] = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -89,6 +92,8 @@ def run(
         attachments_provider=attachments_provider,
         revisions_provider=revisions_provider,
         file_provider=file_provider,
+        upload=upload,
+        upload_stage=upload_stage,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kamado serve listening on {host}:{server.server_port}", flush=True)

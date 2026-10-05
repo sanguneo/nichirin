@@ -29,6 +29,8 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_UPLOAD_BYTES,
+    UPLOAD_FRAMING_BYTES,
     _status_for,
     validate_count,
     validate_flag,
@@ -42,6 +44,7 @@ from .config import (
     validate_token,
 )
 from .stream import serve_stream
+from .upload import UploadStage, parse_form
 
 
 _FILE_CHUNK = 64 * 1024
@@ -194,6 +197,9 @@ def build_handler(
     attachments_provider: Optional[Callable[..., dict[str, Any]]] = None,
     revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     file_provider: Optional[Callable[[int, int], Any]] = None,
+    upload: Optional[Callable[..., dict[str, Any]]] = None,
+    upload_stage: Optional[UploadStage] = None,
+    max_upload_bytes: int = MAX_UPLOAD_BYTES,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -206,8 +212,14 @@ def build_handler(
     (the two halves of ``watch.Watcher`` kept separate precisely so streaming
     can be tested here without ever sleeping).
 
+    *upload* takes ``(room, path, name, open_if_needed=...)`` for a file staged
+    in *upload_stage* and returns the ``UploadResult`` fields; without it
+    ``POST /upload`` is not routed and ``GET /health`` names no feature.
+
     Raises :class:`KamadoError` for a bad token, interval, or poll interval.
     """
+    if upload is not None and upload_stage is None:
+        raise ValueError("an uploader needs a stage for its files")
     secret = validate_token(token)
     spacing = validate_min_interval(min_interval)
     period = validate_poll_interval(poll_interval)
@@ -279,6 +291,15 @@ def build_handler(
         # -- small helpers ------------------------------------------------
 
         def _read_json_body(self) -> Any:
+            raw = self._read_body(MAX_BODY_BYTES)
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise KamadoError(ErrorCode.INVALID_REQUEST, "request body is not JSON")
+
+        def _read_body(self, limit: int) -> bytes:
             declared = self.headers.get("Content-Length")
             if declared is None:
                 raise KamadoError(ErrorCode.INVALID_REQUEST, "Content-Length is required")
@@ -288,7 +309,7 @@ def build_handler(
                 raise KamadoError(ErrorCode.INVALID_REQUEST, "invalid Content-Length")
             if length < 0:
                 raise KamadoError(ErrorCode.INVALID_REQUEST, "negative Content-Length")
-            if length > MAX_BODY_BYTES:
+            if length > limit:
                 raise KamadoError(ErrorCode.INVALID_REQUEST, "request body too large")
             encoding = self.headers.get("Transfer-Encoding")
             if encoding is not None and encoding.strip().lower() != "identity":
@@ -307,12 +328,7 @@ def build_handler(
                     ErrorCode.INVALID_REQUEST, "request body ended before Content-Length"
                 )
             self._body_read = True
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                raise KamadoError(ErrorCode.INVALID_REQUEST, "request body is not JSON")
+            return raw
 
         def _reply(self, status: int, payload: dict[str, Any]) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -363,7 +379,10 @@ def build_handler(
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib name
             if self._is_health():
-                self._reply(200, {"ok": True})
+                health: dict[str, Any] = {"ok": True}
+                if upload is not None:
+                    health["features"] = {"upload": {"maxBytes": max_upload_bytes}}
+                self._reply(200, health)
                 return
             if not self._require_auth():
                 return
@@ -392,12 +411,15 @@ def build_handler(
         def do_POST(self) -> None:  # noqa: N802 - stdlib name
             if not self._require_auth():
                 return
-            if urllib.parse.urlparse(self.path).path != "/send":
+            route = urllib.parse.urlparse(self.path).path
+            if route == "/send":
+                self._handle_send()
+            elif route == "/upload" and upload is not None:
+                self._handle_upload()
+            else:
                 self._reply(
                     404, as_envelope(KamadoError(ErrorCode.INVALID_REQUEST, "not found"))
                 )
-                return
-            self._handle_send()
 
         def do_PUT(self) -> None:  # noqa: N802 - stdlib name
             self._method_not_allowed()
@@ -727,9 +749,68 @@ def build_handler(
                         ),
                     )
                     return
+            self._in_line(
+                lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room),
+                paced=not dry_run,
+                what="message",
+            )
+
+        def _handle_upload(self) -> None:
+            """Take one file and hand it to the client through the send line.
+
+            The body is refused unread when its declared length is past the
+            limit, read whole otherwise, and only staged once every part was
+            accepted. Nothing is retried: a failure after the client's own
+            send button was pressed has an unknown outcome.
+            """
+            try:
+                body = self._read_body(max_upload_bytes + UPLOAD_FRAMING_BYTES)
+                form = parse_form(
+                    self.headers.get("Content-Type"), body, max_upload_bytes
+                )
+            except KamadoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return
+            except _BodyTimeout:
+                self._reply(
+                    408,
+                    as_envelope(
+                        KamadoError(
+                            ErrorCode.INVALID_REQUEST,
+                            "the request body did not arrive in time",
+                        )
+                    ),
+                )
+                self.close_connection = True
+                return
+            assert upload is not None and upload_stage is not None
+
+            def deliver() -> dict[str, Any]:
+                upload_stage.sweep()
+                try:
+                    path = upload_stage.stage(form.name, form.data)
+                except OSError as error:
+                    raise KamadoError(
+                        ErrorCode.SEND_FAILED,
+                        f"could not stage the file: {error}; nothing was sent",
+                    ) from error
+                return upload(
+                    form.room, str(path), form.name, open_if_needed=form.open_room
+                )
+
+            self._in_line(deliver, paced=True, what="file")
+
+        def _in_line(
+            self,
+            action: Callable[[], dict[str, Any]],
+            *,
+            paced: bool,
+            what: str,
+        ) -> None:
+            """Run *action* in the one line texts and files share, and answer."""
             # Take a place in line before the lock, so the queue can count who
             # is waiting rather than discover them already blocked on it.
-            if not dry_run:
+            if paced:
                 in_line = queue.reserve()
                 if in_line is not None:
                     self._reply(
@@ -747,7 +828,7 @@ def build_handler(
                 # Queue and execution share one lock so the spacing a caller is
                 # charged matches the order the input box actually serves.
                 with send_lock:
-                    if not dry_run:
+                    if paced:
                         try:
                             queue.wait_for_turn()
                         except _ShuttingDown:
@@ -757,16 +838,14 @@ def build_handler(
                                     KamadoError(
                                         ErrorCode.BUSY,
                                         "the server is shutting down; "
-                                        "this message was not sent",
+                                        f"this {what} was not sent",
                                     )
                                 ),
                             )
                             return
                     started = queue.begin()
                     try:
-                        result = send(
-                            room, text, dry_run=dry_run, open_if_needed=open_room
-                        )
+                        result = action()
                     except KamadoError as error:
                         self._reply(_status_for(error), as_envelope(error))
                         return
@@ -776,14 +855,14 @@ def build_handler(
                             as_envelope(KamadoError(ErrorCode.SEND_FAILED, str(error))),
                         )
                         return
-                    if not dry_run:
+                    if paced:
                         # Paced from when this send started, and only now that it
                         # delivered: the failures above put text nowhere, and
                         # charging them would hold up somebody's retry of a room
                         # they had simply not opened yet.
                         queue.commit(started)
             finally:
-                if not dry_run:
+                if paced:
                     queue.release()
             self._reply(200, {"ok": True, **result})
 

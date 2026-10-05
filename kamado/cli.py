@@ -374,8 +374,10 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return _send(reader, arguments)
 
     if arguments.command == "serve":
-        from . import snapshot
+        from . import paths, snapshot
         from .serve import (
+            UploadStage,
+            make_live_account_reader,
             make_live_attachments_provider,
             make_live_context_provider,
             make_live_digest_provider,
@@ -384,6 +386,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             make_live_revisions_provider,
             make_live_rooms_provider,
             make_live_send,
+            make_live_upload,
             make_live_watcher_factory,
             run as serve_run,
             validate_token,
@@ -402,10 +405,12 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         # and a previous run killed by launchd may have left its copies behind.
         snapshot.warn_if_plaintext_fallback()
         snapshot.sweep_orphans()
+        # Texts and files share one line, so they share the warm reader too.
+        send_reader = make_live_account_reader()
         return serve_run(
             host=arguments.host,
             port=arguments.port,
-            send=make_live_send(),
+            send=make_live_send(send_reader),
             token=token,
             min_interval=arguments.min_interval,
             rooms_provider=make_live_rooms_provider(lambda: Reader()),
@@ -419,6 +424,8 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             attachments_provider=make_live_attachments_provider(lambda: Reader()),
             revisions_provider=make_live_revisions_provider(lambda: Reader()),
             file_provider=make_live_file_provider(lambda: Reader()),
+            upload=make_live_upload(send_reader),
+            upload_stage=UploadStage(paths.state_directory() / "uploads"),
         )
 
     if arguments.command == "search":
