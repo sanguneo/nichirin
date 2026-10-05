@@ -167,7 +167,7 @@ The full parser surface is below. Positive limits and intervals are required.
 | `friends` | `[--favorites] [--with-phone]` | `friends`, `count`; favorites first, then name |
 | `names` | `(--room TITLE \| --room-id ID) [NAME] [--user-id ID]` | `room`, `users`, `count`, `note` |
 | `search` | `KEYWORD [--limit N]` | `matches`, `count`, `unsearchableRooms`, `note`; default 20, newest-first |
-| `notice` | `(--room TITLE \| --room-id ID)` | `room`, `notice` (`{text, kind, authorId, author, postedAt, source}` or null) |
+| `notice` | `(--room TITLE \| --room-id ID)` | `room`, `notice` (`{text, kind, authorId, author, postedAt, source}` or null); a 100-character preview may also carry `truncated`, `fullText`, `fullTextMessageId`, `fullTextSource`, `fullTextTruncated` or `fullTextCandidates` |
 | `attachments` | `(--room TITLE \| --room-id ID) [--kind photo\|video\|file\|link] [--limit N] [--before-id ID]` | `room`, `attachments` (`messageId`, `kind`, `url`, `name`, `size`, `expiresAt` …), `count`; looks through the newest N (default 50) messages |
 | `revisions` | `(--room TITLE \| --room-id ID) --message-id ID` | `room`, `messageId`, `revisions`, `count`; always empty on macOS; `MESSAGE_NOT_FOUND` for a message that is gone |
 | `send` | `(--room TITLE \| --room-id ID) TEXT [--dry-run] [--open]` | `submitted`, `dryRun`, `room`, `roomId`, `length`, draft-clearing flag |
@@ -175,6 +175,16 @@ The full parser surface is below. Positive limits and intervals are required.
 | `query` | `SQL [--room-id ID]` | `rows`, `count` |
 | `schema` | `[--room-id ID]` | `tables`: table names mapped to column name/type lists |
 | `tui` | None | Interactive POSIX terminal UI using `termios` |
+
+A notice's `fullText` is found by its words, not a recorded message identity.
+Say where it was recovered from (`fullTextSource`: `message` or `share`), and
+do not describe it as a server fetch. Ambiguous sources return candidate IDs
+instead of choosing one; a unique other source may still provide the text.
+`fullTextTruncated` means even that source reached its local storage limit.
+
+Over HTTP, `/context` and `/digest` accept `showCovered=true` to reveal
+SafeBot-covered text for that request only. The default and `false` keep it
+hidden, and any other value is a 400. Deleted-for-everyone text stays deleted.
 
 ```bash
 python3 "<skill-dir>/scripts/kamado-cli.py" rooms --readable-only --limit 50

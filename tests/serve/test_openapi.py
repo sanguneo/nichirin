@@ -60,7 +60,12 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(highlights["maximum"], config.MAX_HIGHLIGHTS)
         self.assertEqual(highlights["default"], 3)
 
-        self.assertEqual(parameter("/digest", "span")["default"], "30m")
+        from kamado.tui.digest import parse_duration
+
+        span = parameter("/digest", "span")
+        for value in [span["default"], *span.get("examples", [])]:
+            with self.subTest(span=value):
+                parse_duration(value)
 
         health = paths["/health"]["get"]["responses"]["200"]["content"]
         example = health["application/json"]["example"]

@@ -139,3 +139,24 @@ def build_extras_reader(local_path: Optional[str] = None) -> Reader:
     )
     database.commit()
     return reader
+
+
+def build_notice_reader(notice: str, rows: tuple[tuple, ...] = ()) -> Reader:
+    """A legacy notice plus synthetic (id, room, type, text, attachment, deleted) rows."""
+    reader = build_extras_reader()
+    reader._owns_cache = True
+    database = reader.connection()
+    database.execute(
+        "UPDATE NTChatMeta SET content = ? WHERE chatId = ? AND type = 1",
+        (notice, GROUP_ROOM),
+    )
+    database.executemany(
+        "INSERT INTO NTChatMessage (logId, chatId, authorId, type, message, attachment, "
+        "sentAt, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (log_id, room, PEER_ID, kind, text, attachment, 1_700_002_000 + log_id, deleted)
+            for log_id, room, kind, text, attachment, deleted in rows
+        ],
+    )
+    database.commit()
+    return reader

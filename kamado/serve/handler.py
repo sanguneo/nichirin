@@ -186,8 +186,8 @@ def build_handler(
     min_interval: float = DEFAULT_MIN_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     rooms_provider: Optional[Callable[[], list[Any]]] = None,
-    context_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
-    digest_provider: Optional[Callable[[int, str, int, int], dict[str, Any]]] = None,
+    context_provider: Optional[Callable[..., dict[str, Any]]] = None,
+    digest_provider: Optional[Callable[..., dict[str, Any]]] = None,
     watcher_factory: Optional[Callable[[], Any]] = None,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -498,13 +498,19 @@ def build_handler(
                 )
                 # Every room is readable here, so there is nothing to open.
                 validate_flag(query.get("open", ["false"])[0], name="open")
+                show_covered = validate_flag(
+                    urllib.parse.parse_qs(parsed.query, keep_blank_values=True).get(
+                        "showCovered", ["false"]
+                    )[0],
+                    name="showCovered",
+                )
             except KamadoError as error:
                 # Refused before the reader is opened: a bad number should cost
                 # the caller a round trip, not a decryption.
                 self._reply(_status_for(error), as_envelope(error))
                 return
             try:
-                payload = context_provider(room_id, limit)
+                payload = context_provider(room_id, limit, show_covered=show_covered)
             except KamadoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return
@@ -546,11 +552,19 @@ def build_handler(
                     maximum=MAX_HIGHLIGHTS,
                 )
                 validate_flag(query.get("open", ["false"])[0], name="open")
+                show_covered = validate_flag(
+                    urllib.parse.parse_qs(parsed.query, keep_blank_values=True).get(
+                        "showCovered", ["false"]
+                    )[0],
+                    name="showCovered",
+                )
             except KamadoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return
             try:
-                payload = digest_provider(room_id, span, limit, highlights)
+                payload = digest_provider(
+                    room_id, span, limit, highlights, show_covered=show_covered
+                )
             except KamadoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return

@@ -9,7 +9,7 @@ class OpenFlagTests(ServedCase):
     def serve_counting(self):
         calls = []
 
-        def context_provider(room_id: int, limit: int):
+        def context_provider(room_id: int, limit: int, *, show_covered=False):
             calls.append(room_id)
             return {"room": {"id": str(room_id)}, "messages": []}
 

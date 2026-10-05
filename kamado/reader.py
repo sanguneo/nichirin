@@ -28,6 +28,7 @@ that has been renamed fails the whole conversation instead of the one field.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import plistlib
 import sqlite3
@@ -114,6 +115,8 @@ An absolute path the user picked (Downloads, Desktop, …), set on 36 rows and
 still present for one of them, so it is a hint to be checked, never trusted.
 """
 _NOTICE_META_TYPE = 1
+_NOTICE_CANDIDATES = 6
+"""The most message ids an ambiguous cut notice names."""
 _HIDDEN_FEEDS = (_ERASED_FEED, model.EDIT_FEED)
 """Feeds that stand for a change to another message, marked where it happened."""
 _ATTACHMENT_TYPES = (
@@ -1214,7 +1217,9 @@ class Reader:
 
         ``NTChatMeta`` type 1: ``content`` is the notice's text, ``authorId``
         who pinned it and ``updatedAt`` seconds. There is no board table in
-        this database, so there is nothing for a post to win over.
+        this database, so there is nothing for a post to win over. A notice
+        of exactly the length the row keeps may be cut, and the rest of it is
+        looked for in the room (:meth:`_notice_rest`).
         """
         columns = self.columns(META_TABLE)
         if not {"chatId", "type", "content"} <= columns:
@@ -1230,13 +1235,83 @@ class Reader:
         if row is None or not isinstance(row[1], str) or not row[1].strip():
             return None
         author_id = model._identifier(row[0]) or None
-        return model.Notice(
+        notice = model.Notice(
             text=row[1],
             kind="text",
             author_id=author_id,
             author=None if author_id is None else self.names().get(author_id),
             posted_at=model.instant_of(row[2]),
             source="legacy",
+        )
+        if len(notice.text) != model.NOTICE_TEXT_LIMIT:
+            return notice
+        return self._notice_rest(room_id, notice)
+
+    def _notice_rest(self, room_id: int, notice: model.Notice) -> model.Notice:
+        """*notice*, marked cut, with the rest of it when this room holds it.
+
+        The notice row records no message or post id, so a source is found by
+        its words: a live text or reply message, or a board post's share,
+        that begins with the whole notice and says more. Deleted, erased and
+        still-covered rows are passed over. A source with two or more rows
+        is refused with up to six ids; the other source still answers when
+        unique. Two unique sources compare lengths, with ties going to the share.
+        """
+        selected, deleted = self._message_query()
+        column = _first_present(self.columns(MESSAGE_TABLE), _MESSAGE_TEXT_COLUMNS)
+        said = (
+            f"(type IN ({model.TEXT_MESSAGE}, {model.REPLY_MESSAGE}) "
+            f"AND substr({column}, 1, ?) = ? AND length({column}) > ?) OR "
+            if column is not None
+            else ""
+        )
+        parameters: tuple[object, ...] = (
+            (room_id, len(notice.text), notice.text, len(notice.text))
+            if column is not None
+            else (room_id,)
+        )
+        rows = self.connection().execute(
+            f"SELECT {selected} FROM {MESSAGE_TABLE} WHERE chatId = ? AND {deleted} "
+            f"AND ({said}type = {model.POST_SHARE_MESSAGE}) ORDER BY logId",
+            parameters,
+        )
+        messages: list[tuple[int, str]] = []
+        shares: list[tuple[int, str]] = []
+        for log_id, _author, type_code, text, attachment, *_rest in rows:
+            extra = model.parse_attachment(attachment)
+            if model.covered_in(extra) is not None and not self.reveal_covered:
+                continue
+            if type_code != model.POST_SHARE_MESSAGE:
+                if len(messages) < _NOTICE_CANDIDATES:
+                    messages.append((int(log_id), text))
+                continue
+            body = model.post_share_in(extra)
+            if (
+                body is not None
+                and body.startswith(notice.text)
+                and len(body) > len(notice.text)
+                and len(shares) < _NOTICE_CANDIDATES
+            ):
+                shares.append((int(log_id), body))
+        message = messages[0] if len(messages) == 1 else None
+        share = shares[0] if len(shares) == 1 else None
+        if share is not None and (message is None or len(share[1]) >= len(message[1])):
+            found, source, limit = share, "share", model.SHARE_TEXT_LIMIT
+        elif message is not None:
+            found, source, limit = message, "message", model.MESSAGE_TEXT_LIMIT
+        else:
+            found, source, limit = None, None, 0
+        return dataclasses.replace(
+            notice,
+            truncated=True,
+            full_text=None if found is None else found[1],
+            full_text_message_id=None if found is None else found[0],
+            full_text_source=source,
+            full_text_truncated=found is not None and len(found[1]) == limit,
+            full_text_candidates=tuple(sorted(
+                [one for one, _text in messages if len(messages) > 1]
+                + [one for one, _text in shares if len(shares) > 1]
+            )[:_NOTICE_CANDIDATES]),
         )
 
     def attachments(
