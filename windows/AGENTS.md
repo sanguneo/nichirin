@@ -486,7 +486,7 @@ on a live client, newest 4,000 rows of each readable room.
   messages. `limit` is 1–1000 and `highlights` 1–20, checked in
   `serve/config.py` **before the reader is opened**, and a `roomId` outside
   the 64-bit range is a 400 rather than an `OverflowError` out of the driver.
-- **`openapi.json` is the same file in both repositories, byte for byte.**
+- **`openapi.json` is one file at the repository root, shared by both builds.**
   That is the claim it makes: one contract, two builds. Members that really
   differ carry `x-platform` — today the macOS-only `typeCode` on a room and
   the macOS-only `PERMISSION_REQUIRED` — and `tests/serve/test_openapi.py`

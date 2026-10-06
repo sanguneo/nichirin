@@ -21,7 +21,7 @@ from kanao.tui.digest import parse_duration
 
 from tests.serve.helpers import TOKEN, StubSender, ServedCase, _raw_request, _request, _start_server
 
-SPEC_PATH = Path(__file__).resolve().parents[2] / "openapi.json"
+SPEC_PATH = Path(__file__).resolve().parents[3] / "openapi.json"
 
 
 def load() -> dict:

@@ -8,7 +8,7 @@ the commands; this is what their output is guaranteed to look like.
 `kamado-cli`, the macOS sibling, emits the same shapes. A consumer written
 against this document runs against either by changing which binary it starts.
 
-**The HTTP half has a machine-readable copy: [`openapi.json`](openapi.json).**
+**The HTTP half has a machine-readable copy: [`openapi.json`](../openapi.json).**
 It is an OpenAPI 3.1 document covering every `serve` route, parameter,
 payload and status, and Swagger UI or Postman opens it as it is. The same
 file ships in the sibling **byte for byte** — one contract, two builds — and

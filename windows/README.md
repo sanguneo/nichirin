@@ -381,7 +381,7 @@ curl -OJ -H "$H" "$T/file?roomId=1&messageId=9006"
 다른 머신에 직접 열려면 `--host 0.0.0.0`을 쓰되, 반드시 SSH 터널·VPN·TLS 종료
 리버스 프록시 뒤에 두세요 — 평문 HTTP이므로 토큰이 그대로 노출됩니다.
 
-API 명세는 [`openapi.json`](openapi.json)에 OpenAPI 3.1로 있습니다 — Swagger UI나
+API 명세는 [`openapi.json`](../openapi.json)에 OpenAPI 3.1로 있습니다 — Swagger UI나
 Postman에서 그대로 열리고, **맥 갈래(`kamado-cli`)와 바이트 단위로 같은 파일**입니다.
 플랫폼마다 다른 몇 개는 문서 안에 `x-platform`으로 표시돼 있습니다.
 

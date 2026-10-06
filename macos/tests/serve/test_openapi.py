@@ -20,7 +20,7 @@ from kamado.serve import config
 
 from tests.serve.helpers import StubSender, ServedCase, _request, _start_server
 
-SPEC_PATH = Path(__file__).resolve().parents[2] / "openapi.json"
+SPEC_PATH = Path(__file__).resolve().parents[3] / "openapi.json"
 
 
 def load() -> dict:

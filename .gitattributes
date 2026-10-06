@@ -1,0 +1,3 @@
+# The contract is copied byte for byte by its consumers (saya pins its SHA-256).
+# Never let a checkout rewrite its line endings.
+openapi.json -text
