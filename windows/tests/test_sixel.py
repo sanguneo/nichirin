@@ -272,5 +272,55 @@ class SixelEncodingTests(unittest.TestCase):
                     encode_sixel(rgb, width, height, max_colors=limit)
 
 
+def header_only(width: int, height: int, color_type: int, body: bytes = b"") -> bytes:
+    """A PNG whose header claims a size, with image data that does not matter."""
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(body))
+        + chunk(b"IEND", b"")
+    )
+
+
+class DecodingBoundTests(unittest.TestCase):
+    """What the header says is all that is ever inflated."""
+
+    def test_a_small_header_with_a_large_stream_is_refused_without_inflating_it(self) -> None:
+        import tracemalloc
+
+        bomb = header_only(1, 1, 2, b"\x00" * (8 * 1024 * 1024))
+        tracemalloc.start()
+        try:
+            with self.assertRaises(ValueError):
+                png_to_rgb(bomb)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 1024 * 1024, "the stream was inflated past its header")
+
+    def test_the_pixel_ceiling_is_inclusive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "scanline size"):
+            png_to_rgb(header_only(4096, 4096, 2))
+        with self.assertRaisesRegex(ValueError, "too large"):
+            png_to_rgb(header_only(4096, 4097, 2))
+
+    def test_the_inflated_size_ceiling_binds_before_the_pixel_one_for_rgba(self) -> None:
+        with self.assertRaisesRegex(ValueError, "too large"):
+            png_to_rgb(header_only(4096, 4096, 6))
+        with self.assertRaisesRegex(ValueError, "scanline size"):
+            png_to_rgb(header_only(4096, 4095, 6))
+
+    def test_a_truncated_stream_is_still_refused(self) -> None:
+        whole = zlib.compress(b"\x00" + bytes(3))
+        blob = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", whole[:-4])
+            + chunk(b"IEND", b"")
+        )
+        with self.assertRaises(ValueError):
+            png_to_rgb(blob)
+
+
 if __name__ == "__main__":
     unittest.main()

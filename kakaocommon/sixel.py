@@ -25,6 +25,16 @@ import zlib
 from typing import Final
 
 _SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_PIXELS: Final = 4096 * 4096
+"""The most pixels a picture may claim before it is refused undecoded."""
+_MAX_SCANLINE_BYTES: Final = 64 * 1024 * 1024
+"""The most filtered scanline bytes a picture may inflate to.
+
+The header says how many bytes the image data must inflate to, so that is
+all that is ever inflated: a few kilobytes of crafted data no longer expand
+to megabytes before the length is found to be wrong. This bounds memory,
+not time; the per-byte filter loop below is still pure Python.
+"""
 
 
 def _paeth(a: int, b: int, c: int) -> int:
@@ -119,13 +129,20 @@ def _decode_png(
         transparent_sample = struct.unpack(
             ">H" if color_type == 0 else ">HHH", transparency
         )
+    stride = width * channels
+    expected = height * (stride + 1)
+    if width * height > _MAX_PIXELS or expected > _MAX_SCANLINE_BYTES:
+        raise ValueError("PNG is too large to decode")
+    inflater = zlib.decompressobj()
     try:
-        raw = zlib.decompress(b"".join(compressed))
+        # One byte past the expected length is enough to know it is wrong.
+        raw = inflater.decompress(b"".join(compressed), expected + 1)
     except zlib.error as exc:
         raise ValueError("Invalid PNG compressed data") from exc
-    stride = width * channels
-    if len(raw) != height * (stride + 1):
+    if len(raw) != expected:
         raise ValueError("Invalid PNG scanline size")
+    if not inflater.eof:
+        raise ValueError("Invalid PNG compressed data")
     previous = bytearray(stride)
     rgb = bytearray()
     for y in range(height):
