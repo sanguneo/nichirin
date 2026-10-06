@@ -225,8 +225,12 @@ def build_image(
     """
     pages.validate_geometry(page_size, reserve)
 
-    log = _read_log(database)
+    # The file before its log. A checkpoint between the two reads then shows up
+    # as a file that no longer matches what was read, which is retried; read
+    # the other way round, an older log laid over a newer file passed every
+    # check while mixing two commits.
     encrypted = database.read_bytes()
+    log = _read_log(database)
 
     if not encrypted:
         raise KanaoError(ErrorCode.READ_FAILED, f"{database.name} is empty")
