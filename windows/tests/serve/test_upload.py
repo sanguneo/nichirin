@@ -1,6 +1,9 @@
 """``POST /upload``: the form a file arrives in, and the line it waits in."""
 
 import itertools
+import select
+import socket
+import threading
 import os
 import tempfile
 import time
@@ -8,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from kanao.errors import ErrorCode, KanaoError
-from kanao.serve import MAX_UPLOAD_BYTES
+from kanao.serve import MAX_UPLOAD_BYTES, ServeHTTPServer
 from kanao.serve.backends import stage_upload, sweep_uploads
 from kanao.serve.config import UPLOAD_KEEP_SECONDS, upload_name
 from kanao.serve.multipart import MAX_PARTS, boundary_of, parse
@@ -244,6 +247,66 @@ class StagingTests(unittest.TestCase):
         sweep_uploads(self.folder, now=time.time())
         self.assertFalse(old.parent.exists())
         self.assertTrue(fresh.exists())
+
+
+class UploadAdmissionTests(ServedCase):
+    def test_an_upload_beyond_the_slots_is_refused_before_its_body_is_read(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def slow_upload(room, name, data, open_if_needed=False):
+            calls.append(name)
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return {"submitted": True, "room": room, "name": name, "size": len(data), "roomId": "1"}
+
+        self.serve(
+            _start_server(StubSender(), upload=slow_upload, max_concurrent_uploads=1),
+            server_class=ServeHTTPServer,
+        )
+        first: dict = {}
+        worker = threading.Thread(target=lambda: first.update(answer=post(self.base, good_form())))
+        worker.start()
+        self.assertTrue(entered.wait(10), "the first upload never reached the client")
+        try:
+            status, payload = post(self.base, good_form())
+            self.assertEqual(status, 503)
+            self.assertEqual(payload["error"]["code"], "BUSY")
+            self.assertEqual(calls, ["synthetic.png"])
+        finally:
+            release.set()
+            worker.join(10)
+        self.assertEqual(first["answer"][0], 200)
+        self.assertEqual(post(self.base, good_form())[0], 200, "the slot was not given back")
+
+
+class BodyDeadlineTests(ServedCase):
+    def test_a_body_dripped_inside_each_timeout_is_still_cut_off(self) -> None:
+        """Time is the behaviour under test: each byte comes well inside the
+        per-receive timeout, so only a deadline on the whole body ends it."""
+        self.serve(_start_server(StubSender(), request_timeout=0.3))
+        host, _, port = self.base.partition("://")[2].partition(":")
+        with socket.create_connection((host, int(port)), timeout=5) as raw:
+            raw.sendall(
+                b"POST /send HTTP/1.1\r\nHost: localhost\r\n"
+                + f"Authorization: Bearer {TOKEN}\r\n".encode()
+                + b"Content-Type: application/json\r\nContent-Length: 400\r\n\r\n"
+            )
+            answered = False
+            for _ in range(200):
+                try:
+                    raw.sendall(b" ")
+                except OSError:
+                    answered = True
+                    break
+                readable, _w, _x = select.select([raw], [], [], 0.05)
+                if readable:
+                    answered = True
+                    break
+            self.assertTrue(answered, "a dripping body held the request past its deadline")
+            head = raw.recv(65536)
+        self.assertIn(b" 408 ", head.split(b"\r\n", 1)[0])
 
 
 if __name__ == "__main__":

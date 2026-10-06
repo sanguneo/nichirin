@@ -29,6 +29,7 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_CONCURRENT_UPLOADS,
     MAX_UPLOAD_BYTES,
     UPLOAD_FRAMING_BYTES,
     _status_for,
@@ -200,6 +201,7 @@ def build_handler(
     upload: Optional[Callable[..., dict[str, Any]]] = None,
     upload_stage: Optional[UploadStage] = None,
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
+    max_concurrent_uploads: int = MAX_CONCURRENT_UPLOADS,
     session_provider: Optional[Callable[[], str]] = None,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
@@ -231,6 +233,9 @@ def build_handler(
     # Not a lock: a permit per stream, so the ninth caller is refused rather
     # than queued behind eight connections that intend to stay all day.
     stream_slots = threading.Semaphore(streams_allowed)
+    # Taken before an upload body is read and kept until its file is handed
+    # over, so the bodies held at once are bounded, not just the ones in line.
+    upload_slots = threading.Semaphore(max_concurrent_uploads)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "kamado-serve"
@@ -340,7 +345,7 @@ def build_handler(
                     "chunked request bodies are not supported",
                 )
             try:
-                raw = self.rfile.read(length) if length else b""
+                raw = self._read_exactly(length) if length else b""
             except (socket.timeout, TimeoutError):
                 # Promised a body and then went quiet. Without the connection
                 # timeout this held a thread for as long as the caller liked.
@@ -351,6 +356,29 @@ def build_handler(
                 )
             self._body_read = True
             return raw
+
+        def _read_exactly(self, length: int) -> bytes:
+            """Read a declared body against one deadline for the whole of it.
+
+            The socket timeout applies to each receive, so a caller sending
+            one byte inside every timeout held a thread and a growing body
+            for as long as it liked.
+            """
+            deadline = time.monotonic() + patience
+            received = bytearray()
+            try:
+                while len(received) < length:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _BodyTimeout()
+                    self.connection.settimeout(remaining)
+                    chunk = self.rfile.read1(min(length - len(received), 1 << 20))
+                    if not chunk:
+                        break
+                    received += chunk
+            finally:
+                self.connection.settimeout(patience)
+            return bytes(received)
 
         def _reply(self, status: int, payload: dict[str, Any]) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -799,6 +827,25 @@ def build_handler(
             accepted. Nothing is retried: a failure after the client's own
             send button was pressed has an unknown outcome.
             """
+            if not upload_slots.acquire(blocking=False):
+                # Answered before the body is read; finish() drains what the
+                # caller is still sending, so the refusal is not lost to a reset.
+                self._reply(
+                    503,
+                    as_envelope(
+                        KamadoError(
+                            ErrorCode.BUSY,
+                            "too many files are being received at once; this file was not sent",
+                        )
+                    ),
+                )
+                return
+            try:
+                self._receive_upload()
+            finally:
+                upload_slots.release()
+
+        def _receive_upload(self) -> None:
             try:
                 body = self._read_body(max_upload_bytes + UPLOAD_FRAMING_BYTES)
                 form = parse_form(
