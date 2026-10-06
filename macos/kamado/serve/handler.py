@@ -238,6 +238,10 @@ def build_handler(
     # Taken before an upload body is read and kept until its file is handed
     # over, so the bodies held at once are bounded, not just the ones in line.
     upload_slots = threading.Semaphore(max_concurrent_uploads)
+    stopping = threading.Event()
+    """Set once the server is stopping: streams end, unstarted writes are refused."""
+    writes = threading.Condition()
+    writing = [0]
     # Every read builds its own reader and cache, so reads at once are bounded
     # here; a refusal is a 503 the caller may repeat, never a wait.
     read_slots = threading.Semaphore(max_concurrent_reads)
@@ -776,6 +780,7 @@ def build_handler(
                     poll_interval=period,
                     reply=self._reply,
                     cursor=cursor,
+                    stop=stopping,
                 )
             finally:
                 stream_slots.release()
@@ -907,6 +912,22 @@ def build_handler(
             what: str,
         ) -> None:
             """Run *action* in the one line texts and files share, and answer."""
+            with writes:
+                writing[0] += 1
+            try:
+                self._in_line_counted(action, paced=paced, what=what)
+            finally:
+                with writes:
+                    writing[0] -= 1
+                    writes.notify_all()
+
+        def _in_line_counted(
+            self,
+            action: Callable[[], dict[str, Any]],
+            *,
+            paced: bool,
+            what: str,
+        ) -> None:
             # Take a place in line before the lock, so the queue can count who
             # is waiting rather than discover them already blocked on it.
             if paced:
@@ -927,6 +948,19 @@ def build_handler(
                 # Queue and execution share one lock so the spacing a caller is
                 # charged matches the order the input box actually serves.
                 with send_lock:
+                    if stopping.is_set():
+                        # Waited for the lock through a shutdown: nothing was
+                        # typed yet, so this is a refusal, not an unknown.
+                        self._reply(
+                            503,
+                            as_envelope(
+                                KamadoError(
+                                    ErrorCode.BUSY,
+                                    f"the server is shutting down; this {what} was not sent",
+                                )
+                            ),
+                        )
+                        return None
                     if paced:
                         try:
                             queue.wait_for_turn()
@@ -969,4 +1003,12 @@ def build_handler(
     # reviewer can see what each connection closes over.
     Handler._serve_secret = secret  # type: ignore[attr-defined]
     Handler._send_queue = queue  # type: ignore[attr-defined]
+    Handler._stopping = stopping  # type: ignore[attr-defined]
+
+    def drain(timeout: float) -> bool:
+        """Wait for writes in progress to answer; False if *timeout* ran out."""
+        with writes:
+            return writes.wait_for(lambda: writing[0] == 0, timeout)
+
+    Handler._drain = drain  # type: ignore[attr-defined]
     return Handler

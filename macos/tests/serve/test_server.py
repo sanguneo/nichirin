@@ -300,5 +300,52 @@ class ReadGateTests(ThreadedServerCase):
         self.assertEqual(_request(self.base, "GET", "/rooms")[0], 200, "the slot was not given back")
 
 
+class StoppingTests(ThreadedServerCase):
+    def test_a_stream_ends_when_the_server_stops_rather_than_after_its_interval(self) -> None:
+        watcher = StubWatcher([])
+        handler = _start_server(StubSender(), poll_interval=60.0, watcher_factory=lambda: watcher)
+        self.serve(handler)
+        self.open_stream()
+        handler._stopping.set()
+        self.assertTrue(watcher.shut.wait(5), "the stream slept through the stop")
+
+    def test_a_write_waiting_through_a_stop_is_refused_and_the_one_running_is_drained(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        typed: list[str] = []
+
+        class Parked(StubSender):
+            def send(self, room, text, dry_run=False, **_ignored):
+                typed.append(text)
+                if text == "first":
+                    entered.set()
+                    release.wait(10)
+                return {"submitted": True, "dryRun": dry_run, "room": room,
+                        "length": len(text), "clearedDraft": False}
+
+        handler = _start_server(Parked())
+        self.serve(handler)
+        answers: dict = {}
+
+        def send(text: str) -> None:
+            answers[text] = _request(self.base, "POST", "/send", {"room": "Synthetic", "text": text})
+
+        first = threading.Thread(target=send, args=("first",))
+        first.start()
+        self.assertTrue(entered.wait(10), "the first send never reached the client")
+        second = threading.Thread(target=send, args=("second",))
+        second.start()
+        handler._stopping.set()
+        handler._send_queue.close()
+        release.set()
+        self.assertTrue(handler._drain(10), "the running write was not drained")
+        first.join(10)
+        second.join(10)
+        self.assertEqual(answers["first"][0], 200)
+        self.assertEqual(answers["second"][0], 503)
+        self.assertEqual(answers["second"][1]["error"]["code"], "BUSY")
+        self.assertEqual(typed, ["first"])
+
+
 if __name__ == "__main__":
     unittest.main()
