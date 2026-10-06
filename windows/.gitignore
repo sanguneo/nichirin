@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Never commit real KakaoTalk data or decrypted output
+*.edb
+*.edb-wal
+*.edb-shm
+*.sqlite3
+kanao-cli-*-digest.txt
+kanao-cli-*.txt
+
+# Local scratch
+/_*.py
+/tmp/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Agent session scratch, not project state
+.omo/senpi-task/
+.omo/issues/

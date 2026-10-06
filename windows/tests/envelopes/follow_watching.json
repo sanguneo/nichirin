@@ -1,0 +1,8 @@
+{
+  "event": "watching",
+  "intervalSeconds": 1.0,
+  "ok": true,
+  "rooms": [
+    "1001"
+  ]
+}

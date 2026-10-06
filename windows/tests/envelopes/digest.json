@@ -1,0 +1,80 @@
+{
+  "considered": 3,
+  "note": "Extractive, not generative: counts, speakers, keywords and verbatim highlights from the newest messages only. Nothing here is a summary; write one from it.",
+  "ok": true,
+  "room": {
+    "id": "1001",
+    "kind": "direct",
+    "lastActivityAt": "1970-01-01T00:50:00+00:00",
+    "lastMessageId": "5003",
+    "memberCount": 2,
+    "readable": true,
+    "title": "Peer Renamed",
+    "type": "DirectChat",
+    "unread": 0
+  },
+  "slices": [
+    {
+      "count": 3,
+      "from": "2023-11-14T20:18:20+00:00",
+      "highlights": [
+        {
+          "fromMe": false,
+          "id": "5000",
+          "kind": "text",
+          "roomId": "1001",
+          "sender": "Peer Renamed",
+          "senderId": "111222333",
+          "sentAt": "2023-11-14T22:13:20+00:00",
+          "text": "first"
+        },
+        {
+          "fromMe": true,
+          "id": "5001",
+          "kind": "text",
+          "roomId": "1001",
+          "sender": "My Own Name",
+          "senderId": "80133957",
+          "sentAt": "2023-11-14T22:15:00+00:00",
+          "text": "second"
+        },
+        {
+          "fromMe": false,
+          "id": "5003",
+          "kind": "text",
+          "roomId": "1001",
+          "sender": "Peer Renamed",
+          "senderId": "111222333",
+          "sentAt": "2023-11-14T22:18:20+00:00",
+          "text": "third"
+        }
+      ],
+      "keywords": [
+        {
+          "count": 1,
+          "word": "first"
+        },
+        {
+          "count": 1,
+          "word": "second"
+        },
+        {
+          "count": 1,
+          "word": "third"
+        }
+      ],
+      "speakers": [
+        {
+          "count": 2,
+          "name": "Peer Renamed"
+        },
+        {
+          "count": 1,
+          "name": "My Own Name"
+        }
+      ],
+      "to": "2023-11-14T22:18:20+00:00"
+    }
+  ],
+  "span": "2h"
+}

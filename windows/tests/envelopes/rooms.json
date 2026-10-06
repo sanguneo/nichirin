@@ -1,0 +1,50 @@
+{
+  "count": 4,
+  "ok": true,
+  "rooms": [
+    {
+      "id": "1001",
+      "kind": "direct",
+      "lastActivityAt": "1970-01-01T00:50:00+00:00",
+      "lastMessageId": "5003",
+      "memberCount": 2,
+      "readable": true,
+      "title": "Peer Renamed",
+      "type": "DirectChat",
+      "unread": 0
+    },
+    {
+      "id": "1002",
+      "kind": "group",
+      "lastActivityAt": "1970-01-01T00:33:20+00:00",
+      "lastMessageId": "6005",
+      "memberCount": 3,
+      "readable": true,
+      "title": "Peer Renamed, Friend Nick",
+      "type": "MultiChat",
+      "unread": 2
+    },
+    {
+      "id": "9007199254740993",
+      "kind": "direct",
+      "lastActivityAt": "1970-01-01T00:16:40+00:00",
+      "lastMessageId": "9007199254740993",
+      "memberCount": 2,
+      "readable": true,
+      "title": "Huge Id User",
+      "type": "DirectChat",
+      "unread": 0
+    },
+    {
+      "id": "1003",
+      "kind": "self",
+      "lastActivityAt": "1970-01-01T00:08:20+00:00",
+      "lastMessageId": "8001",
+      "memberCount": 1,
+      "readable": true,
+      "title": "나와의 채팅",
+      "type": "MemoChat",
+      "unread": 0
+    }
+  ]
+}
