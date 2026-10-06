@@ -108,6 +108,8 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
 
     def write(room: str, act: Callable[..., dict[str, Any]]) -> dict[str, Any]:
         from ..context import _resolve
+        from ..model import SELF_CHAT
+        from ..opening import search_rows
         from ..winauto import make_sender
 
         with Reader(
@@ -157,7 +159,8 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
                     # The client's search lists rooms that merely have a
                     # member by that name above the room itself, so the row
                     # to open is predicted from the catalog just read.
-                    search_row=reader.search_position(resolved.id, rooms=catalogued),
+                    search_rows=search_rows(reader, resolved, window_aliases, catalogued),
+                    self_chat=resolved.type == SELF_CHAT,
                 )
             except OSError as error:
                 raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error

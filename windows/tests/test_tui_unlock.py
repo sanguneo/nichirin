@@ -36,7 +36,8 @@ class FakeOpener:
         self.failure: Exception | None = None
 
     def resolve(
-        self, room: str, open_if_needed: bool = False, aliases=(), hint=None, search_row=None
+        self, room: str, open_if_needed: bool = False, aliases=(), hint=None, search_rows=None,
+        self_chat=False,
     ):
         self.opened.append({"room": room, "open_if_needed": open_if_needed, "hint": hint})
         if self.failure is not None:

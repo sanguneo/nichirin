@@ -783,6 +783,7 @@ class Reader:
         room_id: int,
         query: Optional[str] = None,
         rooms: Optional[Sequence[Room]] = None,
+        listed: Optional[str] = None,
     ) -> Optional[int]:
         """Where the client's room search should list *room_id*, from zero.
 
@@ -792,6 +793,10 @@ class Reader:
         merely had them as a member, and opening the first result opened the
         wrong room. Checked live against that search: predicted third, shown
         third. None when the room would not be matched at all.
+
+        *listed* is the title the client lists the room under when that is
+        not the catalog's: the self-chat is 나와의 채팅 here and the account's
+        name there, and only the second is something its search matches (#87).
         """
         if rooms is None:
             rooms = self.rooms()
@@ -805,7 +810,8 @@ class Reader:
         members = self.memberships()
         position = 0
         for room in rooms:
-            matched = needle in room.title.casefold() or any(
+            title = listed if listed and room.id == room_id else room.title
+            matched = needle in title.casefold() or any(
                 needle in names.get(user_id, "").casefold()
                 for user_id in members.get(room.id, ())
             )
