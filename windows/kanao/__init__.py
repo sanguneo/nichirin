@@ -1,6 +1,6 @@
 """Local KakaoTalk reading and friends, plus client-driven sending on Windows."""
 
-__version__ = "0.30.2"
+__version__ = "0.31.0"
 
 
 def _reach_common() -> None:
