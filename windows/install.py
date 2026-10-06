@@ -46,6 +46,10 @@ def shipped_files(root: Path) -> dict[Path, Path]:
         }
     )
     common = root.parent / "kakaocommon"
+    if not (common / "__init__.py").is_file():
+        # Without it the launcher installs and then cannot import anything;
+        # a partial copy of the checkout must fail here, not on first use.
+        raise FileNotFoundError(f"the shared runtime is missing: {common}")
     payload.update(
         {
             Path("scripts/kakaocommon") / source.relative_to(common): source
@@ -76,9 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
-    payload = shipped_files(root)
 
     try:
+        payload = shipped_files(root)
         target = arguments.target.expanduser().resolve()
         if target.exists() and not arguments.force:
             parser.error(
