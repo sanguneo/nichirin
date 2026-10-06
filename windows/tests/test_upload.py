@@ -18,6 +18,8 @@ class FakeFileWindows:
         self.windows = [ChatWindow(42, "Synthetic room")]
         self.actions: list[str] = []
         self.visible: set[int] = set()
+        self.hidden: set[int] = set()
+        """Open-file dialogs the room owns that a re-park left hidden."""
         self.parked = True
         self.restores = True
         self.dialog_appears = True
@@ -102,6 +104,11 @@ class FakeFileWindows:
         self.actions.append("cancel")
         self.visible.discard(dialog)
 
+    def dismiss_dialogs(self, handle: int) -> None:
+        self.actions.append("dismiss")
+        self.visible.discard(DIALOG)
+        self.hidden.clear()
+
     def file_popup(self, before: set[int]) -> int | None:
         return POPUP if POPUP in self.visible and POPUP not in before else None
 
@@ -169,6 +176,19 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(self.backend.actions.count("file button"), 2)
         self.assertNotIn("send", self.backend.actions)
         self.assertEqual(self.backend.actions[-2:], ["park", "focus 7"])
+
+    def test_a_dialog_left_hidden_is_closed_when_none_shows(self) -> None:
+        self.backend.dialog_appears = False
+        self.backend.hidden = {DIALOG + 1}
+        self.failure()
+        self.assertEqual(self.backend.hidden, set())
+
+    def test_no_confirmation_closes_every_dialog_the_room_owns(self) -> None:
+        self.backend.popup_appears = False
+        self.backend.hidden = {DIALOG + 1}
+        self.failure()
+        self.assertEqual(self.backend.hidden, set())
+        self.assertNotIn(DIALOG, self.backend.visible)
 
     def test_a_name_that_does_not_take_cancels_the_dialog(self) -> None:
         self.backend.name_takes = False

@@ -5,7 +5,7 @@ import ctypes
 from unittest.mock import Mock, patch
 
 from kanao.errors import ErrorCode, KanaoError
-from kanao.winauto import ChatWindow, Sender, Win32Backend
+from kanao.winauto import _PER_MONITOR_AWARE_V2, ChatWindow, Sender, Win32Backend
 
 from tests.platform import require_windows_libraries
 
@@ -262,64 +262,89 @@ class Win32MessageTests(unittest.TestCase):
 
 
 class DpiTests(unittest.TestCase):
-    """A room on a 200% monitor, seen by a DPI-unaware process (#82).
+    """A system-aware room on a 125% monitor of a 200% system (#82, #85).
 
-    Unaware, Windows reports the window at 96 DPI - 1/1.25 of its size here -
-    while GetDpiForWindow still says 192. The file button is 48 px up from the
-    real bottom edge at 192 DPI, so its click must land in the button row
-    (y 962-1020 of a 1020-high window), not in the message list above it.
+    KakaoTalk is system-DPI-aware: it draws in 192-DPI pixels and Windows
+    shrinks it 0.625x onto the 120-DPI monitor. The same window measures
+    747x816 unaware, 934x1020 per-monitor and 1495x1632 in its own context,
+    and a mouse lParam is read in that last one. The file button is 48 px up
+    from the bottom at 192 DPI, so its press must be measured and sent there,
+    in the button row (y 1539-1632), not in the message list above it.
     """
 
-    PHYSICAL = (1000, 100, 1934, 1120)
-    VIRTUAL = (800, 80, 1547, 896)
+    RECTS = {
+        "unaware": (800, 80, 1547, 896),
+        "per-monitor": (1000, 100, 1934, 1120),
+        "system": (1600, 160, 3095, 1792),
+    }
 
     def setUp(self) -> None:
         require_windows_libraries()
-        self.aware = False
+        self.context = "unaware"
         self.user32 = Mock()
         dll = patch("ctypes.WinDLL", return_value=self.user32)
         dll.start()
         self.addCleanup(dll.stop)
         self.backend = Win32Backend(99)
-        self.sent: list[tuple[int, int]] = []
+        self.events: list[tuple[str, ...]] = []
+        self.backend._pause = lambda seconds: self.events.append(("pause", str(seconds)))
 
         def set_context(context):
-            previous = "aware" if self.aware else "unaware"
-            self.aware = context != "unaware"
+            previous = self.context
+            self.context = "per-monitor" if context is _PER_MONITOR_AWARE_V2 else context
             return previous
 
         def window_rect(handle, reference):
             rect = reference._obj
-            rect.left, rect.top, rect.right, rect.bottom = (
-                self.PHYSICAL if self.aware else self.VIRTUAL
-            )
+            rect.left, rect.top, rect.right, rect.bottom = self.RECTS[self.context]
             return 1
 
         def to_client(handle, reference):
             point = reference._obj
-            left, top = (self.PHYSICAL if self.aware else self.VIRTUAL)[:2]
+            left, top = self.RECTS[self.context][:2]
             point.x -= left
             point.y -= top
             return 1
 
         def send(handle, message, wparam, lparam, flags, timeout, result):
-            if message == 0x0201:  # WM_LBUTTONDOWN
-                self.sent.append((lparam & 0xFFFF, (lparam >> 16) & 0xFFFF))
+            names = {0x0200: "move", 0x0201: "down", 0x0202: "up"}
+            if message in names:
+                self.events.append(
+                    (names[message], self.context, str(lparam & 0xFFFF), str((lparam >> 16) & 0xFFFF))
+                )
             return 1
 
         self.user32.SetThreadDpiAwarenessContext.side_effect = set_context
+        self.user32.GetWindowDpiAwarenessContext.return_value = "system"
         self.user32.GetWindowRect.side_effect = window_rect
         self.user32.ScreenToClient.side_effect = to_client
         self.user32.GetDpiForWindow.return_value = 192
         self.user32.SendMessageTimeoutW.side_effect = send
         self.user32.IsWindow.return_value = 1
 
-    def test_the_file_button_click_lands_in_the_button_row(self) -> None:
+    def press(self) -> tuple[str, ...]:
         self.backend.click_file_button(84)
-        [(x, y)] = self.sent
-        self.assertEqual(x, 176)
-        self.assertTrue(962 <= y < 1020, f"the click landed at y={y}, outside the button row")
+        [down] = [event for event in self.events if event[0] == "down"]
+        return down
+
+    def test_the_file_button_is_pressed_in_the_room_s_own_pixels(self) -> None:
+        _name, context, x, y = self.press()
+        self.assertEqual(context, "system")
+        self.assertEqual(int(x), 176)
+        self.assertTrue(1539 <= int(y) < 1632, f"the click landed at y={y}, outside the button row")
+
+    def test_the_press_is_hovered_then_held_before_it_is_let_go(self) -> None:
+        self.backend.click_file_button(84)
+        self.assertEqual(
+            [event[0] for event in self.events], ["move", "pause", "down", "pause", "up"]
+        )
+        self.assertEqual({event[1] for event in self.events if event[0] != "pause"}, {"system"})
+
+    def test_a_window_without_its_own_context_is_measured_per_monitor(self) -> None:
+        self.user32.GetWindowDpiAwarenessContext.side_effect = AttributeError
+        _name, context, _x, _y = self.press()
+        self.assertEqual(context, "per-monitor")
 
     def test_the_awareness_is_given_back_afterwards(self) -> None:
         self.backend.click_file_button(84)
-        self.assertFalse(self.aware)
+        self.assertEqual(self.context, "unaware")
