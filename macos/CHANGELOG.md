@@ -4,6 +4,17 @@
 버전은 [유의적 버전](https://semver.org/lang/ko/)을 따릅니다. 0.x 에서는 부 버전
 증가가 기능 추가와 깨질 수 있는 변화를 함께 뜻합니다.
 
+
+## [Unreleased]
+
+### 추가
+
+- **`serve`가 saya에 스스로 등록합니다(선택).** `SAYA_REGISTER_URL`과 `SAYA_REGISTER_TOKEN`을 주면 시작할 때
+  saya에 `{kind: "kakao", id: "kamado", url, token}`을 알리고 30초마다 다시 알리며, Ctrl-C로 끝낼 때 등록을
+  지웁니다. saya 쪽에는 코어 주소도 토큰도 두지 않아도 됩니다(saya `docs/register.md`). saya가 다른 기계에
+  있으면 `SAYA_ADVERTISE_URL`(예: `tailscale serve`로 연 `https://<기계>.<tailnet>.ts.net:8765`)을 함께 줍니다.
+  등록 실패는 서빙을 막지 않고, 상태가 바뀔 때만 토큰 없이 한 줄 남깁니다. 공용 코드는 `kakaocommon/register.py`.
+
 ## [0.28.1] — 2026-10-06
 
 #82에서 나온 결함 하나를 macOS에도 고쳤습니다.
