@@ -19,12 +19,14 @@ from kanao.serve.backends import make_live_send
 DIRECT = 1001
 GROUP = 1002
 NUMERIC_TITLE = 2002
+SELF = 1003
 
 
 class _Room:
-    def __init__(self, room_id: int, title: str) -> None:
+    def __init__(self, room_id: int, title: str, room_type: str = "DirectChat") -> None:
         self.id = room_id
         self.title = title
+        self.type = room_type
         self.readable = True
 
     def as_json(self) -> dict[str, Any]:
@@ -57,7 +59,7 @@ class _StubReader:
     def stored_title(self, _room_id: int) -> Optional[str]:
         return None
 
-    def search_position(self, _room_id: int, rooms=None) -> int:
+    def search_position(self, _room_id: int, query=None, rooms=None, listed=None) -> int:
         return 0
 
 
@@ -65,9 +67,11 @@ class _StubSender:
     """Records the title it was asked to type into and reports a dry run."""
 
     last_title: Optional[str] = None
+    last_where: dict[str, Any] = {}
 
-    def send(self, title: str, text: str, **_: Any) -> dict[str, Any]:
+    def send(self, title: str, text: str, **where: Any) -> dict[str, Any]:
         _StubSender.last_title = title
+        _StubSender.last_where = where
         return {"ok": True, "submitted": False, "dryRun": True, "room": title,
                 "length": len(text)}
 
@@ -78,6 +82,7 @@ class SendRoomArgumentTests(unittest.TestCase):
             _Room(DIRECT, "가상 관측소"),
             _Room(GROUP, "가상 합주단"),
             _Room(NUMERIC_TITLE, "2002"),
+            _Room(SELF, "나와의 채팅", "MemoChat"),
         ]
         _StubSender.last_title = None
         self._reader = kanao.reader.Reader
@@ -113,6 +118,14 @@ class SendRoomArgumentTests(unittest.TestCase):
             self.send("9999", "안녕", dry_run=True)
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_NOT_FOUND)
+
+    def test_only_the_self_chat_is_opened_from_the_friends_list(self) -> None:
+        # The account's own profile opens the self-chat and nothing else (#87).
+        self.send("나와의 채팅", "안녕", dry_run=True)
+        self.assertIs(_StubSender.last_where.get("self_chat"), True)
+
+        self.send("가상 합주단", "안녕", dry_run=True)
+        self.assertIs(_StubSender.last_where.get("self_chat"), False)
 
 
 if __name__ == "__main__":  # pragma: no cover

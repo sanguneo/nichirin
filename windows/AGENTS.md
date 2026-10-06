@@ -1044,6 +1044,33 @@ on a live client, newest 4,000 rows of each readable room.
   then opened with no other window appearing. The interface passes its own
   room list and the memberships it read with it, because a send must not read
   the catalog.
+- **The self-chat is opened from the friends list, not searched for (#87).**
+  The main window creates the friends list (`ContactListView` >
+  `ContactListCtrl`) beside the chat tab's views and keeps it hidden but
+  sized while the chat tab is in front. A double-click posted to its first
+  row, the account's own profile, opened the self-chat window directly with
+  the visible tab unchanged: measured on 26.8.1.5315 at 96 DPI, 0.67 s,
+  the only calls a wheel to the top and one double-click at
+  `row_geometry` row 0, and no search typed. The search took 2.8 s for the
+  same room. `RoomOpener` does this only when told `self_chat`
+  (`Room.type == MemoChat`), verifies the window by title like any row, and
+  falls back to the search below when there is no friends list or something
+  else opened. Not yet checked live: a friends list scrolled down, a
+  tray-hidden main window, a self-chat hidden from the chat list. UI
+  Automation shows these lists as one unnamed pane, so their rows cannot be
+  read instead.
+- **Every name the opener types gets its own predicted row (#87).** Where the
+  catalog stores the self-chat under the account's name, the client lists and
+  searches it only under that name, so the opener types 나와의 채팅 and then
+  the window title. The second search opened its first result, which was
+  another room whenever one sorted above the self-chat: that room was opened,
+  marked read and closed, and the open failed. `opening.search_rows` predicts
+  a row for each name through `search_position`, matching the target by the
+  title the client lists it under (`listed`, the window title), and a name
+  predicted to list it nowhere is not typed at all. The catalog counts the
+  account as a member of every room it is in; the client's own result list
+  for the account's name has not been looked at. On a machine whose
+  self-chat is stored as 나와의 채팅, only the first search runs.
 - **A room past the searched rows is searched for, not swept for.** With a
   catalog hint beyond `SEARCHED_ROWS`, every hint guess fell out of range and
   what remained was a sweep of the top rows — each a wrong room opened and

@@ -33,6 +33,7 @@ from ..model import (
     COVERED_PLACEHOLDER,
     ERASED_PLACEHOLDER,
     FEED_MESSAGE,
+    SELF_CHAT,
     Friend,
     Message,
     Notice,
@@ -40,6 +41,7 @@ from ..model import (
     is_feed_sentence,
     message_kind,
 )
+from ..opening import search_rows
 from ..reader import UNLOCK_SECONDS, Reader
 from . import digest, images
 from .console import (
@@ -550,13 +552,15 @@ class App:
         try:
             self._refuse_ambiguous(room)
             stored = self.reader.stored_title(room.id)
+            aliases = [stored] if stored and stored != room.title else []
             sender = self._require_sender()
             window = sender.resolve(
                 room.title,
                 open_if_needed=True,
-                aliases=[stored] if stored and stored != room.title else [],
+                aliases=aliases,
                 hint=self.titles.index(room.title) if room.title in self.titles else None,
-                search_row=self.reader.search_position(room.id, rooms=self.rooms),
+                search_rows=search_rows(self.reader, room, aliases, self.rooms),
+                self_chat=room.type == SELF_CHAT,
             )
             repark = getattr(sender, "repark", None)
 
@@ -2343,15 +2347,17 @@ class App:
             self._refuse_ambiguous(chat.room)
             # The room is the one being read, so opening its window needs no
             # further confirmation than having typed into it.
+            aliases = [chat.window_alias] if chat.window_alias else []
             self._require_sender().send(
                 chat.room.title,
                 text,
                 open_if_needed=True,
-                aliases=[chat.window_alias] if chat.window_alias else [],
+                aliases=aliases,
                 hint=self.titles.index(chat.room.title)
                 if chat.room.title in self.titles
                 else None,
-                search_row=self.reader.search_position(chat.room.id, rooms=self.rooms),
+                search_rows=search_rows(self.reader, chat.room, aliases, self.rooms),
+                self_chat=chat.room.type == SELF_CHAT,
             )
         except KanaoError as error:
             # SEND_FAILED is the one code whose message may already be in the

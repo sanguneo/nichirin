@@ -311,6 +311,18 @@ class SearchPositionTests(unittest.TestCase):
             reader.search_position(self.rooms[2].id, query="없는 말", rooms=self.rooms)
         )
 
+    def test_the_room_is_matched_by_the_title_the_client_lists_it_under(self) -> None:
+        # The self-chat is 나와의 채팅 in the catalog and the account's name in
+        # the client, and only the second is something its search matches (#87).
+        reader = self.reader()
+        reader._members = {}
+        target = self.rooms[2].id
+        self.assertEqual(
+            reader.search_position(target, query="계정 이름", rooms=self.rooms, listed="계정 이름"),
+            0,
+        )
+        self.assertIsNone(reader.search_position(target, rooms=self.rooms, listed="계정 이름"))
+
     def test_given_the_rooms_it_reads_no_catalog(self) -> None:
         reader = self.reader()
         reader.rooms = lambda limit=None: self.fail("the catalog was read")  # type: ignore[method-assign]

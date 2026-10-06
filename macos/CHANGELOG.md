@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-10-06
+
+`serve`의 saya 자동 등록(#88)이 들어갔고, #87을 Mac에서 확인하다 찾은 결함 하나를 고쳤습니다.
+
 ### 추가
 
 - **`serve`가 saya에 스스로 등록합니다(선택).** `SAYA_REGISTER_URL`과 `SAYA_REGISTER_TOKEN`을 주면 시작할 때
@@ -14,6 +18,23 @@
   지웁니다. saya 쪽에는 코어 주소도 토큰도 두지 않아도 됩니다(saya `docs/register.md`). saya가 다른 기계에
   있으면 `SAYA_ADVERTISE_URL`(예: `tailscale serve`로 연 `https://<기계>.<tailnet>.ts.net:8765`)을 함께 줍니다.
   등록 실패는 서빙을 막지 않고, 상태가 바뀔 때만 토큰 없이 한 줄 남깁니다. 공용 코드는 `kakaocommon/register.py`.
+
+### 고침
+
+- **채팅 목록이 화면에 없으면 `list index out of range` 대신 창을 못 찾았다고 답합니다.** 로그인 직후처럼 친구 탭이
+  앞에 있으면 채팅 목록이 AX 트리에 없어 읽을 줄이 0개인데, 줄 순서를 정하는 `outward()`가 그래도 0번 줄을
+  내줘서 `kamado send --open`이 `READ_FAILED`("list index out of range")로 끝났습니다. 이제 줄이 없으면 아무 줄도
+  읽지 않고 `WINDOW_NOT_FOUND`로 답합니다. 채팅 탭을 앞에 두면 그대로 열립니다.
+
+### 확인
+
+- 새 테스트 2개는 0.28.1에서 실패하고(`[0] != []`, `IndexError`) 이 버전에서 통과합니다. macOS 스위트 1390개를 이
+  Mac(macOS 15.7.7)에서 돌렸습니다.
+- 이 Mac에서 로그인 직후(친구 탭)에 `send --room "나와의 채팅" --dry-run --open`이 0.28.1은 `READ_FAILED`, 이
+  버전은 `WINDOW_NOT_FOUND`였습니다. 채팅 탭을 앞에 두자 닫혀 있던 나와의 채팅이 2.13초 만에 열렸고 입력된 것은
+  없습니다. 확인 뒤 창을 닫고 친구 탭으로 되돌렸습니다.
+- #87의 Windows 수정(친구 목록 첫 줄로 나와의 채팅 열기)은 macOS에 해당 없습니다. kamado는 목록 줄의 제목을 AX로
+  읽어 맞는 줄만 엽니다.
 
 ## [0.28.1] — 2026-10-06
 

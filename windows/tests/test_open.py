@@ -16,6 +16,7 @@ from kanao.errors import ErrorCode, KanaoError
 from kanao.winauto import ChatWindow, RoomOpener, Sender, row_geometry
 
 LIST_CONTROL = 900
+CONTACT_CONTROL = 901
 
 
 class FakeDesktop:
@@ -39,13 +40,18 @@ class FakeDesktop:
         self.draft = ""
         self.actions: list[str] = []
         self.searchable = False
+        self.listings: dict[str, list[str]] | None = None
         self.searches: list[str] = []
         self.cleared = 0
         self._all_rows: list[str] | None = None
+        self.contacts: list[str] | None = None
 
     # -- opening --------------------------------------------------------
     def room_list(self) -> int | None:
         return self.list_control
+
+    def contact_list(self) -> int | None:
+        return CONTACT_CONTROL if self.contacts is not None else None
 
     def main_state(self) -> str:
         return self.main
@@ -64,10 +70,18 @@ class FakeDesktop:
         self.minimized.append(handle)
 
     def scroll_to_top(self, control: int) -> None:
-        assert control == LIST_CONTROL
-        self.log.append("top")
+        assert control in (LIST_CONTROL, CONTACT_CONTROL)
+        self.log.append("top" if control == LIST_CONTROL else "contacts:top")
 
     def click_row(self, control: int, row: int) -> None:
+        if control == CONTACT_CONTROL:
+            # Each friend row opens a chat with that row's title, as the
+            # account's own row opens the self-chat.
+            assert self.contacts is not None
+            self.log.append(f"contacts:{row}")
+            if row < len(self.contacts):
+                self.windows.append(ChatWindow(handle=300 + row, title=self.contacts[row]))
+            return
         assert control == LIST_CONTROL
         self.clicks.append(row)
         self.log.append(row)
@@ -83,7 +97,10 @@ class FakeDesktop:
         self.log.append(f"search:{text}")
         if self._all_rows is None:
             self._all_rows = self.rows
-        self.rows = [title for title in self._all_rows if text in title]
+        if self.listings is not None:
+            self.rows = list(self.listings.get(text, []))
+        else:
+            self.rows = [title for title in self._all_rows if text in title]
         return LIST_CONTROL
 
     def clear_search(self) -> None:
@@ -261,6 +278,131 @@ class StoredTitleTests(unittest.TestCase):
 
         with build_reader() as reader:
             self.assertIsNone(reader.stored_title(GROUP_ROOM))
+
+
+class SelfChatSearchTests(unittest.TestCase):
+    """The self-chat is searched under the account's name, which other rooms match too (#87).
+
+    The catalog counts the account as a member of every room it is in, so
+    that name is predicted to list newer rooms above the self-chat. Opening
+    the first result opened somebody else's room, marked it read, closed it,
+    and the send failed. This is what remains when the friends list cannot
+    open it (:class:`OwnProfileTests`).
+    """
+
+    def test_the_self_chat_opens_at_the_row_predicted_for_the_account_name(self) -> None:
+        from kanao.opening import window_target
+        from tests.fixtures import OWN_ID, SELF_ROOM, SELF_STORED_TITLE, build_reader
+
+        with build_reader() as reader:
+            reader._names = {**reader.names(), OWN_ID: SELF_STORED_TITLE}
+            rooms = reader.rooms()
+            room = reader.room(SELF_ROOM)
+            assert room is not None
+            newer = [r.title for r in rooms[: [r.id for r in rooms].index(SELF_ROOM)]]
+            self.assertTrue(newer, "the fixture's self-chat must not be the newest room")
+            desktop = FakeDesktop([*newer, SELF_STORED_TITLE])
+            desktop.searchable = True
+            desktop.listings = {SELF_STORED_TITLE: [*newer, SELF_STORED_TITLE]}
+            aliases, hint, rows = window_target(reader, room)
+            window = opener(desktop, rows=2).open(room.title, aliases, hint, rows)
+        self.assertEqual(window.title, SELF_STORED_TITLE)
+        self.assertEqual(desktop.closed, [], "another room was opened and marked read")
+        self.assertEqual(desktop.clicks, [len(newer)])
+        # 나와의 채팅 is never typed: the client lists nothing under it.
+        self.assertEqual(desktop.searches, [SELF_STORED_TITLE])
+
+    def test_without_predictions_every_name_is_tried_at_the_top(self) -> None:
+        # A caller with no catalog keeps the old behaviour rather than none.
+        desktop = FakeDesktop(["하나", "합성 이름"])
+        desktop.searchable = True
+        window = opener(desktop, rows=2).open("나와의 채팅", aliases=["합성 이름"], hint=9)
+        self.assertEqual(window.title, "합성 이름")
+        self.assertEqual(desktop.searches, ["나와의 채팅", "합성 이름"])
+
+    def test_a_name_predicted_to_list_nothing_is_not_searched(self) -> None:
+        desktop = FakeDesktop(["하나", "합성 이름"])
+        desktop.searchable = True
+        with self.assertRaises(KanaoError):
+            opener(desktop, rows=2).open(
+                "나와의 채팅",
+                aliases=["합성 이름"],
+                hint=9,
+                search_rows={"나와의 채팅": None, "합성 이름": None},
+            )
+        self.assertEqual(desktop.searches, [])
+        self.assertEqual(desktop.closed, [], "a row was opened for a name nothing lists")
+
+
+class OwnProfileTests(unittest.TestCase):
+    """The self-chat opens from the account's own row atop the friends list (#87).
+
+    Double-clicking that row opens the self-chat whatever the chat list's
+    order or the name it is listed under, so no search is typed and no row
+    of anybody else's is guessed at.
+    """
+
+    def desktop(self, contacts: list[str] | None) -> FakeDesktop:
+        # A search that would list a stranger first, as it did in #87.
+        desktop = FakeDesktop(["남의 방", "합성 이름"])
+        desktop.searchable = True
+        desktop.listings = {"합성 이름": ["남의 방", "합성 이름"]}
+        desktop.contacts = contacts
+        return desktop
+
+    def test_the_self_chat_opens_from_the_account_row(self) -> None:
+        desktop = self.desktop(["합성 이름", "친구"])
+        window = opener(desktop).open(
+            "나와의 채팅", aliases=["합성 이름"], hint=9, self_chat=True
+        )
+        self.assertEqual(window.title, "합성 이름")
+        self.assertEqual(desktop.log, ["contacts:top", "contacts:0"])
+        self.assertEqual(desktop.searches, [], "the search ran although the profile opened it")
+        self.assertEqual(desktop.closed, [])
+        self.assertEqual(desktop.minimized, [window.handle])
+
+    def test_a_send_to_the_self_chat_goes_through_the_friends_list(self) -> None:
+        desktop = self.desktop(["합성 이름"])
+        sender = Sender(desktop, running=lambda: True, opener=opener(desktop))
+        result = sender.send(
+            "나와의 채팅", "안녕", open_if_needed=True, aliases=["합성 이름"], self_chat=True
+        )
+        self.assertTrue(result["submitted"])
+        self.assertEqual(desktop.log, ["contacts:top", "contacts:0"])
+
+    def test_any_other_room_never_touches_the_friends_list(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.searchable = True
+        desktop.contacts = ["합성 이름"]
+        window = opener(desktop).open("받는 방", hint=9)
+        self.assertEqual(window.title, "받는 방")
+        self.assertNotIn("contacts:0", desktop.log)
+
+    def test_a_wrong_window_from_the_friends_list_is_closed_and_searched_past(self) -> None:
+        desktop = self.desktop(["친구"])
+        window = opener(desktop).open(
+            "나와의 채팅",
+            aliases=["합성 이름"],
+            hint=9,
+            search_rows={"나와의 채팅": None, "합성 이름": 1},
+            self_chat=True,
+        )
+        self.assertEqual(window.title, "합성 이름")
+        self.assertEqual(desktop.closed, ["친구"])
+        self.assertEqual(desktop.searches, ["합성 이름"])
+
+    def test_without_a_friends_list_the_self_chat_is_searched_for(self) -> None:
+        desktop = self.desktop(None)
+        window = opener(desktop).open(
+            "나와의 채팅",
+            aliases=["합성 이름"],
+            hint=9,
+            search_rows={"나와의 채팅": None, "합성 이름": 1},
+            self_chat=True,
+        )
+        self.assertEqual(window.title, "합성 이름")
+        self.assertEqual(desktop.searches, ["합성 이름"])
+        self.assertEqual(desktop.closed, [])
 
 
 class ScrollTests(unittest.TestCase):

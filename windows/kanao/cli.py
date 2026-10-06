@@ -24,7 +24,7 @@ from . import __version__
 from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
 from .errors import ErrorCode, KanaoError, as_envelope, success
-from .model import ATTACHMENT_KINDS, Room
+from .model import ATTACHMENT_KINDS, SELF_CHAT, Room
 from .names import NameLedger
 from .opening import open_for_reading, window_target
 from .reader import Reader
@@ -513,7 +513,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
     room = _selected_room(reader, arguments)
-    aliases, hint, search_row = window_target(reader, room)
+    aliases, hint, rows = window_target(reader, room)
     try:
         result = make_sender().send(
             room.title,
@@ -522,7 +522,8 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             open_if_needed=arguments.open_room,
             aliases=aliases,
             hint=hint,
-            search_row=search_row,
+            search_rows=rows,
+            self_chat=room.type == SELF_CHAT,
         )
     except OSError as error:
         raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error

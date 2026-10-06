@@ -200,7 +200,13 @@ class RoomListBackend(Protocol):
 
 
 def outward(hint: Optional[int], total: int) -> Iterable[int]:
-    """Every row index once, nearest *hint* first: hint, hint+1, hint-1, …"""
+    """Every row index once, nearest *hint* first: hint, hint+1, hint-1, …
+
+    None for a list with no rows: with the friends tab in front the chat list
+    is not in the tree at all, and reading its row 0 raised IndexError.
+    """
+    if total <= 0:
+        return
     start = hint if hint is not None and 0 <= hint < total else 0
     yield start
     for step in range(1, total):

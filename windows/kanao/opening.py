@@ -8,22 +8,42 @@ should be opened — that is the caller's, because opening a room marks it read.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from .errors import ErrorCode, KanaoError
-from .model import Room
+from .model import SELF_CHAT, Room
 from .reader import Reader
+
+
+def search_rows(
+    reader: Reader, room: Room, aliases: Sequence[str], rooms: Sequence[Room]
+) -> dict[str, Optional[int]]:
+    """The row the client's search lists *room* at, for every name it is searched by.
+
+    The opener types the catalog title and then each window title. The
+    self-chat is found only under the second, the account's name, and that
+    name can list other rooms above it — so its row is predicted like the
+    first one's, not assumed to be the top (#87). None for a name the
+    client lists it under nowhere, which the opener then does not type.
+    """
+    # The client lists a room under its window title, which is the alias
+    # when there is one.
+    listed = next(iter(aliases), None)
+    return {
+        term: reader.search_position(room.id, query=term, rooms=rooms, listed=listed)
+        for term in (room.title, *aliases)
+    }
 
 
 def window_target(
     reader: Reader, room: Room
-) -> tuple[list[str], Optional[int], Optional[int]]:
+) -> tuple[list[str], Optional[int], dict[str, Optional[int]]]:
     """The titles a room's window may carry and where the list likely shows it.
 
-    Returns the aliases, the catalog's recency position and the row the
-    client's own search should list it at. Refuses a title two catalogued
-    rooms share: a window can only be told apart by its title, so neither of
-    them can be opened or written to.
+    Returns the aliases, the catalog's recency position and, for each of its
+    names, the row the client's own search should list it at. Refuses a title
+    two catalogued rooms share: a window can only be told apart by its title,
+    so neither of them can be opened or written to.
     """
     catalogued = reader.rooms()
     # A window title cannot distinguish two catalog rooms with the same name,
@@ -42,7 +62,7 @@ def window_target(
     # The client lists rooms by recency too, so this is close before it is
     # right — close enough that opening one usually costs a single click.
     hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
-    return aliases, hint, reader.search_position(room.id, rooms=catalogued)
+    return aliases, hint, search_rows(reader, room, aliases, catalogued)
 
 
 def open_for_reading(reader: Reader, room: Room) -> None:
@@ -53,9 +73,14 @@ def open_for_reading(reader: Reader, room: Room) -> None:
     """
     from .winauto import make_sender
 
-    aliases, hint, search_row = window_target(reader, room)
+    aliases, hint, rows = window_target(reader, room)
     make_sender().resolve(
-        room.title, open_if_needed=True, aliases=aliases, hint=hint, search_row=search_row
+        room.title,
+        open_if_needed=True,
+        aliases=aliases,
+        hint=hint,
+        search_rows=rows,
+        self_chat=room.type == SELF_CHAT,
     )
     if not reader.unlock(room.id):
         raise KanaoError(
