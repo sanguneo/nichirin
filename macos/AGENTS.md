@@ -421,6 +421,59 @@ keystrokes. Everything below is what it took to get there.
   where reading all 264 names first cost about 18 s. Measured on two closed
   one-to-one rooms, rows 46 and 70: 75 s and a failure became 3.8 s and 4.5 s.
 
+### The topic panel (`ctrl+o`, `/flow`)
+
+Ported from kanao-cli, where its reasoning is written down at length
+(`windows/AGENTS.md`, the topic panel notes). What is specific to this side:
+
+- **The cut is `kakaocommon/topics.py`, shared and unchanged.** It reads a
+  message through the structural `FlowMessage` protocol — the field names this
+  `model.Message` and the Windows one share — and restates `FEED_MESSAGE` and
+  `ELLIPSIS` rather than importing them; `tests/test_topics.py` (kept in both
+  suites, like `test_wal.py`) pins both against this build. The word lists the
+  digest and the panel count by are `kakaocommon/words.py`; `tui/digest.py`
+  keeps its old private names for them.
+- **Its key is Ctrl+O, not the Ctrl+G it was written with on Windows.** Ctrl+G
+  here is the mouse switch (`SELECT_MODE`). Both builds now use Ctrl+O, which
+  raw mode delivers as SI: `tty.setraw` clears `IEXTEN`, so the driver's
+  `VDISCARD` never sees it. There is no shortcut set to add it to — the
+  console hands every byte 0x01–0x1a to the screen as a character — so it is
+  taken in `_handle_chat` before the composer types it.
+- **History is paged on the owner thread, like everything else.** Opening the
+  panel cuts what is loaded and asks for one `OLDER` job tagged
+  `about=TOPIC_PAGES`, so it never coalesces with `/older`'s; each answer
+  (`_settle_topic_page`) prepends, cuts again and asks for the next until a
+  countable message from before the floor is held, the room runs out, or
+  `TOPIC_HISTORY_CAP` stops it. `topic_paging` is set *before* asking, because
+  the synchronous `DatabaseOwner` the tests drive settles inside `_ask`. A
+  refused job or a failed read is said in the notice and leaves the panel open
+  and marked incomplete. Closing the panel mid-page keeps the page and asks for
+  no more; reopening while one is in flight waits for it instead of being
+  refused as its duplicate.
+- **Only an empty page means the room ran out.** `/older` and the panel ask
+  the same question under different `about`s, so whichever is answered second
+  gets back rows already held. Taking that for the end stopped the panel after
+  100 of the 240 minutes it needed, and made `/older` say "이전 기록이 더
+  없습니다". Both ask again from the oldest message now held, and give up only
+  when that did not move, so the race cannot loop.
+- **An inline picture beside the panel is drawn again when its rows change.**
+  iTerm2 and sixel pixels live in the cells, and `Console.draw` repaints a
+  changed row from its first column. Beside the panel those rows change on an
+  arrow, a new minute or an arrival without the picture moving, so `_paint`
+  compares the rows a placement covers with the last frame and, when one
+  differs, forgets `_drawn`. That sends the picture down the moved-picture
+  path: the whole frame is repainted and the picture drawn again.
+- **Whether a list or digest closes the panel is decided per tab** (`_yield_topics`
+  asks `_transcript_hidden` at the screen's width). The last frame may have been
+  another tab's, and an answer for a background tab must not close a panel that
+  has room beside it.
+- **Every measurement of the conversation goes through `_transcript_width`**,
+  `_body_geometry` included, so the cache key, photo sizing and placement,
+  `_settle_offset` and clicks agree on the narrowed width. A click on the
+  panel, beside the conversation or in its place, resolves to nothing. On a
+  narrow screen the wheel scrolls the panel as page up and down do. The arrows
+  move a multi-line draft's caret first, as they do with the panel closed.
+
 ### The demo
 
 - **`demo/mockup.py` keeps its own copy of the schema, and that copy rotted

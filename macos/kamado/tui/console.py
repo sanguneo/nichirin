@@ -72,6 +72,19 @@ The two uses of the mouse cannot both be on, so this key switches between them
 rather than trying to tell a click from a drag -- which the button reports
 this console asks for cannot answer, since motion is never requested.
 """
+TOPIC_FLOW: Final = "\x0f"
+"""Ctrl+O, which opens or closes the panel of the last two hours' topics.
+
+The Windows build's key for the same panel, chosen there and here for being
+free on both: Ctrl+H, I, J and M arrive as backspace, tab, newline and enter,
+C is the interrupt, P, S, T and U are taken, and Ctrl+G -- which the panel was
+first written with on Windows -- is this console's mouse switch. Raw mode
+(:func:`tty.setraw`) clears ``IEXTEN`` along with ``ISIG`` and ``IXON``, so the
+terminal driver's own use of the byte (``VDISCARD``) never sees it and SI
+arrives as itself; like every control character from 0x01 to 0x1a it is
+handed to the screen as ``("char", "\\x0f")``. ``/flow`` does the same thing
+on a terminal that binds the key to something of its own.
+"""
 _HIGH_SURROGATE: Final = range(0xD800, 0xDC00)
 _LOW_SURROGATE: Final = range(0xDC00, 0xE000)
 

@@ -15,29 +15,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Final, Iterable, Optional, Sequence
 
+from kakaocommon.words import PLACEHOLDERS, STOPWORDS, WORD
 from ..model import Message
 
 MAX_SPAN: Final = timedelta(hours=12)
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([mh])\s*$", re.IGNORECASE)
-_WORD = re.compile(r"[0-9A-Za-z가-힣]{2,}")
-
-# Particles and fillers carry no topic, and in Korean they dominate any raw
-# frequency count, so they are removed before ranking.
-_STOPWORDS: Final = frozenset(
-    """
-    그리고 그래서 그런데 하지만 그러면 그러니까 근데 진짜 정말 아니 우리 저기 여기 거기
-    이거 그거 저거 뭐가 뭔가 이런 저런 그런 하는 하고 해서 하면 한데 있는 있다 없는 없다
-    같은 같이 때문 지금 오늘 내일 어제 그냥 조금 많이 다시 아직 이제 계속 혹시 일단
-    the and for you are not but with this that have from was were will can all
-    네네 ㅇㅇ ㅋㅋ ㅋㅋㅋ ㅎㅎ ㅎㅎㅎ ㅠㅠ ㅜㅜ
-    """.split()
-)
-
-# The client writes a placeholder word into the text column for attachments, so
-# without this a photo-heavy hour reports "사진" as what it was about.
-_PLACEHOLDERS: Final = frozenset(
-    "사진 동영상 이모티콘 파일 음성메시지 보이스톡 페이스톡 선물 링크 삭제된 지도 연락처".split()
-)
+# Shared with the topic panel, so the two never disagree about which words
+# count; the private names are what this module has always used.
+_WORD = WORD
+_STOPWORDS: Final = STOPWORDS
+_PLACEHOLDERS: Final = PLACEHOLDERS
 
 
 class DurationError(ValueError):
