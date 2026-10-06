@@ -10,7 +10,7 @@ it.
 | Path | What it is |
 | --- | --- |
 | `openapi.json` | The one HTTP + SSE contract both `serve` commands answer |
-| `kakaocommon/` | Modules both builds run unchanged (`wal`, `sixel`, `budget`, `register`: announcing `serve` to saya) |
+| `kakaocommon/` | Modules both builds run unchanged (`wal`, `sixel`, `budget`, `register`: announcing `serve` to saya, `topics` and `words`: the TUI's topic panel and `/sum`) |
 | `windows/` | `kanao-cli`: package `kanao`, Python 3.10+, its tests, skill and docs |
 | `macos/` | `kamado-cli`: package `kamado`, Python 3.9+, its tests, skill and docs |
 | `kanao/`, `kamado/`, `kakaoread/`, `install.py` | Root entry points that keep the pre-merge commands working from the root; no code of their own |

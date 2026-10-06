@@ -111,7 +111,24 @@ which is why :class:`Console` turns that mode off; ``/status`` does the same
 thing on a terminal that binds the key to something of its own.
 """
 
-_SHORTCUTS: Final = frozenset({CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP, TOGGLE_STATUS})
+TOPIC_FLOW: Final = "\x0f"
+"""Ctrl+O, which opens or closes the panel of the last two hours' topics.
+
+Chosen because it is free on both builds rather than because it spells
+anything: Ctrl+H, I, J and M arrive as backspace, tab, newline and enter,
+Ctrl+C is the interrupt that processed input keeps, and P, S, T and U are
+already taken here. Ctrl+G was free here too, but the macOS build has long
+used it to switch the mouse between clicking and selecting, and one key for
+one panel on both is worth more than the letter. The console has no meaning of
+its own for SI on input, and the Windows Terminal settings this was written
+against bind nothing to it; ``/flow`` does the same thing on a terminal that
+does. As with Ctrl+T, the decoder's test feeds it the record a console builds
+for it — a live console was not driven.
+"""
+
+_SHORTCUTS: Final = frozenset(
+    {CLEAR_BOX, SHOW_PHOTO, TOGGLE_TIMESTAMP, TOGGLE_STATUS, TOPIC_FLOW}
+)
 """Control characters handed to the screen as themselves.
 
 Everything else unprintable is dropped, which is what happened to Ctrl+P for

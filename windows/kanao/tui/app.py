@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
+from kakaocommon import topics
 from kakaocommon.budget import BudgetedCache
 
 from .. import __version__
@@ -49,6 +50,7 @@ from .console import (
     SHOW_PHOTO,
     TOGGLE_STATUS,
     TOGGLE_TIMESTAMP,
+    TOPIC_FLOW,
     Console,
     Key,
     force_size,
@@ -65,6 +67,7 @@ from .layout import (
     pad_to_width,
     plan_footer,
     plan_tabs,
+    settle,
     truncate_to_width,
     window_around,
     wrap_to_width,
@@ -113,6 +116,20 @@ EDITS_SHOWN = 20
 """How many edited messages ``/edits`` lists, newest first."""
 HELP_KEY_WIDTH = 16
 """The columns ``/help`` gives a key before saying what it does."""
+TOPIC_HISTORY_CAP = 2000
+"""How many messages, in all, the topic panel may hold a tab to while paging back.
+
+Two hours plus the stretch a running topic is followed back is usually a few
+hundred lines; a room that busy is rare, and one busier than this would make
+opening the panel the slowest keystroke on the screen.
+"""
+TOPIC_SPLIT_WIDTH = 100
+"""From how many columns the topic panel sits beside the conversation.
+
+Below it the panel takes the conversation's place instead: the panel needs a
+third of the screen, and two thirds of a narrower one is where Hangul
+sentences start breaking into fragments again.
+"""
 
 
 INLINE_CACHE_ENTRIES = 64
@@ -211,6 +228,21 @@ class ChatState:
     blank rows for it and the escape that draws it is laid over them after the
     frame is painted. This is how the two halves find each other.
     """
+    topics_open: bool = False
+    """Whether the topic panel is on screen for this tab."""
+    topic_flow: Optional[topics.TopicFlow] = None
+    """The last cut of the window, redone whenever this tab's messages change."""
+    topic_selected: int = 0
+    topic_expanded: Optional[int] = None
+    """Which topic shows its key messages under it, if any."""
+    topic_scroll: int = 0
+    """The panel's first visible row, moved only to keep the selection on screen."""
+    topic_complete: bool = True
+    """Whether the paging that opened the panel reached as far back as it needed."""
+    topic_follow: bool = True
+    """Whether the panel scrolls to the selection, or stays where page keys left it."""
+    topic_minute: int = 0
+    """The minute the window was last cut at, so a quiet room's window still moves."""
 
 
 class App:
@@ -300,6 +332,12 @@ class App:
         """Whether a picture moved, so the frame has to be given up whole."""
         self._body_rows = 0
         """How tall the conversation last was, so a picture scales with it."""
+        self._screen_width = 0
+        """How wide the last frame was, for a key that has to know a row number."""
+        self._topic_split = False
+        """Whether the last frame drew the topic panel beside the conversation."""
+        self._last_frame: Optional[list[str]] = None
+        """The last frame painted, to tell whether a picture's rows were rewritten."""
         self._inline_cache: BudgetedCache[
             tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
         ] = BudgetedCache(
@@ -726,12 +764,22 @@ class App:
         drawn = self._append_arrivals(chat, arrived, width)
         if chat.room.id in getattr(chat.watcher, "moved", ()):
             drawn |= self._reconcile(chat, width)
+        if chat.topics_open and int(self._wall() // 60) != chat.topic_minute:
+            # Nothing arrived, but "the last two hours" moved on: a quiet
+            # room's panel would otherwise keep the window it was opened at.
+            self._recompute_topics(chat)
+            drawn = True
         return drawn
 
     def _append_arrivals(self, chat: ChatState, arrived: Sequence[Message], width: int) -> bool:
         """Add what is new to the conversation, holding the reader's place."""
         if not arrived:
             return False
+        hidden = self._transcript_hidden(chat, width)
+        # The width the transcript is drawn at, which the topic panel narrows;
+        # measuring at the screen's would rebuild the cache at the wrong width
+        # and advance a scrolled offset by the wrong number of lines.
+        width = self._transcript_width(chat, width)
         known = {message.id for message in chat.messages}
         fresh = [message for message in arrived if message.id not in known]
         if not fresh:
@@ -753,10 +801,13 @@ class App:
             # The reader is up in the history; hold their place rather than
             # yanking the viewport down to the newest line.
             chat.offset += len(self._transcript_of(chat, width)) - before
-        if chat.offset > 0 or chat is not self.chat or self.adding:
+        if chat.topics_open:
+            self._recompute_topics(chat)
+        if chat.offset > 0 or chat is not self.chat or self.adding or hidden:
             # Arrivals nobody has seen: the viewport is up in the history,
-            # this is a tab the reader is not on, or the room list is in
-            # front of every tab - and the strip or the list says so.
+            # this is a tab the reader is not on, the room list is in front
+            # of every tab, or the topic panel has the conversation's place -
+            # and the strip, the list or the status line says so.
             chat.unseen += len(fresh)
         else:
             chat.unseen = 0
@@ -780,6 +831,8 @@ class App:
         """
         if not chat.messages:
             return False
+        hidden = self._transcript_hidden(chat, width)
+        width = self._transcript_width(chat, width)
         low, high = chat.messages[0].id, chat.messages[-1].id
         try:
             current = self.reader.row_versions(chat.room.id, low, high, include_erased=True)
@@ -825,7 +878,7 @@ class App:
             for message in fresh:
                 self.palette.hue(message.sender)
             chat.messages = sorted(chat.messages + fresh, key=lambda message: message.id)
-            if chat.offset > 0 or chat is not self.chat or self.adding:
+            if chat.offset > 0 or chat is not self.chat or self.adding or hidden:
                 chat.unseen += len(fresh)
         for one in removed | set(rebuilt):
             chat.feeds.pop(one, None)
@@ -839,6 +892,9 @@ class App:
         if chat.slices and chat.slice_span is not None:
             # Cut again from what is left, so a deleted line is not summarised.
             chat.slices = digest.slice_messages(_said(chat.messages), chat.slice_span)
+        if chat.topics_open:
+            # Cut again too: a deleted line must not name a topic or be quoted.
+            self._recompute_topics(chat)
         if anchor is not None:
             self._restore_anchor(chat, width, anchor)
         return True
@@ -940,6 +996,8 @@ class App:
             return
         chat.messages = older + chat.messages
         chat.notice = f"이전 {len(older)}개 불러옴 (총 {len(chat.messages)})"
+        if chat.topics_open:
+            self._recompute_topics(chat)
 
     # -- rendering ----------------------------------------------------------
 
@@ -1130,9 +1188,18 @@ class App:
 
         The composer, the status line and the footer belong to the tab in
         front: a second box would need a second caret and a terminal has one.
+
+        The topic panel is the one exception to the whole width, and only from
+        `TOPIC_SPLIT_WIDTH`: it is read *beside* the conversation, enter jumps
+        the one to where the other points, and that is useless if they cannot
+        both be seen. Its third of the screen leaves the conversation two thirds
+        of a wide one, which still holds a sentence. On a narrower screen the
+        panel takes the conversation's place the way a `/notice` list does.
+        Everything above and below the body stays full width either way.
         """
         chat = self.chat
         assert chat is not None
+        self._screen_width = width
         lines: list[str] = [self._tab_strip(width)]
         # The room is named in the strip; repeating it here
         # spent a row on something the reader already knows. Eight hints
@@ -1162,25 +1229,45 @@ class App:
         self._body_rows = rows
         body_top = len(lines)
         self.placements = []
-        if chat.slices:
-            body = self._digest_of(chat, width)
-        elif chat.panel:
-            body = self._panel_of(chat, width)
+        self._topic_split = chat.topics_open and width >= TOPIC_SPLIT_WIDTH
+        if chat.topics_open and not self._topic_split:
+            # Too narrow to share: the panel is the body, and it scrolls
+            # itself to keep the selected topic in view.
+            body = self._topic_panel_of(chat, width, rows)
+            lines.extend(body)
         else:
-            body = self._transcript_of(chat, width)
-        if chat.anchor_top:
-            # Resolved here because the top is a distance from the bottom,
-            # and neither the body nor the screen height is known earlier.
-            chat.offset = max(0, len(body) - rows)
-            chat.anchor_top = False
-        self._place_photos(chat, body, width, rows, body_top)
-        for line in _window(body, chat.offset, rows):
-            lines.append(pad_to_width(truncate_to_width(line, width), width))
-        while len(lines) < body_top + rows:
+            left = self._transcript_width(chat, width)
+            if chat.slices:
+                body = self._digest_of(chat, left)
+            elif chat.panel:
+                body = self._panel_of(chat, left)
+            else:
+                body = self._transcript_of(chat, left)
+            if chat.anchor_top:
+                # Resolved here because the top is a distance from the bottom,
+                # and neither the body nor the screen height is known earlier.
+                chat.offset = max(0, len(body) - rows)
+                chat.anchor_top = False
+            self._place_photos(chat, body, left, rows, body_top)
+            shown = [pad_to_width(truncate_to_width(line, left), left) for line in _window(body, chat.offset, rows)]
             # Rows the transcript does not reach are still painted: a tab
             # brought forward over a longer one would otherwise show it
             # through the gaps.
-            lines.append(" " * width)
+            shown.extend([" " * left] * (rows - len(shown)))
+            if self._topic_split:
+                rule = self.theme.fg("borderMuted", "│")
+                # A cut line can lose the escape that closed its colour, and
+                # the rule and the panel must not inherit it.
+                close = "\x1b[0m" if self.theme.enabled else ""
+                # The rule is put at its column, not after the text: an emoji
+                # sequence in the conversation is drawn wider or narrower
+                # than it measures, and a rule that followed the text stepped
+                # with every such line. Erasing first clears what a narrower
+                # line left; jumping clips what a wider one pushed over.
+                to_rule = f"\x1b[K\x1b[{left + 1}G"
+                panel = self._topic_panel_of(chat, width - left - 1, rows)
+                shown = [text + close + to_rule + rule + side for text, side in zip(shown, panel)]
+            lines.extend(shown)
         while len(lines) < height - len(composer) - below:
             lines.append("")
 
@@ -1435,6 +1522,22 @@ class App:
         frame = self.render(width, height)
         if self._cell is None and self._photos_drawable():
             self._cell = console.cell_pixels()
+        if (
+            self._topic_split
+            and self.placements
+            and self._photos_drawable()
+            and self._protocol in (images.ITERM2, images.SIXEL)
+            and _photo_rows_changed(self.placements, self._last_frame, frame)
+        ):
+            # Beside the topic panel a picture's rows are not blank: the panel
+            # half changes on an arrow, a new minute or an arrival, and
+            # `Console.draw` writes a changed row from its first column -
+            # over the pixels the picture put there. Nothing moved, so it
+            # would not be drawn again; forgetting where it was drawn sends it
+            # down the moved-picture path, which repaints the frame whole and
+            # draws every picture again.
+            self._drawn = {}
+        self._last_frame = frame
         overlay = self.photo_escapes()
         if self._images_moved:
             console.forget()
@@ -1705,11 +1808,23 @@ class App:
         return rows
 
     def _show_panel(self, chat: ChatState, title: str, rows: list[tuple[str, str]]) -> None:
+        self._yield_topics(chat)
         chat.slices = []
         chat.panel = rows
         chat.panel_title = title
         chat.anchor_top = True
         chat.notice = ""
+
+    def _yield_topics(self, chat: ChatState) -> None:
+        """Put the topic panel away for a digest or list, if they cannot share.
+
+        Beside the conversation the panel stays and the list takes the
+        conversation's side, so escape takes the panel and then the list. On
+        a narrow screen there is one body, and the list the reader just asked
+        for has to be what is in it.
+        """
+        if chat.topics_open and not self._topic_split:
+            chat.topics_open = False
 
     def _show_notice(self, chat: ChatState) -> None:
         try:
@@ -1799,10 +1914,12 @@ class App:
             ("head", "키"),
             row("enter", "전송. /로 시작하면 명령"),
             row("shift+enter", "줄바꿈"),
-            row("esc", "요약·목록 닫기, 그다음 이 탭 닫기 (초안은 방별로 남습니다)"),
+            row("esc", "주제 패널, 요약·목록 닫기, 그다음 이 탭 닫기 (초안은 방별로 남습니다)"),
             row("tab  ⇧tab", "다음 · 이전 탭"),
             row("↑↓  pgup pgdn", "한 줄 · 열 줄 스크롤"),
             row("home  end", "맨 위 · 맨 아래 (작성 중이면 입력창 처음 · 끝)"),
+            row("ctrl+o", "최근 2시간 주제 흐름 패널 열기 · 닫기"),
+            row("  ↑↓  enter", "패널이 열려 있으면 주제 고르기 · 주요 대화 펼치고 그 자리로 (작성 중이면 enter는 전송)"),
             row("ctrl+p", "최근 사진 열기 · 닫기"),
             row("ctrl+t", "메시지 앞 시각 보이기 · 숨기기"),
             row("ctrl+s", "맨 아래 상태줄 보이기 · 숨기기"),
@@ -1812,6 +1929,7 @@ class App:
             ("head", "명령"),
             row("/sum 30m", f"구간별 다이제스트 (최대 {hours}h)"),
             row("/export", "다이제스트 원문을 파일로"),
+            row("/flow  /topics", "최근 2시간 주제 흐름 (ctrl+o)"),
             row("/older", f"이전 기록 {LOAD_MORE_STEP}개 더"),
             row("/restore", "보냈는지 모를 글을 입력창으로"),
             row("/open [방이름]", "탭 하나 더 열기. 이름이 없으면 목록에서 고르기"),
@@ -1882,6 +2000,8 @@ class App:
             tab.revision += 1
             if tab.slices and tab.slice_span is not None:
                 tab.slices = digest.slice_messages(_said(tab.messages), tab.slice_span)
+            if tab.topics_open:
+                self._recompute_topics(tab)
         chat.notice = (
             "세이프봇이 가린 메시지를 보여줍니다 (/safebot 으로 다시 가리기)"
             if self.reader.reveal_covered
@@ -1946,6 +2066,351 @@ class App:
         rows.append(boxed(self.theme.fg("muted", "  esc 대화로 돌아가기 · e 원문 내보내기")))
         rows.append(boxed(""))
         return rows
+
+    # -- topics -------------------------------------------------------------
+
+    def _transcript_width(self, chat: ChatState, width: int) -> int:
+        """How wide this tab's conversation is drawn on a screen *width* wide.
+
+        Narrower while the topic panel sits beside it. Every caller that
+        measures the transcript asks here, because the cache is keyed on the
+        width it was built at: two callers disagreeing would rebuild it on
+        every frame and count arrivals in lines of the wrong length.
+        """
+        if chat.topics_open and width >= TOPIC_SPLIT_WIDTH:
+            return width - _topic_panel_width(width) - 1
+        return width
+
+    def _transcript_hidden(self, chat: ChatState, width: int) -> bool:
+        """Whether the topic panel has the conversation's place on a screen *width* wide."""
+        return chat.topics_open and width < TOPIC_SPLIT_WIDTH
+
+    def _toggle_topics(self, chat: ChatState) -> None:
+        """Open the panel of the last two hours' topics, or close it.
+
+        Opening pages back first, so a topic is never cut from whatever
+        happened to be loaded; the newest topic is selected, since following
+        a conversation starts from where it is now.
+        """
+        if chat.topics_open:
+            self._close_topics(chat)
+            return
+        place = self._top_anchor(chat)
+        chat.topic_complete = self._cover_topic_window(chat)
+        chat.topics_open = True
+        chat.topic_flow = None
+        chat.topic_expanded = None
+        chat.topic_scroll = 0
+        chat.topic_follow = True
+        self._recompute_topics(chat)
+        flow = chat.topic_flow
+        chat.topic_selected = max(0, len(flow.topics) - 1) if flow is not None else 0
+        self._restore_top(chat, place)
+
+    def _close_topics(self, chat: ChatState) -> None:
+        """Take the panel away, leaving the conversation on the line it showed."""
+        place = self._top_anchor(chat)
+        chat.topics_open = False
+        self._restore_top(chat, place)
+
+    def _top_anchor(self, chat: ChatState) -> Optional[tuple[int, int, int]]:
+        """Which message the top visible line belongs to, how far into it, and at what width.
+
+        Opening or closing the panel beside the conversation rewraps it at a
+        new width, and the offset counts lines from the bottom - so the same
+        offset afterwards is somewhere else, and a reader who had just jumped
+        to a topic was left past it. The top line is the one pinned, because
+        that is where a jump puts a topic's first message. None when there is
+        nothing to keep: the view follows the newest line, a digest or list is
+        in the conversation's place, or no frame has said how big it is.
+        """
+        if chat.offset <= 0 or chat.slices or chat.panel or not self._screen_width or not self._body_rows:
+            return None
+        width = self._transcript_width(chat, self._screen_width)
+        lines = self._transcript_of(chat, width)
+        rows = self._body_rows
+        offset = min(chat.offset, len(lines) - rows) if len(lines) > rows else chat.offset
+        top = max(0, max(1, len(lines) - max(0, offset)) - rows)
+        order = [message.id for message in chat.messages if message.id in chat.message_rows]
+        starts = [chat.message_rows[one] for one in order]
+        if not starts:
+            return None
+        # Above the first message there is only its day rule, which belongs
+        # to it as much as its own lines do.
+        index = max(0, bisect_right(starts, top) - 1)
+        return order[index], top - starts[index], width
+
+    def _restore_top(self, chat: ChatState, place: Optional[tuple[int, int, int]]) -> None:
+        """Put the anchored message back on the top line, at whatever width is drawn now.
+
+        The same pinning `_restore_anchor` does for the bottom line when a
+        message changes in place, from the other end of the viewport.
+        """
+        if place is None:
+            return
+        owner, depth, before = place
+        width = self._transcript_width(chat, self._screen_width)
+        if width == before:
+            return
+        lines = self._transcript_of(chat, width)
+        rows = chat.message_rows
+        if owner not in rows:
+            return
+        following = [rows[one.id] for one in chat.messages if one.id in rows and rows[one.id] > rows[owner]]
+        limit = min(following) if following else len(lines)
+        # Rewrapped wider, a message has fewer lines; the depth must not run
+        # past its own last line into the next message.
+        top = max(0, min(rows[owner] + depth, limit - 1))
+        chat.offset = max(0, len(lines) - top - self._body_rows)
+
+    def _cover_topic_window(self, chat: ChatState) -> bool:
+        """Page back until the window and the stretch before it are loaded.
+
+        `/sum` cuts only what is loaded, and four hundred lines of a busy room
+        can be forty minutes; a panel that says "2시간" has to mean it. One
+        message past the start is loaded as well, so the pause before the
+        oldest candidate can be scored like any other. Older pages are read
+        exactly as `/older` reads them. Returns whether it got that far — not
+        when `TOPIC_HISTORY_CAP` stopped it or a read failed, which the panel
+        then admits.
+        """
+        if not chat.messages:
+            return True
+        needed = topics.lookback_start(chat.messages, self._wall())
+        if needed is None:
+            return True
+        floor = needed.timestamp()
+        loaded = 0
+        failed = False
+        try:
+            while True:
+                # A countable message from before the floor, not merely any
+                # row: a join or a deleted line there says nothing about
+                # whether the topic above it had already begun.
+                if any(
+                    topics.part_of_flow(message) and message.sent_at < floor  # type: ignore[operator]
+                    for message in chat.messages
+                ):
+                    return True
+                oldest = chat.messages[0]
+                room = TOPIC_HISTORY_CAP - len(chat.messages)
+                if room <= 0:
+                    return False
+                older = self.reader.messages(
+                    chat.room.id,
+                    limit=min(LOAD_MORE_STEP, room),
+                    before_id=oldest.id,
+                    include_erased=True,
+                    versions=chat.versions,
+                )
+                if not older:
+                    return True
+                chat.messages = older + chat.messages
+                loaded += len(older)
+        except (KanaoError, OSError, sqlite3.Error) as error:
+            said = error.message if isinstance(error, KanaoError) else str(error)
+            chat.notice = f"이전 기록을 읽지 못했습니다: {said}"
+            failed = True
+            return False
+        finally:
+            if loaded and not failed:
+                chat.notice = f"주제 흐름을 위해 이전 {loaded}개 불러옴 (총 {len(chat.messages)})"
+
+    def _recompute_topics(self, chat: ChatState) -> None:
+        """Cut the window again, keeping the reader on the topic they were on.
+
+        Called whenever the tab's messages change while the panel is open.
+        The cut is pure and the window small, so it is redone whole; what
+        has to survive is the selection, which is followed by the message a
+        topic started with rather than by its position, since a new topic or
+        a merge moves every index after it.
+        """
+        previous = chat.topic_flow
+
+        def first_of(index: Optional[int]) -> Optional[int]:
+            if previous is None or index is None or not 0 <= index < len(previous.topics):
+                return None
+            return previous.topics[index].messages[0].id
+
+        selected, expanded = first_of(chat.topic_selected), first_of(chat.topic_expanded)
+        now = self._wall()
+        flow = topics.topic_flow(chat.messages, now, complete=chat.topic_complete)
+        chat.topic_flow = flow
+        chat.topic_minute = int(now // 60)
+
+        def holding(message_id: Optional[int]) -> Optional[int]:
+            if message_id is None:
+                return None
+            return next(
+                (
+                    index
+                    for index, topic in enumerate(flow.topics)
+                    if any(one.id == message_id for one in topic.messages)
+                ),
+                None,
+            )
+
+        found = holding(selected)
+        if found is None:
+            found = max(0, min(chat.topic_selected, len(flow.topics) - 1))
+        chat.topic_selected = found
+        chat.topic_expanded = holding(expanded)
+
+    def _move_topic(self, chat: ChatState, step: int) -> None:
+        flow = chat.topic_flow
+        if flow is None or not flow.topics:
+            return
+        chat.topic_selected = max(0, min(len(flow.topics) - 1, chat.topic_selected + step))
+        chat.topic_follow = True
+
+    def _open_topic(self, chat: ChatState) -> None:
+        """Show the selected topic's key messages, and bring the conversation to it.
+
+        Enter is what "누르면" means here, since there is no mouse: the panel
+        says what the topic was, and the conversation beside it scrolls so its
+        first message is the top line, where the rest of it can be read in
+        full. A digest or list in the conversation's place is put away for
+        that, or the jump would land somewhere nobody can see. On a narrow
+        screen the conversation is behind the panel, and escape reveals it
+        already at that point. Enter on an open topic folds it and leaves the
+        conversation where it is.
+        """
+        flow = chat.topic_flow
+        if flow is None or not flow.topics:
+            return
+        index = chat.topic_selected
+        chat.topic_follow = True
+        if chat.topic_expanded == index:
+            chat.topic_expanded = None
+            return
+        first = flow.topics[index].messages[0]
+        width = self._transcript_width(chat, self._screen_width or TOPIC_SPLIT_WIDTH)
+        lines = self._transcript_of(chat, width)
+        row = chat.message_rows.get(first.id)
+        if row is None:
+            # Nothing to jump to; the screen is left exactly as it was.
+            return
+        chat.topic_expanded = index
+        chat.slices = []
+        chat.panel = []
+        chat.anchor_top = False
+        chat.offset = max(0, len(lines) - row - max(1, self._body_rows))
+
+    def _topic_panel_of(self, chat: ChatState, width: int, rows: int) -> list[str]:
+        """Draw the topic panel: exactly *rows* lines, each exactly *width* wide.
+
+        A timeline, oldest topic at the top: a bullet and the topic's own
+        time range, its label, then who carried it and how much. The panel
+        scrolls itself so the selected topic — with its key messages, when it
+        is open — stays in view, because the arrows belong to it while it is
+        on screen and the conversation keeps page up and page down.
+        """
+        flow = chat.topic_flow
+        close = "\x1b[0m" if self.theme.enabled else ""
+        rule = self.theme.fg("borderMuted", "│")
+
+        def boxed(content: str, selected: bool = False) -> str:
+            # On the terminal's own background, unlike the digest's tinted
+            # box: beside the conversation a filled block read as a second
+            # window, and the light theme's tint is near white. The selected
+            # topic is carried by its marker and weight instead. Settled so
+            # the right edge holds still: a row drawn wider than it measures
+            # would wrap and push every row after it down.
+            text = pad_to_width(truncate_to_width(" " + settle(content), width, ELLIPSIS), width)
+            # A cut line can lose the escape closing its colour; the next
+            # row of the panel must not start in it.
+            return text + close
+
+        inner = max(4, width - 3)
+        today = datetime.fromtimestamp(self._wall(), timezone.utc).astimezone(self.zone).date()
+        header = [
+            boxed(
+                self.theme.fg("customMessageLabel", self.theme.bold("[주제 흐름]"))
+                + self.theme.fg("muted", " 최근 2시간")
+            )
+        ]
+        if flow is not None:
+            start, end = flow.start.astimezone(self.zone), flow.end.astimezone(self.zone)
+            span = f"{start:%H:%M}–{end:%H:%M}" if end.date() == today else f"{start:%m-%d %H:%M}–{end:%H:%M}"
+            said = ("마지막 대화 기준 " if flow.fallback else "") + f"{span} · {flow.count}개 메시지"
+            header.append(boxed(self.theme.fg("muted", said)))
+        else:
+            header.append(boxed(""))
+        header.append(
+            boxed("" if chat.topic_complete else self.theme.fg("dim", "앞 기록을 끝까지 불러오지 못했습니다"))
+        )
+
+        # Each row of the timeline: the topic it belongs to, its text, and
+        # whether it is the selected topic's head row.
+        entries: list[tuple[int, str, bool]] = []
+        if flow is None or not flow.topics:
+            entries.append((-1, "", False))
+            entries.append((-1, self.theme.fg("muted", "최근 2시간 대화가 없습니다"), False))
+        else:
+            for index, topic in enumerate(flow.topics):
+                selected = index == chat.topic_selected
+                opens = topic.start.astimezone(self.zone)
+                ends = topic.end.astimezone(self.zone)
+                bullet = self.theme.fg("accent", "▶") if selected else self.theme.fg("muted", "●")
+                label = clean(topic.label)
+                entries.append(
+                    (
+                        index,
+                        bullet
+                        + " "
+                        + self.theme.fg("accent", f"{opens:%H:%M}–{ends:%H:%M}")
+                        + " "
+                        + (self.theme.bold(label) if selected else label),
+                        selected,
+                    )
+                )
+                if topic.extends_before:
+                    reach = "↑ 2시간 이전부터" + (ELLIPSIS if topic.truncated else "")
+                    entries.append((index, rule + " " + self.theme.fg("dim", reach), False))
+                resumed = "  ↺ 다시" if topic.resumes is not None else ""
+                who = ", ".join(clean(name) for name, _count in topic.speakers[:3])
+                meta = truncate_to_width(
+                    f"{topic.count}개 · {who}", max(4, inner - display_width(resumed)), ELLIPSIS
+                )
+                entries.append(
+                    (index, rule + " " + self.theme.fg("muted", meta) + self.theme.fg("warning", resumed), False)
+                )
+                if chat.topic_expanded == index:
+                    for message in topic.key_messages():
+                        speaker = "나" if message.from_me else message.sender
+                        said = clean(" ".join(message.text.split()))
+                        pieces = wrap_to_width(f"{clean(speaker)}: {said}", max(4, inner - 2))
+                        if len(pieces) > 3:
+                            pieces = pieces[:3]
+                            pieces[2] = truncate_to_width(pieces[2], max(1, inner - 3)) + ELLIPSIS
+                        colour = self.palette.body_colour(speaker)
+                        for number, piece in enumerate(pieces):
+                            mark = "┃ " if number == 0 else "  "
+                            entries.append(
+                                (index, rule + " " + self.theme.fg("dim", mark) + self.theme.fg(colour, piece), False)
+                            )
+                if index < len(flow.topics) - 1:
+                    entries.append((index, rule, False))
+
+        footer = [boxed(""), boxed(self.theme.fg("muted", "↑↓ 주제 · enter 펼치기 · esc 닫기"))]
+        available = rows - len(header) - len(footer)
+        if available < 1:
+            # Too short for the frame around it; the timeline alone, then.
+            header, footer, available = [], [], rows
+        block = [position for position, entry in enumerate(entries) if entry[0] == chat.topic_selected]
+        scroll = chat.topic_scroll
+        if block and chat.topic_follow:
+            first, last = block[0], block[-1] + 1
+            if last - first > available:
+                scroll = first
+            elif last > scroll + available:
+                scroll = last - available
+            scroll = min(scroll, first)
+        scroll = max(0, min(scroll, len(entries) - available))
+        chat.topic_scroll = scroll
+        body = [boxed(text, selected) for _index, text, selected in entries[scroll : scroll + available]]
+        body.extend([boxed("")] * (available - len(body)))
+        return (header + body + footer)[:rows]
 
     def _composer_lines(self, width: int) -> tuple[list[str], int]:
         """Draw the message box: closed on both sides, marked on the right.
@@ -2160,6 +2625,8 @@ class App:
                 self._toggle_timestamps(chat)
             elif text == TOGGLE_STATUS:
                 self._toggle_status(chat)
+            elif text == TOPIC_FLOW:
+                self._toggle_topics(chat)
             else:
                 chat.delivered = False
                 chat.draft = chat.draft[: chat.caret] + text + chat.draft[chat.caret :]
@@ -2175,11 +2642,20 @@ class App:
         elif kind == Key.RIGHT:
             chat.caret = min(len(chat.draft), chat.caret + 1)
         elif kind == Key.ENTER:
-            self._submit(chat)
+            if chat.topics_open and not chat.draft:
+                # Only an empty box: something written is always sent, and
+                # the panel being open must never swallow a message.
+                self._open_topic(chat)
+            else:
+                self._submit(chat)
         elif kind == Key.ESCAPE:
             # The draft is never thrown away here. It goes back to the room it
-            # was being written in, and leaving is just leaving.
-            if chat.slices:
+            # was being written in, and leaving is just leaving. The topic
+            # panel goes first: it is the last thing laid over the screen,
+            # beside a digest or list as often as over the conversation.
+            if chat.topics_open:
+                self._close_topics(chat)
+            elif chat.slices:
                 chat.slices = []
                 chat.offset = 0
             elif chat.panel:
@@ -2187,6 +2663,22 @@ class App:
                 chat.offset = 0
             else:
                 self._leave_room(chat)
+        elif kind == Key.UP and chat.topics_open:
+            # The arrows walk the topics while the panel is up; page up and
+            # page down still scroll what is beside it.
+            self._move_topic(chat, -1)
+        elif kind == Key.DOWN and chat.topics_open:
+            self._move_topic(chat, 1)
+        elif kind in (Key.PAGE_UP, Key.PAGE_DOWN) and self._transcript_hidden(chat, self._screen_width):
+            # On a narrow screen the panel is all there is, and an open topic
+            # can run past its bottom; scrolling the conversation behind it
+            # would move something nobody can see.
+            chat.topic_scroll = max(0, chat.topic_scroll + (-10 if kind == Key.PAGE_UP else 10))
+            chat.topic_follow = False
+        elif kind in (Key.HOME, Key.END) and not chat.draft and self._transcript_hidden(chat, self._screen_width):
+            flow = chat.topic_flow
+            if flow is not None and flow.topics:
+                self._move_topic(chat, -len(flow.topics) if kind == Key.HOME else len(flow.topics))
         elif kind == Key.UP:
             chat.offset += 1
         elif kind == Key.DOWN:
@@ -2207,7 +2699,7 @@ class App:
                 chat.caret = len(chat.draft)
             else:
                 chat.offset = 0
-        if chat.offset == 0:
+        if chat.offset == 0 and not self._transcript_hidden(chat, self._screen_width):
             chat.unseen = 0
 
     def _focus_tab(self, index: int) -> None:
@@ -2416,12 +2908,15 @@ class App:
             if not slices:
                 chat.notice = "요약할 메시지가 없습니다"
                 return
+            self._yield_topics(chat)
             chat.slices = slices
             chat.slice_span = span
             chat.slice_label = f"{arguments[0]} 구간 · {len(slices)}개 · 최근 12h 이내"
             # A digest is read from its beginning, unlike a conversation.
             chat.anchor_top = True
             chat.notice = ""
+        elif name in ("flow", "topics"):
+            self._toggle_topics(chat)
         elif name in ("older", "o"):
             chat.notice = ""
             self.load_older()
@@ -2680,6 +3175,30 @@ def _clamp_scroll(selected: int, scroll: int, height: int, total: int) -> int:
     scroll = min(scroll, selected)
     scroll = max(scroll, selected - height + 1)
     return max(0, min(scroll, total - height))
+
+
+def _photo_rows_changed(
+    placements: Sequence[tuple], before: Optional[list[str]], after: list[str]
+) -> bool:
+    """Whether any frame row a placed picture covers differs from the last painted one."""
+    if before is None:
+        return False
+    for _id, top, _column, _blob, _cols, rows, _crop in placements:
+        for row in range(top, top + rows):
+            if row >= len(after):
+                continue
+            if row >= len(before) or before[row] != after[row]:
+                return True
+    return False
+
+
+def _topic_panel_width(width: int) -> int:
+    """How wide the topic panel is beside a conversation on a screen *width* wide.
+
+    Wide enough for a time range and a three-word label, about a third of
+    the screen, and never so wide that the conversation loses its sentences.
+    """
+    return min(44, max(32, width // 3))
 
 
 def _window(lines: list[str], offset: int, height: int) -> list[str]:

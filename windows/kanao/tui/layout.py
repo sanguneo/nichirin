@@ -71,6 +71,22 @@ def clean(text: str, keep_newlines: bool = False) -> str:
     return "".join(cleaned)
 
 
+_JOINERS: Final = re.compile("[‍︎️\U0001f3fb-\U0001f3ff\U000e0020-\U000e007f]")
+
+
+def settle(text: str) -> str:
+    """Drop the code points that make an emoji's width a guess.
+
+    A joiner, a variation selector, a skin tone or a flag tag is one column
+    or two to ``east_asian_width`` and none to a terminal that fuses the
+    sequence - or two to one that does not - so a line holding them is drawn
+    wider or narrower than it was measured. Where a column has to hold still
+    (the rule beside the topic panel, the screen's right edge) the sequence
+    is shown as its separate pictures instead, each as wide as it is measured.
+    """
+    return _JOINERS.sub("", text)
+
+
 def strip_ansi(text: str) -> str:
     """Return *text* without escape sequences."""
     return _ANSI.sub("", text)

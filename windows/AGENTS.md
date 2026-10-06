@@ -76,6 +76,8 @@ the current implementation already satisfies it.
 | `tui/layout.py` | Column-accurate width, truncation, wrapping, footer plan |
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |
 | `tui/digest.py` | Time slicing and extractive slice description |
+| `../kakaocommon/topics.py` | The last two hours cut into topics, extractively, for the side panel (shared with macOS) |
+| `../kakaocommon/words.py` | The word pattern, stopwords and placeholders `digest` and `topics` both count by (shared with macOS) |
 | `tui/images.py` | Which protocol draws, how a picture is sized, and the CDN fetch |
 | `../kakaocommon/sixel.py` | PNG → pixels and pixels → sixel, pure standard library (shared with macOS) |
 | `tui/app.py` | Screen state, rendering, key handling |
@@ -735,6 +737,58 @@ on a live client, newest 4,000 rows of each readable room.
   never claims to summarise.
 - The client writes placeholder words such as `사진` into the text column for
   attachments; they are filtered out of keywords or they dominate every slice.
+- **The topic panel (`ctrl+o`, `/flow`) is extractive for the same reason.**
+  `topics.topic_flow` cuts the last two hours TextTiling-style: a silence of
+  15 min is a boundary, a drop in shared vocabulary between the six messages
+  either side of a gap is one when its depth stands out, and a reply across a
+  gap (within 12 messages) cancels both, because the client recorded that
+  link and nothing here guessed it. Keywords are TF-IDF against the other
+  topics of the same window, counted once per message so a pasted wall cannot
+  name its topic; particles are folded (`회의는` → `회의`), the ambiguous ones
+  (`이`, `가`, `도`…) only when the stem is attested elsewhere, or `고양이`
+  becomes `고양`. Key messages earn their place by keywords, replies received
+  and mentions; length is capped at one keyword's worth.
+- **The cut is shared with the macOS build.** `kakaocommon/topics.py` reads a
+  message only through the structural `FlowMessage` protocol and restates
+  `FEED_MESSAGE` and `ELLIPSIS` instead of importing them; the word lists it
+  and `digest` count by are `kakaocommon/words.py`. `tests/test_topics.py` is
+  kept in both suites. The key is `ctrl+o` on both: the panel was written with
+  `ctrl+g`, which the macOS build already uses to switch its mouse mode.
+- **A topic running across the window's start is followed back, not cut.**
+  The cut is scored over the window plus `TOPIC_EXTENSION_MAX` (2 h) exactly as
+  it is anywhere else; topics that end before the window are dropped, the one
+  straddling it keeps its natural start. A reply pulls that start back only
+  the way it holds any gap together, from within 12 messages: an answer to
+  something hours old once swallowed every topic in between into one, and a
+  topic coming back is what `resumes` is for. Reaching the cap — or the tab's
+  2,000-message paging limit — without finding a start marks it `truncated`;
+  paging stops at a *countable* message past the floor, because a join or a
+  deleted line there says nothing about whether the topic had begun.
+  The window label still reports the nominal two hours; with nothing said in
+  them, the window ends at the newest message and the same rule applies.
+  The window is cut again when its minute moves, not only when a message
+  arrives, or a quiet room's panel keeps the hour it was opened at.
+- **The topic panel is the one thing beside the conversation, and only from
+  100 columns.** It is read against the transcript — enter scrolls the
+  conversation to the selected topic's first message — so both have to be
+  visible; at `min(44, max(32, width // 3))` it leaves two thirds of a wide
+  screen, which still holds a Hangul sentence. Narrower, it takes the
+  conversation's place like a `/notice` list. Every caller that measures the
+  transcript asks `App._transcript_width`, because the cache is keyed on the
+  width it was built at and arrivals are counted in its lines. Opening or
+  closing the panel rewraps the conversation, so the top visible message is
+  pinned across it (`_top_anchor`), the way `_reconcile` pins the bottom one;
+  otherwise escape after a jump landed past the topic. The arrows belong to
+  the panel while it is open; page up and down scroll the conversation beside
+  it, or the panel itself when it has the conversation's place — and then
+  arrivals stay counted as unseen. Enter opens a topic only when the composer
+  is empty, so a written message is never swallowed. Escape closes the panel
+  before a digest or list. Beside the panel a picture's rows are not blank:
+  an arrow, a new minute or an arrival rewrites the panel half, and the
+  console repaints that row from its first column over a sixel or iTerm2
+  picture. `_paint` therefore compares the rows a placement covers with the
+  last frame and, when one changed, forgets `_drawn` so the picture is drawn
+  again with the frame given up whole, as a moved one is.
 - **`/real` answers in one line, and its useful answer is the plural one.** A
   single chain says what somebody used to be called; two chains say which of
   two identical names is the impostor, and that is the question a reader
