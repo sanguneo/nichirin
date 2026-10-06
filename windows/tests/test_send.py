@@ -259,3 +259,67 @@ class Win32MessageTests(unittest.TestCase):
         self.user32.SendMessageTimeoutW.return_value = 0
         with self.assertRaises(OSError):
             self.backend._message(84, 0x000E)
+
+
+class DpiTests(unittest.TestCase):
+    """A room on a 200% monitor, seen by a DPI-unaware process (#82).
+
+    Unaware, Windows reports the window at 96 DPI - 1/1.25 of its size here -
+    while GetDpiForWindow still says 192. The file button is 48 px up from the
+    real bottom edge at 192 DPI, so its click must land in the button row
+    (y 962-1020 of a 1020-high window), not in the message list above it.
+    """
+
+    PHYSICAL = (1000, 100, 1934, 1120)
+    VIRTUAL = (800, 80, 1547, 896)
+
+    def setUp(self) -> None:
+        require_windows_libraries()
+        self.aware = False
+        self.user32 = Mock()
+        dll = patch("ctypes.WinDLL", return_value=self.user32)
+        dll.start()
+        self.addCleanup(dll.stop)
+        self.backend = Win32Backend(99)
+        self.sent: list[tuple[int, int]] = []
+
+        def set_context(context):
+            previous = "aware" if self.aware else "unaware"
+            self.aware = context != "unaware"
+            return previous
+
+        def window_rect(handle, reference):
+            rect = reference._obj
+            rect.left, rect.top, rect.right, rect.bottom = (
+                self.PHYSICAL if self.aware else self.VIRTUAL
+            )
+            return 1
+
+        def to_client(handle, reference):
+            point = reference._obj
+            left, top = (self.PHYSICAL if self.aware else self.VIRTUAL)[:2]
+            point.x -= left
+            point.y -= top
+            return 1
+
+        def send(handle, message, wparam, lparam, flags, timeout, result):
+            if message == 0x0201:  # WM_LBUTTONDOWN
+                self.sent.append((lparam & 0xFFFF, (lparam >> 16) & 0xFFFF))
+            return 1
+
+        self.user32.SetThreadDpiAwarenessContext.side_effect = set_context
+        self.user32.GetWindowRect.side_effect = window_rect
+        self.user32.ScreenToClient.side_effect = to_client
+        self.user32.GetDpiForWindow.return_value = 192
+        self.user32.SendMessageTimeoutW.side_effect = send
+        self.user32.IsWindow.return_value = 1
+
+    def test_the_file_button_click_lands_in_the_button_row(self) -> None:
+        self.backend.click_file_button(84)
+        [(x, y)] = self.sent
+        self.assertEqual(x, 176)
+        self.assertTrue(962 <= y < 1020, f"the click landed at y={y}, outside the button row")
+
+    def test_the_awareness_is_given_back_afterwards(self) -> None:
+        self.backend.click_file_button(84)
+        self.assertFalse(self.aware)
