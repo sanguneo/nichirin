@@ -29,6 +29,7 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_CONCURRENT_READS,
     MAX_CONCURRENT_UPLOADS,
     MAX_UPLOAD_BYTES,
     MULTIPART_OVERHEAD_BYTES,
@@ -205,6 +206,7 @@ def build_handler(
     upload: Optional[Callable[..., dict[str, Any]]] = None,
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
     max_concurrent_uploads: int = MAX_CONCURRENT_UPLOADS,
+    max_concurrent_reads: int = MAX_CONCURRENT_READS,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -242,6 +244,9 @@ def build_handler(
     # Taken before an upload body is read and kept until its file is handed
     # over, so the bodies held at once are bounded, not just the ones in line.
     upload_slots = threading.Semaphore(max_concurrent_uploads)
+    # Every read builds its own reader and cache, so reads at once are bounded
+    # here; a refusal is a 503 the caller may repeat, never a wait.
+    read_slots = threading.Semaphore(max_concurrent_reads)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "kanao-serve"
@@ -422,26 +427,37 @@ def build_handler(
             if not self._require_auth():
                 return
             parsed = urllib.parse.urlparse(self.path)
-            if parsed.path == "/rooms":
-                self._handle_rooms()
-            elif parsed.path == "/context":
-                self._handle_context(parsed)
-            elif parsed.path == "/digest":
-                self._handle_digest(parsed)
-            elif parsed.path == "/stream":
+            if parsed.path == "/stream":
+                # Streams have their own permits; they stay open all day.
                 self._handle_stream(parsed)
-            elif parsed.path == "/notice":
-                self._handle_notice(parsed)
-            elif parsed.path == "/attachments":
-                self._handle_attachments(parsed)
-            elif parsed.path == "/revisions":
-                self._handle_revisions(parsed)
-            elif parsed.path == "/file":
-                self._handle_file(parsed)
-            else:
+                return
+            routes: dict[str, Callable[[], None]] = {
+                "/rooms": self._handle_rooms,
+                "/context": lambda: self._handle_context(parsed),
+                "/digest": lambda: self._handle_digest(parsed),
+                "/notice": lambda: self._handle_notice(parsed),
+                "/attachments": lambda: self._handle_attachments(parsed),
+                "/revisions": lambda: self._handle_revisions(parsed),
+                "/file": lambda: self._handle_file(parsed),
+            }
+            route = routes.get(parsed.path)
+            if route is None:
                 self._reply(
                     404, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, "not found"))
                 )
+                return
+            if not read_slots.acquire(blocking=False):
+                self._reply(
+                    503,
+                    as_envelope(
+                        KanaoError(ErrorCode.BUSY, "too many reads at once; ask again shortly")
+                    ),
+                )
+                return
+            try:
+                route()
+            finally:
+                read_slots.release()
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib name
             if not self._require_auth():

@@ -76,6 +76,11 @@ slot opens. Four keeps the worst wait to a few sends' worth of pacing, which
 fits inside an ordinary client timeout.
 """
 
+MAX_CONCURRENT_READS = 4
+"""Read requests answered at once. Each builds its own reader and snapshot
+cache, so this is what bounds the memory reads hold together; streams are
+limited separately by ``MAX_STREAMS``."""
+
 MAX_CONCURRENT_UPLOADS = 2
 """Upload bodies held at once. A body is kept whole until its file is handed
 over, and the send queue bounds only how many wait for the client."""

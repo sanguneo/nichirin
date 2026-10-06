@@ -351,5 +351,34 @@ class DisconnectNoiseTests(unittest.TestCase):
         self.assertEqual(reported, [("127.0.0.1", 1)])
 
 
+class ReadGateTests(ThreadedServerCase):
+    def test_a_read_beyond_the_slots_is_refused_and_the_slot_comes_back(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_rooms():
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return []
+
+        self.serve(_start_server(StubSender(), rooms_provider=slow_rooms, max_concurrent_reads=1))
+        first: dict = {}
+        worker = threading.Thread(
+            target=lambda: first.update(answer=_request(self.base, "GET", "/rooms"))
+        )
+        worker.start()
+        self.assertTrue(entered.wait(10), "the first read never reached its provider")
+        try:
+            status, body, _ = _request(self.base, "GET", "/rooms")
+            self.assertEqual(status, 503)
+            self.assertEqual(body["error"]["code"], "BUSY")
+            self.assertEqual(_request(self.base, "GET", "/health", token=None)[0], 200)
+        finally:
+            release.set()
+            worker.join(10)
+        self.assertEqual(first["answer"][0], 200)
+        self.assertEqual(_request(self.base, "GET", "/rooms")[0], 200, "the slot was not given back")
+
+
 if __name__ == "__main__":
     unittest.main()
