@@ -740,7 +740,7 @@ def _sixel_escape(
     measured cell meant the picture never appeared there at all. A missing size
     is therefore assumed rather than treated as a refusal.
     """
-    from . import sixel as _sixel
+    from kakaocommon import sixel as _sixel
 
     if blob[:8] != b"\x89PNG\r\n\x1a\n":
         return None

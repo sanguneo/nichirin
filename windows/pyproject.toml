@@ -22,3 +22,4 @@ include = ["kanao*", "kakaoread*"]
 include = ["kanao", "kakaoread", "tests"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
+extraPaths = [".."]

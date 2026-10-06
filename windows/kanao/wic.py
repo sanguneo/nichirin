@@ -138,7 +138,7 @@ def decode(blob: bytes) -> tuple[int, int, bytes]:
     Reads whatever WIC has a decoder for, which covers the JPEG, PNG, GIF and
     (on current Windows) WebP this client stores. Raises :class:`ValueError`
     for bytes it cannot read, which is what the caller treats as "cannot draw
-    this one" -- the same contract as :func:`kanao.tui.sixel.png_to_rgb`.
+    this one" -- the same contract as :func:`kakaocommon.sixel.png_to_rgb`.
     """
     if not blob:
         raise ValueError("no image bytes")

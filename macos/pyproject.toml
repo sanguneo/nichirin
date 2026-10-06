@@ -27,3 +27,4 @@ include = ["kamado*", "kakaoread*"]
 include = ["kamado", "kakaoread", "tests"]
 pythonVersion = "3.9"
 typeCheckingMode = "standard"
+extraPaths = [".."]

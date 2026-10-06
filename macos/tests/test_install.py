@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMON = ROOT.parent / "kakaocommon"
 LAUNCHER = Path("scripts/kamado-cli.py")
 LEGACY_LAUNCHER = Path("scripts/kakaoread.py")
 KOREAN = "\ud55c\uae00"
@@ -87,6 +88,9 @@ class PayloadTests(InstallerTests):
         } | {
             f"scripts/kamado/{source.relative_to(ROOT / 'kamado').as_posix()}"
             for source in (ROOT / "kamado").rglob("*.py")
+        } | {
+            f"scripts/kakaocommon/{source.relative_to(COMMON).as_posix()}"
+            for source in COMMON.rglob("*.py")
         }
         self.assertEqual(installed, expected)
 

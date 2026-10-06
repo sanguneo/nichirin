@@ -42,7 +42,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Optional, Protocol, TextIO
 
-from . import page as pages, wal as wal_format
+from kakaocommon import wal as wal_format
+from . import page as pages
 from .cipher import Geometry
 from .commoncrypto import PreparedKey
 from .errors import ErrorCode, KamadoError

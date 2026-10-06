@@ -730,7 +730,7 @@ def _sixel_escape(
     measured cell meant the picture never appeared there at all. A missing size
     is therefore assumed rather than treated as a refusal.
     """
-    from . import sixel as _sixel
+    from kakaocommon import sixel as _sixel
 
     try:
         # Windows has the decoders already, so the photo is read in whatever

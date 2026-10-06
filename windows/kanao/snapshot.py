@@ -52,7 +52,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Optional, Protocol
 
-from . import PAGE_SIZE, RESERVE_SIZE, page as pages, wal as wal_format
+from kakaocommon import wal as wal_format
+from . import PAGE_SIZE, RESERVE_SIZE, page as pages
 from .cng import PreparedKey
 from .errors import ErrorCode, KanaoError
 

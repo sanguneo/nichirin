@@ -9,7 +9,7 @@ import struct
 import unittest
 import zlib
 
-from kamado.tui.sixel import encode_sixel, png_to_rgb
+from kakaocommon.sixel import encode_sixel, png_to_rgb
 
 
 def chunk(kind: bytes, data: bytes) -> bytes:

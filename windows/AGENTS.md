@@ -53,7 +53,7 @@ the current implementation already satisfies it.
 | --- | --- |
 | `cng.py` | AES-256-CBC through Windows CNG; `PreparedKey` holds one key handle |
 | `page.py` | SQLCipher page ↔ plain SQLite page |
-| `wal.py` | Committed prefix of a write-ahead log |
+| `../kakaocommon/wal.py` | Committed prefix of a write-ahead log (shared with macOS) |
 | `process.py` | Read-only heap scan for SQLCipher `codec_ctx` |
 | `paths.py` | Signed-in profile discovery |
 | `keyring.py` | Pair each key with the database sharing its salt |
@@ -77,7 +77,7 @@ the current implementation already satisfies it.
 | `tui/console.py` | Console mode, UTF-8 code page, alt screen, key input |
 | `tui/digest.py` | Time slicing and extractive slice description |
 | `tui/images.py` | Which protocol draws, how a picture is sized, and the CDN fetch |
-| `tui/sixel.py` | PNG → pixels and pixels → sixel, pure standard library |
+| `../kakaocommon/sixel.py` | PNG → pixels and pixels → sixel, pure standard library (shared with macOS) |
 | `tui/app.py` | Screen state, rendering, key handling |
 | `tui/session.py` | The switches and open tabs kept between launches |
 | `kakaoread/` | The old name, aliased onto `kanao`; no behaviour of its own |

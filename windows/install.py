@@ -45,6 +45,14 @@ def shipped_files(root: Path) -> dict[Path, Path]:
             if "__pycache__" not in source.relative_to(package).parts
         }
     )
+    common = root.parent / "kakaocommon"
+    payload.update(
+        {
+            Path("scripts/kakaocommon") / source.relative_to(common): source
+            for source in sorted(common.rglob("*.py"))
+            if "__pycache__" not in source.relative_to(common).parts
+        }
+    )
     return payload
 
 
