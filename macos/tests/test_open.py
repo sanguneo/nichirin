@@ -452,5 +452,36 @@ class EarlyStopTests(DesktopTests):
         self.assertEqual(desktop.searches, [{"찾는 방"}])
 
 
+class SearchEveryNameTests(unittest.TestCase):
+    """The client's search finds the self-chat only under the account's name (#82)."""
+
+    def test_a_later_name_is_searched_when_the_first_finds_nothing(self) -> None:
+        from unittest.mock import patch
+
+        from kamado import macauto
+
+        typed: list[str] = []
+        listing = {"": ["drawn"], "나와의 채팅": [], "합성 이름": ["다른 방", "합성 이름"]}
+
+        class Field:
+            def attribute(self, name):
+                return ""
+
+            def set_attribute(self, name, value):
+                typed.append(value)
+                return True
+
+        backend = macauto.AXBackend.__new__(macauto.AXBackend)
+        backend._search_restore = None
+        with patch.object(macauto.AXBackend, "_search_field", lambda self: Field()), patch.object(
+            macauto.AXBackend, "_room_rows", lambda self: listing[typed[-1] if typed else ""]
+        ), patch.object(macauto.AXBackend, "_row_title", lambda self, row: row), patch.object(
+            macauto, "_SEARCH_SECONDS", 0
+        ):
+            row = backend.locate_row({"나와의 채팅", "합성 이름"})
+        self.assertEqual(typed, ["나와의 채팅", "합성 이름"])
+        self.assertEqual(row, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

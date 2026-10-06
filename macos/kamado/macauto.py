@@ -1028,20 +1028,27 @@ class AXBackend:
         if self._search_restore is None:
             self._search_restore = str(field.attribute("AXValue") or "")
         drawn = len(self._room_rows())
-        if not field.set_attribute("AXValue", sorted(wanted)[0]):
-            return None
-        rows = self._room_rows()
-        deadline = time.monotonic() + _SEARCH_SECONDS
-        # Paced like every other wait here: each pass is a round trip per row,
-        # so spinning on the list asks the client thousands of times for an
-        # answer it is still computing, and asks hardest exactly when it is
-        # slowest to reply.
-        while len(rows) <= drawn and time.monotonic() < deadline:
-            time.sleep(_POLL_SECONDS)
+        # Every name, not only the first: the self-chat is 나와의 채팅 in the
+        # catalog but listed under the account's own name, and only the
+        # second is something the client's search can find (#82).
+        for attempt, term in enumerate(sorted(wanted)):
+            if not field.set_attribute("AXValue", term):
+                return None
             rows = self._room_rows()
-        for index, row in enumerate(rows[:_SEARCH_ROW_LIMIT]):
-            if self._row_title(row).strip().casefold() in wanted:
-                return index
+            deadline = time.monotonic() + _SEARCH_SECONDS
+            # Paced like every other wait here: each pass is a round trip per
+            # row, so spinning on the list asks the client thousands of times
+            # for an answer it is still computing. The first search waits for
+            # the longer list; a later one for the list to change at all.
+            while time.monotonic() < deadline and (
+                len(rows) <= drawn if attempt == 0 else len(rows) == drawn
+            ):
+                time.sleep(_POLL_SECONDS)
+                rows = self._room_rows()
+            for index, row in enumerate(rows[:_SEARCH_ROW_LIMIT]):
+                if self._row_title(row).strip().casefold() in wanted:
+                    return index
+            drawn = len(rows)
         return None
 
     def clear_row_filter(self) -> None:
