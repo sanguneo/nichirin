@@ -26,6 +26,11 @@ answers in JSON.*
 
 </div>
 
+> [!IMPORTANT]
+> **업그레이드 안내 (2026-10-06): saya 연결 방식이 바뀌었습니다.** saya 쪽에 코어 주소·토큰을 적지 않고, `serve` 가 saya 에 스스로 등록합니다(kanao 0.31.0 / kamado 0.29.0부터, 아래 「saya에서 보기」).
+> 기존 배포는 [업그레이드 가이드](https://github.com/sanguneo/saya/blob/main/docs/upgrade-registration.md)를 따라 옮기세요. 에이전트에게 그 문서를 주고 "이대로 옮겨 줘"라고
+> 하면 됩니다.
+
 ## 빠른 시작
 
 저장소 루트에서 `nichirin`으로 실행하면 이 컴퓨터에 맞는 빌드가 실행됩니다. Mac에서는
@@ -105,6 +110,23 @@ Mac에서는 `python3`를 씁니다. 빌드 이름으로 직접 불러도 됩니
 cd windows && python -m unittest discover -t . -s tests    # Windows에서
 cd macos && python3 -m unittest discover -t . -s tests     # Mac에서
 ```
+
+## saya에서 보기
+
+웹 클라이언트 [saya](https://github.com/sanguneo/saya)에는 `serve`가 스스로 등록합니다(kanao 0.31.0 /
+kamado 0.29.0부터, saya `docs/register.md`). **2026-10-06 이전처럼 saya의 env·Caddyfile에 코어 주소와
+`SAYA_CORE_TOKEN`을 적지 않습니다.** `serve`를 띄울 때 세 변수를 줍니다.
+
+```bash
+export SAYA_REGISTER_URL=https://<saya 기계>.<tailnet>.ts.net:8798
+export SAYA_REGISTER_TOKEN=<saya의 SAYA_REGISTER_TOKEN>
+export SAYA_ADVERTISE_URL=https://<이 기계>.<tailnet>.ts.net:8765   # tailscale serve로 연 주소
+python -m nichirin serve                                            # 토큰은 KANAO_TOKEN / KAMADO_TOKEN 그대로
+```
+
+`registered kanao with saya as …`(Mac은 `kamado`) 한 줄이 남으면 붙은 것입니다. PC와 Mac을 오가도
+saya는 나중에 등록한 코어를 씁니다. 한 번에 하나만 띄우고, Ctrl-C로 끝내면 등록이 바로 지워집니다.
+등록 실패는 서빙을 막지 않습니다.
 
 ## 기여
 
