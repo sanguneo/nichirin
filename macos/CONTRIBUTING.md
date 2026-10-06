@@ -1,7 +1,7 @@
 # 기여 규칙
 
-`kamado-cli`는 macOS용이고 `../kakaoread`의 `kanao-cli`는 Windows용
-형제 구현이다. 공통 계약을 관리하되 DB 구조·키·자동화 방식까지 동일하다고
+`kamado-cli`는 macOS용이고 같은 저장소 `../windows/`의 `kanao-cli`는 Windows용
+형제 구현이다. 한 플랫폼만 쓰는 기여 흐름은 루트 [CONTRIBUTING.md](../CONTRIBUTING.md)에 있다. 공통 계약을 관리하되 DB 구조·키·자동화 방식까지 동일하다고
 가정하지 않는다. 작업 전 [AGENTS.md](AGENTS.md)를 읽고,
 현재 검토와 우선순위는 [improvement.md](improvement.md)를 참고한다.
 

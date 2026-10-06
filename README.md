@@ -16,7 +16,7 @@
 ![MIT](https://img.shields.io/badge/license-MIT-blue)
 
 [빠른 시작](#빠른-시작) · [두 빌드](#두-빌드) · [무엇을 하나](#무엇을-하나) ·
-[저장소 구조](#저장소-구조) · [예전 저장소에서 왔다면](#예전-저장소에서-왔다면) · [이름](#이름)
+[저장소 구조](#저장소-구조) · [기여](#기여) · [예전 저장소에서 왔다면](#예전-저장소에서-왔다면) · [이름](#이름)
 
 <br>
 
@@ -105,6 +105,12 @@ Mac에서는 `python3`를 씁니다. 빌드 이름으로 직접 불러도 됩니
 cd windows && python -m unittest discover -t . -s tests    # Windows에서
 cd macos && python3 -m unittest discover -t . -s tests     # Mac에서
 ```
+
+## 기여
+
+Mac만 있으면 Mac 쪽을, Windows만 있으면 Windows 쪽을 작업하고 테스트하면 됩니다. 다른 플랫폼에도 닿는
+변경인데 그쪽을 테스트할 수 없다면 짧은 확인 요청 이슈를 남겨 주세요(강제는 아닙니다).
+[CONTRIBUTING.md](CONTRIBUTING.md)에 흐름이 있습니다.
 
 ## 예전 저장소에서 왔다면
 
