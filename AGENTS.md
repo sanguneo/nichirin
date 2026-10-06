@@ -86,3 +86,10 @@ build's directory with no visible difference needs no issue.
   `kamado-cli`, and their launcher paths.
 - Versions and changelogs stay per platform (`windows/CHANGELOG.md`,
   `macos/CHANGELOG.md`).
+- **One GitHub release per shipment, not one per build.** Tag the merge
+  commit `nichirin-YYYY.MM.DD` (`.2`, `.3` for a later one the same day),
+  title it with each build's version that ships (`nichirin 2026.10.06 — kanao
+  0.31.0 · kamado 0.29.0`), and put each changelog's section under its own
+  heading. `kanao-vX` / `kamado-vY` stay as plain tags on the same commit.
+  Two releases made GitHub mark whichever was published last as Latest, so
+  one platform's users were shown the other build.
