@@ -151,6 +151,12 @@ class ChatState:
     """Show the body from its first line once, when its height is known."""
     outbox: Optional[str] = None
     """Text handed to the client and not yet seen coming back."""
+    recovered: Optional[str] = None
+    """Text whose send may or may not have happened, held out of the box.
+
+    Put back into the composer it would be one Enter from going out twice,
+    so it waits here until ``/restore`` asks for it.
+    """
     outbox_at: float = 0.0
     """When that text was handed over, so waiting too long can be admitted."""
     delivered: bool = False
@@ -249,7 +255,8 @@ class App:
         was read here; the room list subtracts this instead, the way a tab
         counts only what arrived behind it.
         """
-        self.pending_send: Optional[str] = None
+        self.pending_send: Optional[tuple[int, str]] = None
+        """The room a send was written in, and its text, held for one frame."""
         self.pending_unlock: Optional[tuple[Room, bool]] = None
         """A room to open in the client, held for one frame like a send."""
         self._clock = time.monotonic
@@ -2220,7 +2227,7 @@ class App:
             return
         # Held for one frame: opening a window takes over a second, and doing
         # it inside the keystroke left the screen on the frame before it.
-        self.pending_send = written
+        self.pending_send = (chat.room.id, written)
         chat.notice = "보내는 중…"
 
     def flush_pending(self) -> None:
@@ -2229,12 +2236,46 @@ class App:
             room, beside = self.pending_unlock
             self.pending_unlock = None
             self._unlock(room, beside)
-        text = self.pending_send
+        pending = self.pending_send
         self.pending_send = None
-        if text is None or self.chat is None:
+        if pending is None:
             return
-        self.chat.notice = ""
+        room_id, text = pending
+        chat = self.chat
+        if chat is None or chat.room.id != room_id:
+            # The room in front is not the one this was written in; sending
+            # it there would put words in the wrong conversation.
+            self._hold_back(room_id, text, "보내기 전에 대화방이 바뀌어 보내지 않았습니다")
+            return
+        chat.notice = ""
         self.send_message(text)
+
+    def _hold_back(self, room_id: int, text: str, why: str) -> None:
+        """Give unsent text back to the room it was written in."""
+        for chat in self.chats:
+            if chat.room.id == room_id:
+                self._recover(chat, text, uncertain=False, why=why)
+                return
+        if not self.drafts.get(room_id):
+            self.drafts[room_id] = text
+        self.status = why
+
+    def _recover(self, chat: ChatState, text: str, *, uncertain: bool, why: str) -> None:
+        """Keep the text of a send that did not go through, or may not have.
+
+        A refusal sent nothing, so the text goes back into an empty box. A
+        send whose outcome is unknown is held out of the box instead, where
+        Enter cannot send it a second time, and so is anything that would
+        otherwise overwrite something written since.
+        """
+        if not uncertain and not chat.draft:
+            chat.draft = text
+            chat.caret = len(text)
+            chat.notice = f"{why} (글은 입력창에 되돌려 두었습니다)"
+            return
+        chat.recovered = text
+        unknown = "보냈는지 알 수 없습니다. " if uncertain else ""
+        chat.notice = f"{why} ({unknown}/restore 로 글을 입력창에 가져올 수 있습니다)"
 
     def _require_sender(self) -> "MessageSender":
         if self._sender is None:
@@ -2296,10 +2337,17 @@ class App:
                 search_row=self.reader.search_position(chat.room.id, rooms=self.rooms),
             )
         except KanaoError as error:
-            chat.notice = f"전송 실패: {error.message}"
+            # SEND_FAILED is the one code whose message may already be in the
+            # client; every other refusal stopped before anything was typed.
+            self._recover(
+                chat,
+                text,
+                uncertain=error.code is ErrorCode.SEND_FAILED,
+                why=f"전송 실패: {error.message}",
+            )
             return
         except OSError as error:
-            chat.notice = f"전송 실패: {error}"
+            self._recover(chat, text, uncertain=True, why=f"전송 실패: {error}")
             return
         # Marked beside the prompt rather than announced: the composer is
         # where the message was, so that is where its fate belongs.
@@ -2315,6 +2363,17 @@ class App:
         if not parts:
             return
         name, arguments = parts[0].lower(), parts[1:]
+
+        if name == "restore":
+            if chat.recovered is None:
+                chat.notice = "가져올 글이 없습니다"
+                return
+            # The box was emptied by the Enter that ran this command.
+            chat.draft = chat.recovered
+            chat.caret = len(chat.draft)
+            chat.recovered = None
+            chat.notice = ""
+            return
 
         if name in ("sum", "digest"):
             if not arguments:
