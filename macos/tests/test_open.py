@@ -432,6 +432,24 @@ class EarlyStopTests(DesktopTests):
         self.assertEqual(list(outward(None, 3)), [0, 1, 2])
         self.assertEqual(list(outward(99, 3)), [0, 1, 2])
 
+    def test_a_list_that_drew_no_rows_has_no_row_to_read(self) -> None:
+        # With the friends tab in front the chat list is not in the tree at
+        # all, and reading row 0 of nothing raised IndexError: the send said
+        # READ_FAILED "list index out of range" instead of naming the window.
+        from kamado.macauto import outward
+
+        self.assertEqual(list(outward(None, 0)), [])
+        self.assertEqual(list(outward(5, 0)), [])
+
+    def test_an_empty_list_is_refused_as_a_missing_window(self) -> None:
+        desktop = FinderDesktop([])
+        with self.assertRaises(KamadoError) as caught:
+            RoomOpener(desktop, memory=self.memory, sleep=desktop.sleep, now=desktop.now).open(
+                "나와의 채팅", hint=3
+            )
+        self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
+        self.assertEqual(desktop.clicks, [])
+
     def test_reading_stops_at_the_room(self) -> None:
         desktop = FinderDesktop([f"방 {index}" for index in range(50)])
         window = RoomOpener(desktop, memory=self.memory, sleep=desktop.sleep, now=desktop.now).open(
