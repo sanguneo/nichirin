@@ -1,0 +1,24 @@
+[project]
+name = "kanao-cli"
+version = "0.29.1"
+description = "Zero-dependency KakaoTalk reader, TUI, and text sender for Windows and AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.scripts]
+kanao = "kanao.cli:main"
+kakaoread = "kakaoread.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kanao*", "kakaoread*"]
+
+[tool.pyright]
+include = ["kanao", "kakaoread", "tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"

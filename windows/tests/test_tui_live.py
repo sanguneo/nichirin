@@ -1,0 +1,566 @@
+"""Live-refresh tests.
+
+The behaviour being protected is not just "new messages appear" but "new
+messages appear without stealing the viewport". Someone reading back through
+history while a group chat is busy must not be dragged to the bottom every
+time somebody types.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from kanao import paths
+from kanao.model import ERASED_PLACEHOLDER
+from tests.platform import require_windows_console
+
+require_windows_console()
+
+from kanao.tui.app import App
+from kanao.tui.console import Key
+from kanao.tui.layout import strip_ansi
+from kanao.tui.theme import Theme
+
+from tests.fixtures import DIRECT_ROOM, GROUP_ROOM, OWN_ID, PEER_ID, build_reader_on_disk, touch_log
+
+WIDTH = 80
+
+
+class LiveTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.reader, self.cache = build_reader_on_disk(self.root)
+        self.addCleanup(self.reader.close)
+        self.app = App(self.reader, theme=Theme(truecolor=True, enabled=False))
+        self.app.load_rooms()
+        room = next(room for room in self.app.rooms if room.id == DIRECT_ROOM)
+        self.app.open_room(room)
+
+    def chat(self):
+        """The open conversation, failing the test rather than the attribute.
+
+        `App.chat` is a property over the pane list and is None when nothing
+        is open, which is a state these tests never mean to be in — saying so
+        here turns "no conversation is open" into the failure it is, instead
+        of an AttributeError several lines later.
+        """
+        chat = self.app.chat
+        if chat is None:
+            self.fail("no conversation is open")
+        return chat
+
+    def arrive(self, log_id: int, text: str, room_id: int = DIRECT_ROOM, author: int = PEER_ID) -> None:
+        connection = self.cache.databases[paths.chat_log_name(room_id)]
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (?, ?, 1, ?, NULL, ?, 0)",
+            (log_id, author, text, 1_800_000_000 + log_id),
+        )
+        connection.commit()
+        touch_log(self.root, room_id, b"log" + bytes(log_id % 251))
+
+    def body(self) -> str:
+        """The whole frame, for asserting that something reached the screen."""
+        return "\n".join(strip_ansi(line) for line in self.app.render(WIDTH, 24))
+
+    def viewport(self) -> str:
+        """Only the scrolling region.
+
+        The status line and footer are *expected* to change when messages
+        arrive — that is how the reader learns something is waiting — so a
+        viewport-stability assertion must not include them. The composer sits
+        in the same excluded tail: what is being typed is not the transcript.
+        """
+        frame = self.app.render(WIDTH, 24)
+        return "\n".join(strip_ansi(line) for line in frame[3:-5])
+
+
+class ArrivalTests(LiveTests):
+    def test_an_idle_poll_reports_nothing_to_redraw(self) -> None:
+        self.assertFalse(self.app.refresh(WIDTH))
+
+    def test_a_new_message_appears_without_reopening_the_room(self) -> None:
+        self.arrive(5200, "LIVE_SENTINEL")
+        self.assertNotIn("LIVE_SENTINEL", self.body())
+
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertIn("LIVE_SENTINEL", self.body())
+
+    def test_the_same_message_is_never_appended_twice(self) -> None:
+        self.arrive(5201, "ONCE_ONLY")
+        self.app.refresh(WIDTH)
+        before = len(self.chat().messages)
+
+        touch_log(self.root, DIRECT_ROOM, b"touched-again")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(len(self.chat().messages), before)
+        self.assertEqual(self.body().count("ONCE_ONLY"), 1)
+
+    def test_several_arrivals_all_show_up(self) -> None:
+        for index in range(3):
+            self.arrive(5300 + index, f"BURST{index}")
+        self.app.refresh(WIDTH)
+        body = self.body()
+        for index in range(3):
+            self.assertIn(f"BURST{index}", body)
+
+    def test_a_new_speaker_is_given_a_tint_on_arrival(self) -> None:
+        self.arrive(5400, "새 사람", author=999_111)
+        self.app.refresh(WIDTH)
+        newcomer = self.chat().messages[-1].sender
+        self.assertIsNotNone(self.app.palette.name_colour(newcomer))
+
+
+class ViewportTests(LiveTests):
+    def test_a_reader_at_the_bottom_follows_the_conversation(self) -> None:
+        self.assertEqual(self.chat().offset, 0)
+        self.arrive(5500, "AT_BOTTOM")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.chat().offset, 0)
+        self.assertIn("AT_BOTTOM", self.body())
+        self.assertEqual(self.chat().unseen, 0)
+
+    def test_a_reader_scrolled_up_keeps_seeing_the_same_lines(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+
+        self.chat().offset = 8
+        before = self.viewport()
+
+        self.arrive(5700, "SHOULD_NOT_JUMP")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.viewport(), before, "the viewport moved under the reader")
+        self.assertNotIn("SHOULD_NOT_JUMP", self.viewport())
+
+    def test_a_reader_scrolled_up_is_told_how_much_is_waiting(self) -> None:
+        self.chat().offset = 5
+        self.arrive(5800, "WAITING_ONE")
+        self.arrive(5801, "WAITING_TWO")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.chat().unseen, 2)
+        self.assertIn("새 메시지 2개", self.body())
+        self.assertNotIn("WAITING_TWO", self.viewport(), "arrivals must stay below the fold")
+
+    def test_returning_to_the_bottom_clears_the_backlog_marker(self) -> None:
+        self.chat().offset = 5
+        self.arrive(5900, "PENDING")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.chat().unseen, 1)
+
+        self.app.handle(Key.END, "")
+
+        self.assertEqual(self.chat().offset, 0)
+        self.assertEqual(self.chat().unseen, 0)
+        self.assertIn("PENDING", self.body())
+
+
+class SentFromTheClientTests(LiveTests):
+    """What the reader says in the client brings the viewport down (issue #15).
+
+    Holding the place is right for somebody else's words. For the reader's
+    own it hid what they had just sent and every answer after it, so the
+    room looked frozen. A send from this screen already went to the bottom.
+    """
+
+    def scrolled_up(self) -> None:
+        for index in range(30):
+            self.arrive(6000 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+
+    def test_my_message_from_the_client_brings_the_viewport_down(self) -> None:
+        self.scrolled_up()
+        self.arrive(6100, "SENT_FROM_THE_CLIENT", author=OWN_ID)
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.chat().offset, 0)
+        self.assertEqual(self.chat().unseen, 0)
+        self.assertIn("SENT_FROM_THE_CLIENT", self.viewport())
+
+    def test_the_answer_after_it_is_on_screen_too(self) -> None:
+        self.scrolled_up()
+        self.arrive(6100, "SENT_FROM_THE_CLIENT", author=OWN_ID)
+        self.app.refresh(WIDTH)
+        self.arrive(6101, "ANSWER_AFTER_IT")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.chat().offset, 0)
+        self.assertEqual(self.chat().unseen, 0)
+        self.assertIn("ANSWER_AFTER_IT", self.viewport())
+
+    def test_somebody_else_alone_still_leaves_the_place_held(self) -> None:
+        self.scrolled_up()
+        before = self.viewport()
+        self.arrive(6100, "SOMEBODY_ELSE")
+        self.app.refresh(WIDTH)
+
+        self.assertGreater(self.chat().offset, 8)
+        self.assertEqual(self.chat().unseen, 1)
+        self.assertEqual(self.viewport(), before)
+
+    def test_a_tab_behind_counts_my_message_and_waits_at_its_bottom(self) -> None:
+        self.scrolled_up()
+        behind = self.chat()
+        group = next(room for room in self.app.rooms if room.id == GROUP_ROOM)
+        self.app.open_room(group, beside=True)
+        self.arrive(6100, "SENT_WHILE_BEHIND", author=OWN_ID)
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(behind.offset, 0)
+        self.assertEqual(behind.unseen, 1)
+
+
+class BackfillBelowCursorTests(LiveTests):
+    """Only gaps inside the loaded range are late arrivals, not older history."""
+
+    def advance(self) -> None:
+        self.arrive(5200, "CURSOR_CEILING")
+        self.app.refresh(WIDTH)
+
+    def test_a_late_row_inside_the_loaded_range_appears_in_order(self) -> None:
+        self.advance()
+        self.arrive(5100, "BACKFILLED")
+
+        self.assertTrue(self.app.refresh(WIDTH))
+
+        ids = [message.id for message in self.chat().messages]
+        self.assertIn(5100, ids)
+        self.assertEqual(ids, sorted(ids))
+        self.assertIn("BACKFILLED", self.body())
+        self.assertIn(5100, self.chat().versions)
+
+    def test_a_late_row_is_not_inserted_or_counted_twice(self) -> None:
+        self.advance()
+        self.arrive(5100, "BACKFILLED_ONCE")
+        self.app.refresh(WIDTH)
+        before = self.chat().arrived
+        touch_log(self.root, DIRECT_ROOM, b"another log change")
+
+        self.assertFalse(self.app.refresh(WIDTH))
+
+        self.assertEqual(self.chat().arrived, before)
+        self.assertEqual([m.id for m in self.chat().messages].count(5100), 1)
+
+    def test_a_late_row_behind_another_tab_counts_as_unseen(self) -> None:
+        self.advance()
+        chat = self.chat()
+        self.app.open_room(next(r for r in self.app.rooms if r.id == GROUP_ROOM), beside=True)
+        self.arrive(5100, "BEHIND_OTHER_TAB")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(chat.unseen, 1)
+        self.assertEqual(chat.arrived, 2)
+        self.assertIn(5100, [m.id for m in chat.messages])
+
+    def test_a_late_row_below_the_viewport_keeps_the_visible_lines(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index * 2, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        before = self.viewport()
+        self.arrive(5657, "BACKFILL_BELOW_FOLD")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.viewport(), before)
+        self.assertEqual(self.chat().unseen, 1)
+        self.assertIn(5657, [m.id for m in self.chat().messages])
+
+    def test_log_changes_do_not_load_history_below_the_window(self) -> None:
+        self.app.chat = None
+        with patch("kanao.tui.app.HISTORY_WINDOW", 2):
+            self.app.open_room(next(r for r in self.app.rooms if r.id == DIRECT_ROOM))
+        self.advance()
+        self.arrive(4999, "UNLOADED_HISTORY")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual([m.id for m in self.chat().messages], [5001, 5003, 5200])
+
+    def test_an_explicit_older_page_extends_the_backfill_range(self) -> None:
+        self.arrive(4990, "OLDER_PAGE")
+        self.app.chat = None
+        with patch("kanao.tui.app.HISTORY_WINDOW", 2):
+            self.app.open_room(next(r for r in self.app.rooms if r.id == DIRECT_ROOM))
+        self.app.load_older()
+        self.advance()
+        self.arrive(4995, "AFTER_OLDER_PAGE")
+
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(
+            [m.id for m in self.chat().messages], [4990, 4995, 5000, 5001, 5003, 5200]
+        )
+
+    def test_a_late_row_is_added_to_an_open_digest(self) -> None:
+        self.advance()
+        self.app._run_command("/sum 30m")
+        self.arrive(5100, "BACKFILLED_DIGEST")
+
+        self.app.refresh(WIDTH)
+
+        self.assertIn(
+            5100, [m.id for piece in self.chat().slices for m in piece.messages]
+        )
+
+
+class RoomListTests(LiveTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self.app.chat = None
+
+    def test_an_unchanged_catalog_does_not_redraw(self) -> None:
+        self.assertFalse(self.app.refresh(WIDTH))
+
+    def test_the_highlighted_room_stays_highlighted_across_a_refresh(self) -> None:
+        self.app.selected = 1
+        chosen = self.app.rooms[1].id
+
+        catalog = self.cache.databases[paths.CATALOG_DATABASE]
+        catalog.execute("UPDATE chatRoomList SET newMessageCount = 9 WHERE chatId = ?", (GROUP_ROOM,))
+        catalog.commit()
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.app.rooms[self.app.selected].id, chosen)
+
+    def test_updated_unread_counts_reach_the_screen(self) -> None:
+        catalog = self.cache.databases[paths.CATALOG_DATABASE]
+        catalog.execute("UPDATE chatRoomList SET newMessageCount = 7 WHERE chatId = ?", (DIRECT_ROOM,))
+        catalog.commit()
+
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertIn("7 unread", self.body())
+
+
+class SeenUnreadTests(LiveTests):
+    """The room list counts what this screen has not shown, like a tab's +N.
+
+    Reading here never lowers the client's own count, so a room read to its
+    last line used to come back to the list still saying "5 unread".
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.app.chat = None
+        self.set_unread(5)
+        self.app.refresh(WIDTH)
+
+    def set_unread(self, count: int) -> None:
+        catalog = self.cache.databases[paths.CATALOG_DATABASE]
+        catalog.execute(
+            "UPDATE chatRoomList SET newMessageCount = ? WHERE chatId = ?", (count, DIRECT_ROOM)
+        )
+        catalog.commit()
+
+    def unread(self) -> int:
+        room = next(room for room in self.app.rooms if room.id == DIRECT_ROOM)
+        return self.app._effective_unread(room)
+
+    def view_and_close(self) -> None:
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.app.handle(Key.ESCAPE, "")
+        self.assertIsNone(self.app.chat)
+
+    def test_a_room_seen_to_its_newest_line_is_not_unread_any_more(self) -> None:
+        self.assertIn("5 unread", self.body())
+        self.view_and_close()
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 0)
+        self.assertNotIn("5 unread", self.body())
+
+    def test_what_arrives_after_it_was_seen_is_counted(self) -> None:
+        self.view_and_close()
+        self.set_unread(7)
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 2)
+        self.assertIn("2 unread", self.body())
+
+    def test_what_the_tab_showed_is_not_counted_again(self) -> None:
+        """The catalog is not re-read while a tab is open, so the tab keeps count."""
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.arrive(5200, "SHOWN_IN_THE_TAB")
+        self.app.refresh(WIDTH)
+        self.set_unread(6)
+        self.app.handle(Key.ESCAPE, "")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 0)
+
+    def test_what_the_reader_never_scrolled_down_to_stays_unread(self) -> None:
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.chat().offset = 5
+        self.arrive(5200, "BELOW_THE_FOLD")
+        self.app.refresh(WIDTH)
+        self.set_unread(6)
+        self.app.handle(Key.ESCAPE, "")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 1)
+
+    def test_a_room_read_in_the_client_follows_its_count_again(self) -> None:
+        self.view_and_close()
+        self.set_unread(0)
+        self.app.refresh(WIDTH)
+        self.set_unread(2)
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 2, "what arrived after the client read it")
+
+    def test_an_arrival_behind_the_room_list_is_counted_there(self) -> None:
+        self.app.open_room(next(room for room in self.app.rooms if room.id == DIRECT_ROOM))
+        self.app._run_command("/open")
+        self.assertTrue(self.app.adding)
+        self.arrive(5200, "BEHIND_THE_LIST")
+        self.app.refresh(WIDTH)
+        self.assertEqual(self.unread(), 1)
+        self.assertIn("1 unread", self.body())
+        self.app.handle(Key.ESCAPE, "")
+        self.assertEqual(self.chat().unseen, 0, "back in front at its newest line")
+
+
+class DigestTests(LiveTests):
+    def test_arrivals_do_not_disturb_an_open_digest(self) -> None:
+        for index in range(6):
+            self.arrive(6000 + index, f"주제 배포 회의 {index}")
+        self.app.refresh(WIDTH)
+        self.app._run_command("/sum 30m")
+        before = self.viewport()
+
+        self.arrive(6100, "AFTER_DIGEST")
+        self.app.refresh(WIDTH)
+
+        self.assertEqual(self.viewport(), before, "the digest was rebuilt underneath the reader")
+        self.assertIn("AFTER_DIGEST", [m.text for m in self.chat().messages])
+
+
+class ChangedInPlaceTests(LiveTests):
+    """A message already on screen can change without a new one arriving.
+
+    Deleted for everyone, it keeps its id and has its text replaced, and the
+    watcher only asks for ids above the newest it has seen - so the text
+    stayed on screen, in the digest and in the export, until the room was
+    opened again.
+    """
+
+    def change(self, sql: str, parameters: tuple, room_id: int = DIRECT_ROOM) -> None:
+        connection = self.cache.databases[paths.chat_log_name(room_id)]
+        connection.execute(sql, parameters)
+        connection.commit()
+        touch_log(self.root, room_id, b"changed " + sql.encode()[:40] + repr(parameters).encode())
+
+    def erase(self, log_id: int) -> None:
+        """What the client does: the row stays, flagged, its text replaced."""
+        self.change(
+            "UPDATE chatLogs SET type = type | 16384, message = 'c2VjcmV0' WHERE logId = ?",
+            (log_id,),
+        )
+
+    def test_a_message_deleted_for_everyone_is_replaced_by_the_placeholder(self) -> None:
+        self.assertIn("third", self.body())
+        self.erase(5003)
+        self.assertTrue(self.app.refresh(WIDTH))
+        body = self.body()
+        self.assertNotIn("third", body)
+        self.assertIn(ERASED_PLACEHOLDER, body)
+        self.assertNotIn("third", [message.text for message in self.chat().messages])
+
+    def test_the_feed_a_deletion_writes_does_not_show_beside_it(self) -> None:
+        self.erase(5003)
+        connection = self.cache.databases[paths.chat_log_name(DIRECT_ROOM)]
+        connection.execute(
+            "INSERT INTO chatLogs (logId, authorId, type, message, attachement, sendAt, deleted) "
+            "VALUES (5004, ?, 0, ?, NULL, 1800005004, 0)",
+            (PEER_ID, json.dumps({"feedType": 14, "logId": 5003, "hidden": True})),
+        )
+        connection.commit()
+        touch_log(self.root, DIRECT_ROOM, b"feed fourteen")
+        self.app.refresh(WIDTH)
+        body = self.body()
+        self.assertNotIn("third", body)
+        self.assertNotIn("feed 14", body)
+        self.assertEqual(body.count(ERASED_PLACEHOLDER), 1)
+
+    def test_a_row_deleted_outright_leaves_the_conversation(self) -> None:
+        self.change("UPDATE chatLogs SET deleted = 1 WHERE logId = ?", (5000,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertNotIn(5000, [message.id for message in self.chat().messages])
+        self.assertNotIn("first", self.body())
+
+    def test_text_replaced_at_the_same_id_is_shown_as_it_is_now(self) -> None:
+        self.change("UPDATE chatLogs SET message = 'REWRITTEN' WHERE logId = ?", (5000,))
+        self.app.refresh(WIDTH)
+        self.assertIn("REWRITTEN", self.body())
+        self.assertNotIn("first", self.body())
+
+    def test_a_log_that_moved_without_changing_a_held_row_redraws_nothing(self) -> None:
+        self.body()
+        rendered = self.chat().rendered
+        touch_log(self.root, DIRECT_ROOM, b"moved, nothing changed")
+        self.assertFalse(self.app.refresh(WIDTH))
+        self.body()
+        self.assertEqual(self.chat().revision, 0)
+        self.assertIs(self.chat().rendered, rendered, "the transcript was rebuilt")
+
+    def test_a_deletion_below_the_viewport_does_not_move_what_is_being_read(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        before = self.viewport()
+
+        self.change("UPDATE chatLogs SET deleted = 1 WHERE logId = ?", (5629,))
+        self.assertTrue(self.app.refresh(WIDTH))
+        self.assertEqual(self.viewport(), before, "the viewport moved under the reader")
+
+    def test_a_deletion_inside_the_viewport_leaves_the_rest_in_place(self) -> None:
+        for index in range(30):
+            self.arrive(5600 + index, f"HISTORY{index}")
+        self.app.refresh(WIDTH)
+        self.chat().offset = 8
+        self.assertIn("HISTORY20", self.viewport())
+        self.erase(5620)
+        self.app.refresh(WIDTH)
+        viewport = self.viewport()
+        self.assertNotIn("HISTORY20", viewport)
+        self.assertIn("HISTORY19", viewport)
+        self.assertIn("HISTORY21", viewport)
+
+    def test_a_digest_is_cut_again_without_the_deleted_line(self) -> None:
+        for index in range(6):
+            self.arrive(6000 + index, f"주제 배포 회의 {index}")
+        self.app.refresh(WIDTH)
+        self.app._run_command("/sum 30m")
+
+        def said() -> list[str]:
+            return [
+                message.text for piece in self.chat().slices for message in piece.messages
+            ]
+
+        self.assertIn("주제 배포 회의 5", said())
+        self.assertIn("6 messages", self.viewport())
+
+        self.erase(6005)
+        self.app.refresh(WIDTH)
+        self.assertNotIn("주제 배포 회의 5", said())
+        self.assertIn("5 messages", self.viewport())
+
+    def test_an_older_page_keeps_its_deleted_messages_as_placeholders(self) -> None:
+        self.erase(5000)
+        chat = self.chat()
+        chat.messages = [message for message in chat.messages if message.id != 5000]
+        self.app.load_older()
+        self.assertIn(5000, [message.id for message in chat.messages])
+        self.assertTrue(next(m for m in chat.messages if m.id == 5000).erased)
+
+
+if __name__ == "__main__":
+    unittest.main()
