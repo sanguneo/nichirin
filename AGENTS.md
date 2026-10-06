@@ -1,4 +1,4 @@
-# AGENTS.md — working on this repository
+# AGENTS.md — working on nichirin
 
 Two builds of one KakaoTalk tool, merged from `sanguneo/kanao-cli` (Windows)
 and `sanguneo/kamado-cli` (macOS) with both histories kept. Each platform
