@@ -40,6 +40,12 @@ from .snapshot import Fingerprint
 DEFAULT_INTERVAL_SECONDS = 1.0
 _CATCH_UP_LIMIT = 500
 _ROOM_FAILURES = (KamadoError, OSError, sqlite3.Error)
+_BASELINE_RETRY_POLLS = 30
+"""Unchanged polls between two attempts at a missing starting point.
+
+An idle account costs one stat per poll; asking every poll again would make
+a lasting failure cost a read every second instead.
+"""
 
 
 class Watcher:
@@ -60,6 +66,9 @@ class Watcher:
         self.interval = interval
         self._print: Optional[Fingerprint] = None
         self._seen: dict[int, int] = {}
+        self._unbased = False
+        """Whether some room, or the room list, could not be given a starting point."""
+        self._idle_polls = 0
         self._primed = False
         self.moved: list[int] = []
         """Rooms read in the last poll because the database had moved.
@@ -109,12 +118,15 @@ class Watcher:
 
     def watched_rooms(self) -> list[int]:
         """Return the room ids being followed, defaulting to every room."""
-        if self._requested is not None:
-            return list(self._requested)
         try:
-            return [room.id for room in self._reader.rooms()]
+            return self._list_rooms()
         except _ROOM_FAILURES:
             return []
+
+    def _list_rooms(self) -> list[int]:
+        if self._requested is not None:
+            return list(self._requested)
+        return [room.id for room in self._reader.rooms()]
 
     def _database(self):
         return self._reader.database
@@ -141,12 +153,31 @@ class Watcher:
     def prime(self) -> None:
         """Record the current state so existing history is not replayed as new."""
         self._print = Fingerprint.of(self._database())
-        for room_id in self.watched_rooms():
+        self._baseline_missing()
+        self._primed = True
+
+    def _baseline_missing(self) -> None:
+        """Give every watched room without one a starting point, if it can be read.
+
+        A failure is remembered rather than swallowed: the fingerprint above
+        stands for this state of the database, so an idle account would
+        otherwise never ask again, and the first message after the failure
+        cleared would be recorded as where the room starts instead of shown.
+        """
+        self._unbased = False
+        self._idle_polls = 0
+        try:
+            rooms = self._list_rooms()
+        except _ROOM_FAILURES:
+            self._unbased = True
+            return
+        for room_id in rooms:
+            if room_id in self._seen:
+                continue
             try:
                 self._seen[room_id] = self._position(room_id)
             except _ROOM_FAILURES:
-                continue
-        self._primed = True
+                self._unbased = True
 
     def poll(self) -> list[Message]:
         """Run exactly one detection pass and return whatever is new.
@@ -161,6 +192,10 @@ class Watcher:
 
         current = Fingerprint.of(self._database())
         if self._print == current:
+            if self._unbased:
+                self._idle_polls += 1
+                if self._idle_polls >= _BASELINE_RETRY_POLLS:
+                    self._baseline_missing()
             return []
 
         per_room: list[list[Message]] = []
