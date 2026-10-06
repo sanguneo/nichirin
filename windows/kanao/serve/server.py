@@ -103,7 +103,11 @@ def run(
         # that was accepted and still waiting its turn without ever answering
         # it. Queueing sends instead of refusing them is what creates that
         # state; closing the queue is what keeps it from being a silent drop.
+        handler._stopping.set()  # type: ignore[attr-defined]
         handler._send_queue.close()  # type: ignore[attr-defined]
+        # A write already handed to the client finishes and answers; one still
+        # waiting is refused. Bounded, so Ctrl-C is never ignored for long.
+        handler._drain(request_timeout)  # type: ignore[attr-defined]
         return 130
     finally:
         server.server_close()

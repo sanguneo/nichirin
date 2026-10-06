@@ -153,7 +153,7 @@ class PendingSendTests(unittest.TestCase):
         self.type("안녕")
         self.app.handle(Key.ENTER, "")
         self.assertEqual(self.sender.sent, [], "the send ran before anything was drawn")
-        self.assertEqual(self.app.pending_send, "안녕")
+        self.assertEqual(self.app.pending_send, (DIRECT_ROOM, "안녕"))
 
     def test_the_screen_says_what_it_is_doing_first(self) -> None:
         self.type("안녕")

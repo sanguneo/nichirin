@@ -198,5 +198,19 @@ class PortabilityTests(InstallerTests):
         self.assertIn(KOREAN, result.stdout.decode("utf-8"))
 
 
+class PartialCheckoutTests(InstallerTests):
+    def test_a_checkout_without_the_shared_runtime_installs_nothing(self) -> None:
+        """Copied without the repository around it, the installer used to succeed
+        and leave a launcher that could not import ``kakaocommon``."""
+        copy = self.work / "platform only" / ROOT.name
+        shutil.copytree(
+            ROOT, copy, ignore=shutil.ignore_patterns("__pycache__", "tests", "demo", "assets")
+        )
+        result = self.python(str(copy / "install.py"), "--target", str(self.target))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"shared runtime", result.stderr)
+        self.assertFalse(self.target.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

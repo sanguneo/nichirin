@@ -7,6 +7,9 @@ outlives the request for exactly as long as the client may still read it.
 """
 
 import os
+import select
+import socket
+import threading
 import shutil
 import tempfile
 import time
@@ -14,6 +17,7 @@ import unittest
 from pathlib import Path
 
 from kamado.errors import ErrorCode, KamadoError
+from kamado import serve
 from kamado.serve import config
 from kamado.serve.upload import UploadStage, sanitize_name
 from tests.serve.helpers import (
@@ -259,6 +263,68 @@ class NameTests(unittest.TestCase):
                 with self.assertRaises(KamadoError) as caught:
                     sanitize_name(raw)
                 self.assertIs(caught.exception.code, ErrorCode.INVALID_REQUEST)
+
+
+class UploadAdmissionTests(UploadRouteTests):
+    def test_an_upload_beyond_the_slots_is_refused_before_its_body_is_read(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def slow_upload(room, path, name, open_if_needed=False):
+            calls.append(name)
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return {"submitted": True, "room": room, "roomId": "42", "name": name, "size": 1}
+
+        handler = _start_server(
+            StubSender(), upload=slow_upload,
+            upload_stage=UploadStage(self.stage_dir), max_concurrent_uploads=1,
+        )
+        self.serve(handler, server_class=serve.ServeHTTPServer)
+        body = multipart([("room", b"Synthetic", None), ("file", b"x", "a.png")])
+        first: dict = {}
+        worker = threading.Thread(target=lambda: first.update(answer=self.post(body)))
+        worker.start()
+        self.assertTrue(entered.wait(10), "the first upload never reached the client")
+        try:
+            status, payload = self.post(body)
+            self.assertEqual(status, 503)
+            self.assertEqual(payload["error"]["code"], "BUSY")
+            self.assertEqual(calls, ["a.png"])
+        finally:
+            release.set()
+            worker.join(10)
+        self.assertEqual(first["answer"][0], 200)
+        self.assertEqual(self.post(body)[0], 200, "the slot was not given back")
+
+
+class BodyDeadlineTests(ServedCase):
+    def test_a_body_dripped_inside_each_timeout_is_still_cut_off(self) -> None:
+        """Time is the behaviour under test: each byte comes well inside the
+        per-receive timeout, so only a deadline on the whole body ends it."""
+        self.serve(_start_server(StubSender(), request_timeout=0.3))
+        host, _, port = self.base.partition("://")[2].partition(":")
+        with socket.create_connection((host, int(port)), timeout=5) as raw:
+            raw.sendall(
+                b"POST /send HTTP/1.1\r\nHost: localhost\r\n"
+                + f"Authorization: Bearer {TOKEN}\r\n".encode()
+                + b"Content-Type: application/json\r\nContent-Length: 400\r\n\r\n"
+            )
+            answered = False
+            for _ in range(200):
+                try:
+                    raw.sendall(b" ")
+                except OSError:
+                    answered = True
+                    break
+                readable, _w, _x = select.select([raw], [], [], 0.05)
+                if readable:
+                    answered = True
+                    break
+            self.assertTrue(answered, "a dripping body held the request past its deadline")
+            head = raw.recv(65536)
+        self.assertIn(b" 408 ", head.split(b"\r\n", 1)[0])
 
 
 if __name__ == "__main__":

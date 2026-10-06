@@ -177,6 +177,69 @@ class BuildImageTests(_Fixture):
             with self.assertRaises(ConsistencyError):
                 build_image(self.database, KEY)
 
+    def test_a_checkpoint_between_the_two_reads_never_mixes_two_commits(self) -> None:
+        """Log L1 rewrites page 2; L2 rewrites it back and changes page 3.
+
+        Read the log first, let L2 commit and be checkpointed, then read the
+        file: laying L1 over that file gives page 2 from L1 and page 3 from
+        L2, a state the database never held. Both later checks pass it,
+        because the file then is the file read and L1 is a prefix of L1+L2.
+        Pages 2 and 3 carry one marker byte each, so a mix is unambiguous.
+        """
+        from tests.support import encrypted_page
+
+        mark = lambda value: bytes([value]) * PAGE_SIZE
+        base = [self.pages_a[0], mark(0x11), mark(0x33)]
+        self.database.write_bytes(encrypt_pages(base))
+        first = (2, 3, encrypted_page(mark(0x22), number=2))
+        second = [(2, 0, encrypted_page(mark(0x11), number=2)), (3, 3, encrypted_page(mark(0x44), number=3))]
+        self.log.write_bytes(make_wal([first]))
+        checkpointed = [self.pages_a[0], mark(0x11), mark(0x44)]
+
+        from kanao.snapshot import _read_log as real_read_log
+
+        state = {"done": False}
+
+        def read_then_commit(database: Path) -> bytes:
+            log = real_read_log(database)
+            if not state["done"]:
+                state["done"] = True
+                self.log.write_bytes(make_wal([first, *second]))
+                self.database.write_bytes(encrypt_pages(checkpointed))
+            return log
+
+        with patch("kanao.snapshot._read_log", side_effect=read_then_commit):
+            try:
+                image = build_image(self.database, KEY)
+            except ConsistencyError:
+                return
+        held = (image[PAGE_SIZE], image[2 * PAGE_SIZE])
+        self.assertIn(held, ((0x22, 0x33), (0x11, 0x44)), "two commits were mixed")
+
+    def test_a_restarting_checkpoint_between_the_two_reads_is_refused(self) -> None:
+        """The same seam, but the checkpoint also restarts the log (new salt)."""
+        from tests.support import encrypted_page
+
+        mark = lambda value: bytes([value]) * PAGE_SIZE
+        self.database.write_bytes(encrypt_pages([self.pages_a[0], mark(0x11), mark(0x33)]))
+        self.log.write_bytes(make_wal([(2, 3, encrypted_page(mark(0x22), number=2))]))
+
+        from kanao.snapshot import _read_log as real_read_log
+
+        state = {"done": False}
+
+        def read_then_restart(database: Path) -> bytes:
+            log = real_read_log(database)
+            if not state["done"]:
+                state["done"] = True
+                self.database.write_bytes(encrypt_pages([self.pages_a[0], mark(0x22), mark(0x44)]))
+                self.log.write_bytes(make_wal([(3, 3, encrypted_page(mark(0x44), number=3))], salt=(99, 98)))
+            return log
+
+        with patch("kanao.snapshot._read_log", side_effect=read_then_restart):
+            with self.assertRaises(ConsistencyError):
+                build_image(self.database, KEY)
+
     def _rewriting(self):
         """Rewrite the database once, part-way through reconstructing it.
 

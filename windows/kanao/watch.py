@@ -33,7 +33,7 @@ are converted once, at the door.
 """
 
 from . import paths
-from .errors import KanaoError
+from .errors import ErrorCode, KanaoError
 from .model import Message
 from .reader import Reader
 from .snapshot import Fingerprint
@@ -41,6 +41,14 @@ from .snapshot import Fingerprint
 DEFAULT_INTERVAL_SECONDS = 1.0
 _CATCH_UP_LIMIT = 500
 _ROOM_FAILURES = (KanaoError, OSError, sqlite3.Error)
+_BASELINE_RETRY_POLLS = 30
+"""Unchanged polls between two attempts at a room's missing starting point.
+
+Every poll would be the obvious choice and a costly one: a room with no key
+is a normal state, and asking it again can mean a heap scan (0.4-2.8 s).
+"""
+_LASTING = frozenset({ErrorCode.KEY_UNAVAILABLE, ErrorCode.NO_USER_DATA})
+"""Failures that only a change in the room's log can undo."""
 
 
 class Watcher:
@@ -61,6 +69,9 @@ class Watcher:
         self.interval = interval
         self._prints: dict[int, Fingerprint] = {}
         self._seen: dict[int, int] = {}
+        self._waiting: dict[int, tuple[Fingerprint, int, bool]] = {}
+        """Rooms whose starting point could not be read: the log as it was
+        then, unchanged polls since, and whether the failure is lasting."""
         self._primed = False
         self.moved: list[int] = []
         """Rooms whose log changed and was read in the last poll.
@@ -101,17 +112,42 @@ class Watcher:
     def prime(self) -> None:
         """Record the current state so existing history is not replayed as new."""
         for room_id in self.watched_rooms():
-            path = self._log_path(room_id)
-            self._prints[room_id] = Fingerprint.of(path)
-            try:
-                newest = self._reader.newest_log_id(
-                    room_id, include_erased=self._include_erased
-                )
-            except _ROOM_FAILURES:
-                newest = None
-            if newest is not None:
-                self._seen[room_id] = newest
+            self._baseline(room_id, Fingerprint.of(self._log_path(room_id)))
         self._primed = True
+
+    def _baseline(self, room_id: int, current: Fingerprint) -> bool:
+        """Record where a room stands, which is 0 for a room with no messages.
+
+        An empty room is a place to start from like any other; leaving it
+        unrecorded made its first message the one a follower never saw. A
+        failed read records nothing - not even the fingerprint - so the room
+        is asked again rather than skipped until somebody writes to it.
+        """
+        try:
+            newest = self._reader.newest_log_id(room_id, include_erased=self._include_erased)
+        except _ROOM_FAILURES as error:
+            lasting = isinstance(error, KanaoError) and error.code in _LASTING
+            self._waiting[room_id] = (current, 0, lasting)
+            return False
+        self._waiting.pop(room_id, None)
+        self._seen[room_id] = 0 if newest is None else newest
+        self._prints[room_id] = current
+        return True
+
+    def _due(self, room_id: int, current: Fingerprint) -> bool:
+        """Whether a room without a starting point should be asked again now."""
+        waiting = self._waiting.get(room_id)
+        if waiting is None:
+            return True
+        then, idle, lasting = waiting
+        if then != current:
+            return True
+        if lasting:
+            return False
+        if idle + 1 >= _BASELINE_RETRY_POLLS:
+            return True
+        self._waiting[room_id] = (then, idle + 1, lasting)
+        return False
 
     def poll(self) -> list[Message]:
         """Run exactly one detection pass and return whatever is new.
@@ -132,16 +168,14 @@ class Watcher:
                 continue
 
             since = self._seen.get(room_id)
+            if since is None:
+                # A room met for the first time, or one whose starting point
+                # could not be read: record where it stands and report nothing.
+                if self._due(room_id, current) and self._baseline(room_id, current):
+                    self.moved.append(room_id)
+                continue
             try:
-                if since is None:
-                    newest = self._reader.newest_log_id(
-                        room_id, include_erased=self._include_erased
-                    )
-                    if newest is not None:
-                        self._seen[room_id] = newest
-                    arrived = []
-                else:
-                    arrived = self._catch_up(room_id, since)
+                arrived = self._catch_up(room_id, since)
             except _ROOM_FAILURES:
                 # Following must outlive any single room: a conversation can
                 # lose its key, be closed in the client, or have its database

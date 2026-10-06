@@ -106,7 +106,11 @@ def run(
         # daemons, so without this a queued send would vanish mid-request at
         # the moment the process exits -- a quieter way to drop the message
         # than the refusal the queue was built to replace.
+        handler._stopping.set()  # type: ignore[attr-defined]
         handler._send_queue.close()  # type: ignore[attr-defined]
+        # A write already handed to the client finishes and answers; one still
+        # waiting is refused. Bounded, so Ctrl-C is never ignored for long.
+        handler._drain(request_timeout)  # type: ignore[attr-defined]
         return 130
     finally:
         server.server_close()

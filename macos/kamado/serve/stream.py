@@ -16,6 +16,7 @@ readable from both sides.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any, Callable, Mapping, Optional
 
@@ -45,6 +46,7 @@ def serve_stream(
     poll_interval: float,
     reply: Callable[[int, dict[str, Any]], None],
     cursor: Optional[Mapping[str, str]] = None,
+    stop: Optional[threading.Event] = None,
 ) -> None:
     """Stream what the watcher finds until the caller leaves.
 
@@ -153,7 +155,12 @@ def serve_stream(
                 return
             if not emit(handler, "ping", {"ok": True}):
                 return
-            time.sleep(poll_interval)
+            if stop is None:
+                time.sleep(poll_interval)
+            elif stop.wait(poll_interval):
+                # The server is stopping; end here so the watcher is given
+                # back now rather than after the next poll interval.
+                return
     finally:
         _release(watcher)
 

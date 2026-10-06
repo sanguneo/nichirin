@@ -25,6 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
+from kakaocommon.budget import BudgetedCache
+
 from .. import __version__
 from ..errors import ErrorCode, KanaoError
 from ..model import (
@@ -112,6 +114,10 @@ HELP_KEY_WIDTH = 16
 
 
 INLINE_CACHE_ENTRIES = 64
+INLINE_BUDGET_BYTES = 64 * 1024 * 1024
+"""Drawn escapes kept at once, counted in bytes as well as entries."""
+PHOTO_BUDGET_BYTES = 64 * 1024 * 1024
+"""Fetched pictures kept at once; one on screen is kept even past this."""
 """How many built picture escapes to keep.
 
 Scrolling asks for a new crop every line, so the keys are unbounded and
@@ -151,6 +157,12 @@ class ChatState:
     """Show the body from its first line once, when its height is known."""
     outbox: Optional[str] = None
     """Text handed to the client and not yet seen coming back."""
+    recovered: Optional[str] = None
+    """Text whose send may or may not have happened, held out of the box.
+
+    Put back into the composer it would be one Enter from going out twice,
+    so it waits here until ``/restore`` asks for it.
+    """
     outbox_at: float = 0.0
     """When that text was handed over, so waiting too long can be admitted."""
     delivered: bool = False
@@ -249,7 +261,8 @@ class App:
         was read here; the room list subtracts this instead, the way a tab
         counts only what arrived behind it.
         """
-        self.pending_send: Optional[str] = None
+        self.pending_send: Optional[tuple[int, str]] = None
+        """The room a send was written in, and its text, held for one frame."""
         self.pending_unlock: Optional[tuple[Room, bool]] = None
         """A room to open in the client, held for one frame like a send."""
         self._clock = time.monotonic
@@ -270,8 +283,9 @@ class App:
         """Which inline-image protocol this terminal draws, or ``none``."""
         self._cell: Optional[tuple[int, int]] = None
         """The console's cell size in pixels, asked once after the first frame."""
-        self._photo_bytes: dict[int, bytes] = {}
-        """Fetched pictures, so opening one twice costs one fetch."""
+        self._photo_bytes: BudgetedCache[int, bytes] = BudgetedCache(PHOTO_BUDGET_BYTES)
+        """Fetched pictures, so opening one twice costs one fetch; bounded in bytes,
+        and a picture on screen is never the one let go."""
         self._photo_shapes: dict[int, tuple[int, int]] = {}
         """Each picture's measured size, which the stored one can disagree with."""
         self.placements: list[
@@ -284,9 +298,13 @@ class App:
         """Whether a picture moved, so the frame has to be given up whole."""
         self._body_rows = 0
         """How tall the conversation last was, so a picture scales with it."""
-        self._inline_cache: dict[
+        self._inline_cache: BudgetedCache[
             tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
-        ] = {}
+        ] = BudgetedCache(
+            INLINE_BUDGET_BYTES,
+            max_entries=INLINE_CACHE_ENTRIES,
+            size=lambda escape: 0 if escape is None else len(escape),
+        )
         """Escapes already built, keyed by the box they were built for."""
         self.session_file = session_file
         """Where the last launch's switches and tabs are kept, or None to forget them.
@@ -1448,6 +1466,9 @@ class App:
             if message is None or message.photo is None:
                 continue
             blob = self._photo_bytes.get(message_id)
+            if blob is None and message_id in chat.opened_photos:
+                # Let go while it was off screen; it is wanted again.
+                blob = self._photo_blob(message)
             if blob is None:
                 continue
             columns, height = self._photo_cells(message, width, indent)
@@ -1503,16 +1524,18 @@ class App:
                 escape = images.inline_escape(
                     self._protocol, blob, columns, rows, crop, self._cell
                 )
-                if len(self._inline_cache) >= INLINE_CACHE_ENTRIES:
-                    # Scrolling walks the crop a line at a time, so the keys are
-                    # unbounded; the oldest goes rather than all of them.
-                    self._inline_cache.pop(next(iter(self._inline_cache)))
-                self._inline_cache[key] = escape
+                # Scrolling walks the crop a line at a time, so the keys are
+                # unbounded; the oldest go, by count and by bytes.
+                self._inline_cache.put(key, escape)
             if escape is None:
                 continue
             pieces.append(f"\x1b[{row + 1};{column + 1}H" + escape)
         self._drawn = current
         return "".join(pieces)
+
+    def _showing(self) -> set[int]:
+        """The pictures placed on the last frame, which must not be let go."""
+        return {placement[0] for placement in self.placements}
 
     def _photos_drawable(self) -> bool:
         """Whether a picture could be shown here at all.
@@ -1552,7 +1575,7 @@ class App:
         usable = None if blob is None else images.drawable(blob, self._protocol)
         if usable is None:
             return None
-        self._photo_bytes[message.id] = usable
+        self._photo_bytes.put(message.id, usable, keep=self._showing())
         measured = images.pixel_size(usable)
         if measured is not None and self._photo_shapes.get(message.id) != measured:
             self._photo_shapes[message.id] = measured
@@ -1786,6 +1809,7 @@ class App:
             row("/sum 30m", f"구간별 다이제스트 (최대 {hours}h)"),
             row("/export", "다이제스트 원문을 파일로"),
             row("/older", f"이전 기록 {LOAD_MORE_STEP}개 더"),
+            row("/restore", "보냈는지 모를 글을 입력창으로"),
             row("/open [방이름]", "탭 하나 더 열기. 이름이 없으면 목록에서 고르기"),
             row("/close", "이 탭 닫기"),
             row("/back", "탭을 모두 닫고 목록으로"),
@@ -2220,7 +2244,7 @@ class App:
             return
         # Held for one frame: opening a window takes over a second, and doing
         # it inside the keystroke left the screen on the frame before it.
-        self.pending_send = written
+        self.pending_send = (chat.room.id, written)
         chat.notice = "보내는 중…"
 
     def flush_pending(self) -> None:
@@ -2229,12 +2253,46 @@ class App:
             room, beside = self.pending_unlock
             self.pending_unlock = None
             self._unlock(room, beside)
-        text = self.pending_send
+        pending = self.pending_send
         self.pending_send = None
-        if text is None or self.chat is None:
+        if pending is None:
             return
-        self.chat.notice = ""
+        room_id, text = pending
+        chat = self.chat
+        if chat is None or chat.room.id != room_id:
+            # The room in front is not the one this was written in; sending
+            # it there would put words in the wrong conversation.
+            self._hold_back(room_id, text, "보내기 전에 대화방이 바뀌어 보내지 않았습니다")
+            return
+        chat.notice = ""
         self.send_message(text)
+
+    def _hold_back(self, room_id: int, text: str, why: str) -> None:
+        """Give unsent text back to the room it was written in."""
+        for chat in self.chats:
+            if chat.room.id == room_id:
+                self._recover(chat, text, uncertain=False, why=why)
+                return
+        if not self.drafts.get(room_id):
+            self.drafts[room_id] = text
+        self.status = why
+
+    def _recover(self, chat: ChatState, text: str, *, uncertain: bool, why: str) -> None:
+        """Keep the text of a send that did not go through, or may not have.
+
+        A refusal sent nothing, so the text goes back into an empty box. A
+        send whose outcome is unknown is held out of the box instead, where
+        Enter cannot send it a second time, and so is anything that would
+        otherwise overwrite something written since.
+        """
+        if not uncertain and not chat.draft:
+            chat.draft = text
+            chat.caret = len(text)
+            chat.notice = f"{why} (글은 입력창에 되돌려 두었습니다)"
+            return
+        chat.recovered = text
+        unknown = "보냈는지 알 수 없습니다. " if uncertain else ""
+        chat.notice = f"{why} ({unknown}/restore 로 글을 입력창에 가져올 수 있습니다)"
 
     def _require_sender(self) -> "MessageSender":
         if self._sender is None:
@@ -2296,10 +2354,17 @@ class App:
                 search_row=self.reader.search_position(chat.room.id, rooms=self.rooms),
             )
         except KanaoError as error:
-            chat.notice = f"전송 실패: {error.message}"
+            # SEND_FAILED is the one code whose message may already be in the
+            # client; every other refusal stopped before anything was typed.
+            self._recover(
+                chat,
+                text,
+                uncertain=error.code is ErrorCode.SEND_FAILED,
+                why=f"전송 실패: {error.message}",
+            )
             return
         except OSError as error:
-            chat.notice = f"전송 실패: {error}"
+            self._recover(chat, text, uncertain=True, why=f"전송 실패: {error}")
             return
         # Marked beside the prompt rather than announced: the composer is
         # where the message was, so that is where its fate belongs.
@@ -2315,6 +2380,17 @@ class App:
         if not parts:
             return
         name, arguments = parts[0].lower(), parts[1:]
+
+        if name == "restore":
+            if chat.recovered is None:
+                chat.notice = "가져올 글이 없습니다"
+                return
+            # The box was emptied by the Enter that ran this command.
+            chat.draft = chat.recovered
+            chat.caret = len(chat.draft)
+            chat.recovered = None
+            chat.notice = ""
+            return
 
         if name in ("sum", "digest"):
             if not arguments:

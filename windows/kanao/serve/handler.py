@@ -29,6 +29,8 @@ from .config import (
     MAX_LIMIT,
     MAX_QUEUED_SENDS,
     MAX_STREAMS,
+    MAX_CONCURRENT_READS,
+    MAX_CONCURRENT_UPLOADS,
     MAX_UPLOAD_BYTES,
     MULTIPART_OVERHEAD_BYTES,
     _status_for,
@@ -203,6 +205,8 @@ def build_handler(
     file_provider: Optional[Callable[[int, int], Any]] = None,
     upload: Optional[Callable[..., dict[str, Any]]] = None,
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
+    max_concurrent_uploads: int = MAX_CONCURRENT_UPLOADS,
+    max_concurrent_reads: int = MAX_CONCURRENT_READS,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -237,6 +241,16 @@ def build_handler(
     # Not a lock: a permit per stream, so the ninth caller is refused rather
     # than queued behind eight connections that intend to stay all day.
     stream_slots = threading.Semaphore(streams_allowed)
+    # Taken before an upload body is read and kept until its file is handed
+    # over, so the bodies held at once are bounded, not just the ones in line.
+    upload_slots = threading.Semaphore(max_concurrent_uploads)
+    stopping = threading.Event()
+    """Set once the server is stopping: streams end, unstarted writes are refused."""
+    writes = threading.Condition()
+    writing = [0]
+    # Every read builds its own reader and cache, so reads at once are bounded
+    # here; a refusal is a 503 the caller may repeat, never a wait.
+    read_slots = threading.Semaphore(max_concurrent_reads)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "kanao-serve"
@@ -325,7 +339,7 @@ def build_handler(
                     "chunked request bodies are not supported",
                 )
             try:
-                raw = self.rfile.read(length) if length else b""
+                raw = self._read_exactly(length) if length else b""
             except (socket.timeout, TimeoutError):
                 # Promised a body and then went quiet. Without the connection
                 # timeout this held a thread for as long as the caller liked.
@@ -336,6 +350,29 @@ def build_handler(
                 )
             self._body_read = True
             return raw
+
+        def _read_exactly(self, length: int) -> bytes:
+            """Read a declared body against one deadline for the whole of it.
+
+            The socket timeout applies to each receive, so a caller sending
+            one byte inside every timeout held a thread and a growing body
+            for as long as it liked.
+            """
+            deadline = time.monotonic() + patience
+            received = bytearray()
+            try:
+                while len(received) < length:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _BodyTimeout()
+                    self.connection.settimeout(remaining)
+                    chunk = self.rfile.read1(min(length - len(received), 1 << 20))
+                    if not chunk:
+                        break
+                    received += chunk
+            finally:
+                self.connection.settimeout(patience)
+            return bytes(received)
 
         def _reply(self, status: int, payload: dict[str, Any]) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -394,26 +431,37 @@ def build_handler(
             if not self._require_auth():
                 return
             parsed = urllib.parse.urlparse(self.path)
-            if parsed.path == "/rooms":
-                self._handle_rooms()
-            elif parsed.path == "/context":
-                self._handle_context(parsed)
-            elif parsed.path == "/digest":
-                self._handle_digest(parsed)
-            elif parsed.path == "/stream":
+            if parsed.path == "/stream":
+                # Streams have their own permits; they stay open all day.
                 self._handle_stream(parsed)
-            elif parsed.path == "/notice":
-                self._handle_notice(parsed)
-            elif parsed.path == "/attachments":
-                self._handle_attachments(parsed)
-            elif parsed.path == "/revisions":
-                self._handle_revisions(parsed)
-            elif parsed.path == "/file":
-                self._handle_file(parsed)
-            else:
+                return
+            routes: dict[str, Callable[[], None]] = {
+                "/rooms": self._handle_rooms,
+                "/context": lambda: self._handle_context(parsed),
+                "/digest": lambda: self._handle_digest(parsed),
+                "/notice": lambda: self._handle_notice(parsed),
+                "/attachments": lambda: self._handle_attachments(parsed),
+                "/revisions": lambda: self._handle_revisions(parsed),
+                "/file": lambda: self._handle_file(parsed),
+            }
+            route = routes.get(parsed.path)
+            if route is None:
                 self._reply(
                     404, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, "not found"))
                 )
+                return
+            if not read_slots.acquire(blocking=False):
+                self._reply(
+                    503,
+                    as_envelope(
+                        KanaoError(ErrorCode.BUSY, "too many reads at once; ask again shortly")
+                    ),
+                )
+                return
+            try:
+                route()
+            finally:
+                read_slots.release()
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib name
             if not self._require_auth():
@@ -741,6 +789,7 @@ def build_handler(
                     poll_interval=period,
                     reply=self._reply,
                     cursor=cursor,
+                    stop=stopping,
                 )
             finally:
                 stream_slots.release()
@@ -806,6 +855,25 @@ def build_handler(
                 self._reply(200, {"ok": True, **result})
 
         def _handle_upload(self) -> None:
+            if not upload_slots.acquire(blocking=False):
+                # Answered before the body is read; finish() drains what the
+                # caller is still sending, so the refusal is not lost to a reset.
+                self._reply(
+                    503,
+                    as_envelope(
+                        KanaoError(
+                            ErrorCode.BUSY,
+                            "too many files are being received at once; this file was not sent",
+                        )
+                    ),
+                )
+                return
+            try:
+                self._receive_upload()
+            finally:
+                upload_slots.release()
+
+        def _receive_upload(self) -> None:
             try:
                 room, name, data, open_room = self._read_upload()
             except KanaoError as error:
@@ -885,6 +953,22 @@ def build_handler(
             # The place in line is taken *before* the lock, so the line has a
             # length to report; waiting for the turn happens under it, where
             # the order a caller is given is the order the input box serves.
+            with writes:
+                writing[0] += 1
+            try:
+                return self._in_line_counted(write, paced=paced, what=what)
+            finally:
+                with writes:
+                    writing[0] -= 1
+                    writes.notify_all()
+
+        def _in_line_counted(
+            self,
+            write: Callable[[], dict[str, Any]],
+            *,
+            paced: bool,
+            what: str,
+        ) -> Optional[dict[str, Any]]:
             if paced:
                 in_line = queue.reserve()
                 if in_line is not None:
@@ -901,6 +985,19 @@ def build_handler(
                     return None
             try:
                 with send_lock:
+                    if stopping.is_set():
+                        # Waited for the lock through a shutdown: nothing was
+                        # typed yet, so this is a refusal, not an unknown.
+                        self._reply(
+                            503,
+                            as_envelope(
+                                KanaoError(
+                                    ErrorCode.BUSY,
+                                    f"the server is shutting down; this {what} was not sent",
+                                )
+                            ),
+                        )
+                        return None
                     if paced:
                         try:
                             queue.wait_for_turn()
@@ -945,4 +1042,12 @@ def build_handler(
     # are daemons, and Ctrl-C would otherwise kill them without an answer.
     Handler._serve_secret = secret  # type: ignore[attr-defined]
     Handler._send_queue = queue  # type: ignore[attr-defined]
+    Handler._stopping = stopping  # type: ignore[attr-defined]
+
+    def drain(timeout: float) -> bool:
+        """Wait for writes in progress to answer; False if *timeout* ran out."""
+        with writes:
+            return writes.wait_for(lambda: writing[0] == 0, timeout)
+
+    Handler._drain = drain  # type: ignore[attr-defined]
     return Handler

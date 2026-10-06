@@ -621,5 +621,59 @@ class DeliveryMarkTests(ComposerCase):
         self.assertNotIn("─", first)
 
 
+class DraftRecoveryTests(ComposerCase):
+    """A send that did not go through, or may not have, keeps its text."""
+
+    def test_a_refused_send_puts_the_text_back_in_the_box(self) -> None:
+        self.sender.failure = KamadoError(ErrorCode.WINDOW_NOT_FOUND, "창이 없습니다")
+        self.type("보낼 말")
+        self.press_enter()
+        self.assertEqual(self.chat.draft, "보낼 말")
+        self.assertEqual(self.chat.caret, len("보낼 말"))
+        self.assertIsNone(self.chat.recovered)
+        self.assertIn("창이 없습니다", self.chat.notice)
+
+    def test_an_uncertain_send_is_held_out_of_the_box(self) -> None:
+        self.sender.failure = OSError("the message stayed in the input box")
+        self.type("보낼 말")
+        self.press_enter()
+        self.assertEqual(self.chat.draft, "")
+        self.assertEqual(self.chat.recovered, "보낼 말")
+        self.assertIn("/restore", self.chat.notice)
+
+    def test_send_failed_counts_as_uncertain(self) -> None:
+        self.sender.failure = KamadoError(ErrorCode.SEND_FAILED, "unknown")
+        self.type("보낼 말")
+        self.press_enter()
+        self.assertEqual(self.chat.draft, "")
+        self.assertEqual(self.chat.recovered, "보낼 말")
+
+    def test_enter_alone_never_resends_an_uncertain_send(self) -> None:
+        self.sender.failure = OSError("unknown")
+        self.type("보낼 말")
+        self.press_enter()
+        self.sender.failure = None
+        self.press_enter()
+        self.assertEqual(self.sender.sent, [])
+
+    def test_restore_brings_the_text_back_without_sending_it(self) -> None:
+        self.sender.failure = OSError("unknown")
+        self.type("보낼 말")
+        self.press_enter()
+        self.sender.failure = None
+        self.type("/restore")
+        self.press_enter()
+        self.assertEqual(self.chat.draft, "보낼 말")
+        self.assertIsNone(self.chat.recovered)
+        self.assertEqual(self.sender.sent, [])
+
+    def test_a_send_meant_for_another_room_is_not_sent_here(self) -> None:
+        elsewhere = self.chat.room.id + 1
+        self.app.pending_send = (elsewhere, "다른 방에 쓴 말")
+        self.app.flush_pending()
+        self.assertEqual(self.sender.sent, [])
+        self.assertEqual(self.app.drafts.get(elsewhere), "다른 방에 쓴 말")
+
+
 if __name__ == "__main__":
     unittest.main()

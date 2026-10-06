@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from kanao import watch as kanao_watch
+from kanao.errors import ErrorCode, KanaoError
 from kanao.watch import Watcher
 
 from tests.fixtures import (
@@ -409,6 +414,75 @@ class ResilienceTests(WatcherTests):
 
         found = watcher.poll()
         self.assertEqual([message.text for message in found], ["still delivered"])
+
+
+class _FakeLog:
+    """A reader that answers from a list of ids and can be made to fail."""
+
+    def __init__(self) -> None:
+        self.rows: list[int] = []
+        self.fail: "Exception | None" = None
+        self.calls = 0
+        self.database = Path("synthetic.db")
+        self.keyring = SimpleNamespace(path_for=lambda name: Path("synthetic.edb"))
+
+    def newest_log_id(self, room_id: int, include_erased: bool = False):
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return self.rows[-1] if self.rows else None
+
+    def messages(self, room_id: int, limit: int, after_id: int, include_erased: bool = False):
+        return [SimpleNamespace(id=i, sent_at=i) for i in self.rows if i > after_id][:limit]
+
+
+class StartingPointTests(unittest.TestCase):
+    """Where a room starts is recorded once it can be read, and asked for sparingly."""
+
+    def setUp(self) -> None:
+        self.log = _FakeLog()
+        self.version = 1
+        stamp = patch("kanao.watch.Fingerprint.of", side_effect=lambda _path: self.version)
+        stamp.start()
+        self.addCleanup(stamp.stop)
+        self.watcher = Watcher(self.log, room_ids=[1])  # type: ignore[arg-type]
+
+    def arrive(self, log_id: int) -> None:
+        self.log.rows.append(log_id)
+        self.version += 1
+
+    def test_an_empty_room_reports_its_first_message(self) -> None:
+        self.watcher.prime()
+        self.arrive(4)
+        self.assertEqual([m.id for m in self.watcher.poll()], [4])
+
+    def test_a_failed_start_is_asked_again_while_nothing_moves(self) -> None:
+        self.log.fail = OSError("transient")
+        self.watcher.prime()
+        self.log.fail = None
+        for _ in range(kanao_watch._BASELINE_RETRY_POLLS):
+            self.watcher.poll()
+        self.assertEqual(self.log.calls, 2)
+        self.arrive(4)
+        self.assertEqual([m.id for m in self.watcher.poll()], [4])
+
+    def test_a_failing_start_costs_one_read_per_retry_interval(self) -> None:
+        self.log.fail = OSError("still failing")
+        self.watcher.prime()
+        polls = 3 * kanao_watch._BASELINE_RETRY_POLLS
+        for _ in range(polls):
+            self.watcher.poll()
+        self.assertLessEqual(self.log.calls, 1 + polls // kanao_watch._BASELINE_RETRY_POLLS)
+
+    def test_a_lasting_failure_waits_for_the_log_to_move(self) -> None:
+        self.log.fail = KanaoError(ErrorCode.KEY_UNAVAILABLE, "no key")
+        self.watcher.prime()
+        for _ in range(100):
+            self.watcher.poll()
+        self.assertEqual(self.log.calls, 1)
+        self.version += 1
+        self.watcher.poll()
+        self.assertEqual(self.log.calls, 2)
 
 
 if __name__ == "__main__":
