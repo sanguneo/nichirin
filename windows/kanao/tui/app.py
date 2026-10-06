@@ -25,6 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
+from kakaocommon.budget import BudgetedCache
+
 from .. import __version__
 from ..errors import ErrorCode, KanaoError
 from ..model import (
@@ -112,6 +114,10 @@ HELP_KEY_WIDTH = 16
 
 
 INLINE_CACHE_ENTRIES = 64
+INLINE_BUDGET_BYTES = 64 * 1024 * 1024
+"""Drawn escapes kept at once, counted in bytes as well as entries."""
+PHOTO_BUDGET_BYTES = 64 * 1024 * 1024
+"""Fetched pictures kept at once; one on screen is kept even past this."""
 """How many built picture escapes to keep.
 
 Scrolling asks for a new crop every line, so the keys are unbounded and
@@ -277,8 +283,9 @@ class App:
         """Which inline-image protocol this terminal draws, or ``none``."""
         self._cell: Optional[tuple[int, int]] = None
         """The console's cell size in pixels, asked once after the first frame."""
-        self._photo_bytes: dict[int, bytes] = {}
-        """Fetched pictures, so opening one twice costs one fetch."""
+        self._photo_bytes: BudgetedCache[int, bytes] = BudgetedCache(PHOTO_BUDGET_BYTES)
+        """Fetched pictures, so opening one twice costs one fetch; bounded in bytes,
+        and a picture on screen is never the one let go."""
         self._photo_shapes: dict[int, tuple[int, int]] = {}
         """Each picture's measured size, which the stored one can disagree with."""
         self.placements: list[
@@ -291,9 +298,13 @@ class App:
         """Whether a picture moved, so the frame has to be given up whole."""
         self._body_rows = 0
         """How tall the conversation last was, so a picture scales with it."""
-        self._inline_cache: dict[
+        self._inline_cache: BudgetedCache[
             tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
-        ] = {}
+        ] = BudgetedCache(
+            INLINE_BUDGET_BYTES,
+            max_entries=INLINE_CACHE_ENTRIES,
+            size=lambda escape: 0 if escape is None else len(escape),
+        )
         """Escapes already built, keyed by the box they were built for."""
         self.session_file = session_file
         """Where the last launch's switches and tabs are kept, or None to forget them.
@@ -1455,6 +1466,9 @@ class App:
             if message is None or message.photo is None:
                 continue
             blob = self._photo_bytes.get(message_id)
+            if blob is None and message_id in chat.opened_photos:
+                # Let go while it was off screen; it is wanted again.
+                blob = self._photo_blob(message)
             if blob is None:
                 continue
             columns, height = self._photo_cells(message, width, indent)
@@ -1510,16 +1524,18 @@ class App:
                 escape = images.inline_escape(
                     self._protocol, blob, columns, rows, crop, self._cell
                 )
-                if len(self._inline_cache) >= INLINE_CACHE_ENTRIES:
-                    # Scrolling walks the crop a line at a time, so the keys are
-                    # unbounded; the oldest goes rather than all of them.
-                    self._inline_cache.pop(next(iter(self._inline_cache)))
-                self._inline_cache[key] = escape
+                # Scrolling walks the crop a line at a time, so the keys are
+                # unbounded; the oldest go, by count and by bytes.
+                self._inline_cache.put(key, escape)
             if escape is None:
                 continue
             pieces.append(f"\x1b[{row + 1};{column + 1}H" + escape)
         self._drawn = current
         return "".join(pieces)
+
+    def _showing(self) -> set[int]:
+        """The pictures placed on the last frame, which must not be let go."""
+        return {placement[0] for placement in self.placements}
 
     def _photos_drawable(self) -> bool:
         """Whether a picture could be shown here at all.
@@ -1559,7 +1575,7 @@ class App:
         usable = None if blob is None else images.drawable(blob, self._protocol)
         if usable is None:
             return None
-        self._photo_bytes[message.id] = usable
+        self._photo_bytes.put(message.id, usable, keep=self._showing())
         measured = images.pixel_size(usable)
         if measured is not None and self._photo_shapes.get(message.id) != measured:
             self._photo_shapes[message.id] = measured

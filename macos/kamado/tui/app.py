@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Protocol, Sequence, TYPE_CHECKING
 
+from kakaocommon.budget import BudgetedCache
+
 from .. import __version__
 from ..errors import ErrorCode, KamadoError
 from ..model import (
@@ -118,6 +120,10 @@ The client stores its own word for these in the message text -- a video arrives
 as the plain text "동상열" -- which reads as if somebody typed it.
 """
 INLINE_CACHE_ENTRIES = 64
+INLINE_BUDGET_BYTES = 64 * 1024 * 1024
+"""Drawn escapes kept at once, counted in bytes as well as entries."""
+PHOTO_BUDGET_BYTES = 64 * 1024 * 1024
+"""Fetched pictures kept at once; one on screen is kept even past this."""
 """How many built inline-image escapes to keep.
 
 Only sixel and iTerm2 need these, because neither leaves the picture with the
@@ -388,9 +394,13 @@ class App:
         self._image_ids = images.ImageIds()
         self._images_moved = False
         """Whether an inline picture moved, so the frame has to be given up."""
-        self._inline_cache: dict[
+        self._inline_cache: BudgetedCache[
             tuple[str, int, int, int, Optional[tuple[int, int]]], Optional[str]
-        ] = {}
+        ] = BudgetedCache(
+            INLINE_BUDGET_BYTES,
+            max_entries=INLINE_CACHE_ENTRIES,
+            size=lambda escape: 0 if escape is None else len(escape),
+        )
         """Inline escapes already built, keyed by the box they were built for."""
         self.placements: list[
             tuple[int, int, int, bytes, int, int, Optional[tuple[int, int]]]
@@ -408,9 +418,12 @@ class App:
         """Each picture's measured pixel size, read once from its own bytes."""
         self._cell_aspect = images.CELL_ASPECT
         """How many times taller than wide a cell is, once the terminal says."""
-        self._bytes: dict[int, bytes] = {}
-        """Drawable bytes per picture, so a conversion happens once."""
-        self._framed: dict[int, tuple[tuple[int, int], bytes]] = {}
+        self._bytes: BudgetedCache[int, bytes] = BudgetedCache(PHOTO_BUDGET_BYTES)
+        """Drawable bytes per picture, so a conversion happens once; bounded in
+        bytes, and a picture on screen is never the one let go."""
+        self._framed: BudgetedCache[int, tuple[tuple[int, int], bytes]] = BudgetedCache(
+            PHOTO_BUDGET_BYTES, size=lambda entry: len(entry[1])
+        )
         """Letterboxed bytes and the pixel box they were padded to."""
         self._cell: Optional[tuple[int, int]] = None
         """The terminal's cell size in pixels, when it answered the question.
@@ -1819,7 +1832,7 @@ class App:
         framed = images.letterbox(blob, box)
         if framed is None:
             return blob
-        self._framed[message_id] = (box, framed)
+        self._framed.put(message_id, (box, framed), keep=self._showing())
         return framed
 
     def photo_escapes(self) -> str:
@@ -1866,11 +1879,9 @@ class App:
                 escape = images.inline_escape(
                     self._protocol, blob, cols, rows, crop, self._cell
                 )
-                if len(self._inline_cache) >= INLINE_CACHE_ENTRIES:
-                    # Scrolling walks the crop one line at a time, so the keys
-                    # are unbounded; the oldest goes rather than all of them.
-                    self._inline_cache.pop(next(iter(self._inline_cache)))
-                self._inline_cache[key] = escape
+                # Scrolling walks the crop one line at a time, so the keys are
+                # unbounded; the oldest go, by count and by bytes.
+                self._inline_cache.put(key, escape)
             if escape is None:
                 # iTerm2 cannot crop a source, so a half-scrolled picture waits
                 # rather than being drawn over the composer.
@@ -1932,9 +1943,13 @@ class App:
         blob = self._photos.fetch(message.photo.url)
         usable = None if blob is None else images.drawable(blob)
         if usable is not None:
-            self._bytes[message.id] = usable
+            self._bytes.put(message.id, usable, keep=self._showing())
             self._learn_photo_shape(message, usable)
         return usable
+
+    def _showing(self) -> set[int]:
+        """The pictures placed on the last frame, which must not be let go."""
+        return {placement[0] for placement in self.placements}
 
     def _photo_shape(self, message: Message) -> tuple[int, int]:
         """Return the picture's true pixel size, preferring its own bytes.

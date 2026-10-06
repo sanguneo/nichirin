@@ -708,5 +708,17 @@ class PlacementTests(PhotoCase):
                     self.assertLessEqual(display_width(line), width)
 
 
+class PhotoBudgetTests(PhotoCase):
+    def test_a_picture_on_screen_is_not_fetched_again_under_a_tiny_budget(self) -> None:
+        from kakaocommon.budget import BudgetedCache
+
+        self.app._bytes = BudgetedCache(1)
+        self.app.toggle_photo(PHOTO_MESSAGE)
+        for _ in range(4):
+            self.app.render(WIDTH, HEIGHT)
+            self.app.photo_escapes()
+        self.assertEqual(len(self.store.asked), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
