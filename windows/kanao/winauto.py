@@ -603,6 +603,10 @@ class FileBackend(WindowBackend, Protocol):
         """Dismiss the dialog, which sends nothing."""
         ...
 
+    def dismiss_dialogs(self, handle: int) -> None:
+        """Cancel every open-file dialog the room owns, the hidden ones too."""
+        ...
+
     def file_popup(self, before: set[int]) -> Optional[int]:
         """The client's file-send confirmation, if one appeared since *before*."""
         ...
@@ -866,6 +870,9 @@ class Sender:
             if dialog is not None:
                 break
         if dialog is None:
+            # A dialog the client opened late, or one a re-park hid, would
+            # outlive this call and disable the room; none of them sent anything.
+            backend.dismiss_dialogs(window.handle)
             raise nothing_sent("the file button showed no open-file dialog")
         try:
             backend.choose_file(dialog, path)
@@ -874,8 +881,7 @@ class Sender:
             raise nothing_sent(f"the file could not be named in the dialog ({error})") from error
         popup = self._wait_for(lambda: backend.file_popup(before))
         if popup is None:
-            if backend.is_visible(dialog):
-                backend.cancel_dialog(dialog)
+            backend.dismiss_dialogs(window.handle)
             raise nothing_sent("the client showed no file-send confirmation")
         try:
             backend.press_popup_send(popup)
@@ -941,6 +947,10 @@ _WM_GETTEXTLENGTH = 0x000E
 _BM_CLICK = 0x00F5
 _GW_OWNER = 4
 _SMTO_ABORTIFHUNG = 0x0002
+_HOVER_SECONDS = 0.3
+"""Between the pointer arriving and the press: the button takes it hovered (#85)."""
+_HOLD_SECONDS = 0.08
+"""Between press and release, as a hand would hold it (#85)."""
 _WM_NULL = 0x0000
 _PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 """DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: the client's own pixels."""
@@ -981,6 +991,12 @@ class Win32Backend:
         u.PostMessageW.restype = wintypes.BOOL
         u.SetThreadDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
         u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        try:
+            u.GetWindowDpiAwarenessContext.argtypes = (wintypes.HWND,)
+            u.GetWindowDpiAwarenessContext.restype = ctypes.c_void_p
+        except AttributeError:
+            pass
+        self._pause: Callable[[float], None] = time.sleep
 
     def _message(self, control: int, code: int, wp: int = 0, lp: int = 0) -> int:
         """Bound synchronous cross-process messages to two seconds."""
@@ -1062,17 +1078,27 @@ class Win32Backend:
         return None
 
     @contextmanager
-    def _physical(self) -> Iterator[None]:
-        """Read and write window coordinates in the client's own pixels (#82).
+    def _as_window(self, handle: int) -> Iterator[None]:
+        """Measure and click in the pixels *handle* itself reads (#82, #85).
 
-        Python is DPI-unaware, so on a monitor scaled past 100% Windows hands it
-        window sizes shrunk to 96 DPI while ``GetDpiForWindow`` still reports
-        the window's real 192. Mixing the two put the file button's click in
-        the message list. Per-monitor aware for the length of one measurement,
-        every size, point and DPI is the one the client itself draws with.
+        Python is DPI-unaware, so Windows hands it window sizes shrunk to 96
+        DPI. Per-monitor pixels are no better for this client: KakaoTalk is
+        system-DPI-aware, so on a 125% monitor of a 200% system it draws a
+        1495x1632 room that the screen shows as 934x1020, and a mouse lParam
+        is read in the 1495x1632 pixels. Taking the window's own awareness for
+        the measurement and the messages alike keeps size, DPI and point in the
+        coordinates the client reads them in, whatever monitor it is on and
+        whatever awareness a later client ships with. Where the window cannot
+        say, per-monitor is the nearest guess.
         """
         try:
-            previous = self._user32.SetThreadDpiAwarenessContext(_PER_MONITOR_AWARE_V2)
+            context = self._user32.GetWindowDpiAwarenessContext(handle)
+        except (AttributeError, OSError):
+            context = None
+        try:
+            previous = self._user32.SetThreadDpiAwarenessContext(
+                context or _PER_MONITOR_AWARE_V2
+            )
         except (AttributeError, OSError):
             previous = None
         try:
@@ -1084,7 +1110,7 @@ class Win32Backend:
     def _dpi(self, handle: int) -> int:
         """The scaling this window is drawn at, or the measured one."""
         try:
-            with self._physical():
+            with self._as_window(handle):
                 dpi = int(self._user32.GetDpiForWindow(handle))
         except (AttributeError, OSError, ValueError):
             return MEASURED_DPI
@@ -1099,7 +1125,7 @@ class Win32Backend:
 
         _pitch, first_centre, column = row_geometry(self._dpi(control))
         point = _Point(column, first_centre)
-        with self._physical():
+        with self._as_window(control):
             self._user32.ClientToScreen(control, ctypes.byref(point))
         position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
         for _notch in range(_WHEEL_NOTCHES):
@@ -1442,7 +1468,7 @@ class Win32Backend:
         from ctypes import wintypes
 
         rect = wintypes.RECT()
-        with self._physical():
+        with self._as_window(handle):
             found = self._user32.GetWindowRect(handle, ctypes.byref(rect))
         if not found:
             raise OSError(f"GetWindowRect failed: {ctypes.get_last_error()}")
@@ -1456,6 +1482,12 @@ class Win32Backend:
         (2026-10-04). The release may open a modal and stay in it, so its
         timeout is not a failure; what the click did is read from the windows
         that appear, not from this call.
+
+        Measured and sent in the window's own awareness: sent from a DPI-unaware
+        thread the press never opened the dialog, not even with the point
+        right (0 of 6); from the window's coordinates, 5 of 6, and every one
+        once the pointer hovered first and the button was held a moment
+        (#85, 2026-10-06).
         """
         from ctypes import wintypes
 
@@ -1464,22 +1496,24 @@ class Win32Backend:
         # remote-desktop session: clicked straight after the restore, no
         # dialog in 6 s; after one WM_NULL round trip, a dialog in 0.32 s.
         self._message(handle, _WM_NULL)
-        left, top, _right, _bottom = self._rect(handle)
-        point = wintypes.POINT(left + x, top + y)
-        with self._physical():
-            self._user32.ScreenToClient(handle, ctypes.byref(point))
-        position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
         result = ctypes.c_size_t()
-        for message, button in (
-            (_WM_MOUSEMOVE, 0),
-            (_WM_LBUTTONDOWN, _MK_LBUTTON),
-            (_WM_LBUTTONUP, 0),
-        ):
-            if not self._user32.IsWindow(handle):
-                raise OSError("the window closed before it was clicked")
-            self._user32.SendMessageTimeoutW(
-                handle, message, button, position, _SMTO_ABORTIFHUNG, 2000, ctypes.byref(result)
-            )
+        with self._as_window(handle):
+            left, top, _right, _bottom = self._rect(handle)
+            point = wintypes.POINT(left + x, top + y)
+            self._user32.ScreenToClient(handle, ctypes.byref(point))
+            position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
+            for message, button, pause in (
+                (_WM_MOUSEMOVE, 0, _HOVER_SECONDS),
+                (_WM_LBUTTONDOWN, _MK_LBUTTON, _HOLD_SECONDS),
+                (_WM_LBUTTONUP, 0, 0.0),
+            ):
+                if not self._user32.IsWindow(handle):
+                    raise OSError("the window closed before it was clicked")
+                self._user32.SendMessageTimeoutW(
+                    handle, message, button, position, _SMTO_ABORTIFHUNG, 2000, ctypes.byref(result)
+                )
+                if pause:
+                    self._pause(pause)
 
     def click_file_button(self, handle: int) -> None:
         # A room parked for a while answers its first click after a restore
@@ -1547,6 +1581,24 @@ class Win32Backend:
             self._user32.PostMessageW(button, _BM_CLICK, 0, 0)
         else:
             self._user32.PostMessageW(dialog, _WM_CLOSE, 0, 0)
+
+    def dismiss_dialogs(self, handle: int) -> None:
+        # A room parked again while its dialog was up hides that dialog, and
+        # top_windows() sees only shown ones; they were found stacked five deep.
+        found: list[int] = []
+
+        def visit(window: int, _param: int) -> bool:
+            if (
+                self._pid_of(window) == self._pid
+                and self._class(window) == DIALOG_CLASS
+                and int(self._user32.GetWindow(window, _GW_OWNER) or 0) == handle
+            ):
+                found.append(int(window))
+            return True
+
+        self._user32.EnumWindows(self._proc(visit), 0)
+        for dialog in found:
+            self.cancel_dialog(dialog)
 
     def file_popup(self, before: set[int]) -> Optional[int]:
         for handle in self.top_windows() - before:
