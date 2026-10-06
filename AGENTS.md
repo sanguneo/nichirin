@@ -14,6 +14,7 @@ it.
 | `windows/` | `kanao-cli`: package `kanao`, Python 3.10+, its tests, skill and docs |
 | `macos/` | `kamado-cli`: package `kamado`, Python 3.9+, its tests, skill and docs |
 | `kanao/`, `kamado/`, `kakaoread/`, `install.py` | Root entry points that keep the pre-merge commands working from the root; no code of their own |
+| `nichirin/` | `python -m nichirin`: runs `kamado.cli` on a Mac and `kanao.cli` elsewhere, same arguments |
 
 The root `kanao` and `kamado` packages set their `__path__` to the real
 package and run its `__init__`, so every module still loads once, from
