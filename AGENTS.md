@@ -37,8 +37,30 @@ cd macos && python3 -m unittest discover -t . -s tests
 ```
 
 A suite run on the other platform skips what needs that platform; it is not
-evidence for it. A change to `kakaocommon/` or `openapi.json` runs both suites,
-the Windows one on Windows and the macOS one on a Mac.
+evidence for it. A change to `kakaocommon/` or `openapi.json` wants both suites,
+the Windows one on Windows and the macOS one on a Mac; when only one machine is
+at hand, the next section says what to do about the other.
+
+## Working from one platform
+
+Most contributors have only a Mac or only a Windows machine, and that is the
+expected case (`CONTRIBUTING.md`). Work and test on the machine you are on.
+When the change also reaches the other platform and you cannot run it there:
+
+- Say so in the PR body: which platform was not checked, and what to run.
+- Offer to open a short check issue, and open it when the person agrees:
+  `gh issue create --template check-windows.md` (or `check-macos.md`), or
+  with `--label "check: windows"` / `--label "check: macos"` and three lines:
+  what changed (PR or commit), what to run there and what to expect, what
+  you ran here and its last line.
+- It is a courtesy, not a gate. Do not block, delay or refuse a change
+  because the other platform is unchecked, and never present a skipped suite
+  as evidence for the other platform.
+
+It reaches the other platform when it touches `kakaocommon/`, `openapi.json`,
+the root entry points, or anything both builds must answer the same way
+(commands, options, JSON envelope keys, error codes). A change inside one
+build's directory with no visible difference needs no issue.
 
 ## Rules for the shared parts
 
