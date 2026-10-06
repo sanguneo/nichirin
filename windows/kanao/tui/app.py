@@ -1809,6 +1809,7 @@ class App:
             row("/sum 30m", f"구간별 다이제스트 (최대 {hours}h)"),
             row("/export", "다이제스트 원문을 파일로"),
             row("/older", f"이전 기록 {LOAD_MORE_STEP}개 더"),
+            row("/restore", "보냈는지 모를 글을 입력창으로"),
             row("/open [방이름]", "탭 하나 더 열기. 이름이 없으면 목록에서 고르기"),
             row("/close", "이 탭 닫기"),
             row("/back", "탭을 모두 닫고 목록으로"),

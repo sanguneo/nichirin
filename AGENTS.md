@@ -10,7 +10,7 @@ it.
 | Path | What it is |
 | --- | --- |
 | `openapi.json` | The one HTTP + SSE contract both `serve` commands answer |
-| `kakaocommon/` | Modules both builds run unchanged (`wal`, `sixel`) |
+| `kakaocommon/` | Modules both builds run unchanged (`wal`, `sixel`, `budget`) |
 | `windows/` | `kanao-cli`: package `kanao`, Python 3.10+, its tests, skill and docs |
 | `macos/` | `kamado-cli`: package `kamado`, Python 3.9+, its tests, skill and docs |
 | `kanao/`, `kamado/`, `kakaoread/`, `install.py` | Root entry points that keep the pre-merge commands working from the root; no code of their own |
@@ -25,6 +25,13 @@ else in them. The platform packages append the root to `sys.path` only when
 picks up these redirects instead of the real package.
 
 ## Commands
+
+Each `tests/__init__.py` appends the repository root to `sys.path` when
+`kakaocommon` is not importable yet, so any single test module runs on its own;
+it appends and never inserts, so the root redirect packages never shadow the
+real ones. `install.py` refuses a checkout without `kakaocommon/` rather than
+installing a launcher that cannot import. `windows/bench/bench_read_path.py`
+measures the read path on synthetic data and asserts nothing.
 
 Run each suite from its own directory; discovery needs `-t .`.
 

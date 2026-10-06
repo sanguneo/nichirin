@@ -2322,6 +2322,7 @@ class App:
             ("body", "/sum <구간>    최근 대화 요약 (예: /sum 30m, /sum 2h)"),
             ("body", "/export        요약(다이제스트) 텍스트 파일로 저장"),
             ("body", f"/older         이전 대화 {LOAD_MORE_STEP}개 더 불러오기"),
+            ("body", "/restore       보냈는지 모를 글을 입력창으로 가져오기"),
             ("body", "/notice        대화방 공지사항 보기"),
             ("body", "/files         파일 첨부 목록 보기"),
             ("body", "/links         링크 첨부 목록 보기"),
