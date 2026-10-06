@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from http.server import ThreadingHTTPServer
 from typing import Any, Callable, Optional
+
+from kakaocommon.register import start_from_env
 
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
@@ -99,6 +102,10 @@ def run(
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kamado serve listening on {host}:{server.server_port}", flush=True)
+    # Opt-in: only with SAYA_REGISTER_URL and SAYA_REGISTER_TOKEN set (kakaocommon/register.py).
+    registrar = start_from_env(
+        os.environ, kind="kakao", id="kamado", port=server.server_port, token=token
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -113,5 +120,7 @@ def run(
         handler._drain(request_timeout)  # type: ignore[attr-defined]
         return 130
     finally:
+        if registrar is not None:
+            registrar.stop()
         server.server_close()
     return 0

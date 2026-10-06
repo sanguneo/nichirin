@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+### 추가
+
+- **`serve`가 saya에 스스로 등록합니다(선택).** `SAYA_REGISTER_URL`과 `SAYA_REGISTER_TOKEN`을 주면 시작할 때
+  saya에 `{kind: "kakao", id: "kanao", url, token}`을 알리고 30초마다 다시 알리며, Ctrl-C로 끝낼 때 등록을
+  지웁니다. saya 쪽에는 코어 주소도 토큰도 두지 않아도 됩니다(saya `docs/register.md`). saya가 다른 기계에
+  있으면 `SAYA_ADVERTISE_URL`(예: `tailscale serve`로 연 `https://<기계>.<tailnet>.ts.net:8765`)을 함께 줍니다.
+  등록 실패는 서빙을 막지 않고, 상태가 바뀔 때만 토큰 없이 한 줄 남깁니다. 공용 코드는 `kakaocommon/register.py`.
+
 ## [0.30.2] — 2026-10-06
 
 #85(@kimjunny)를 고쳤습니다. #82의 수정은 좌표계를 하나 잘못 골랐습니다.
