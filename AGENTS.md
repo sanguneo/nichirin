@@ -13,6 +13,15 @@ it.
 | `kakaocommon/` | Modules both builds run unchanged (`wal`, `sixel`) |
 | `windows/` | `kanao-cli`: package `kanao`, Python 3.10+, its tests, skill and docs |
 | `macos/` | `kamado-cli`: package `kamado`, Python 3.9+, its tests, skill and docs |
+| `kanao/`, `kamado/`, `kakaoread/`, `install.py` | Root entry points that keep the pre-merge commands working from the root; no code of their own |
+
+The root `kanao` and `kamado` packages set their `__path__` to the real
+package and run its `__init__`, so every module still loads once, from
+`windows/` or `macos/`, under its usual name. The root `kakaoread` and
+`install.py` pick `macos/` on a Mac and `windows/` elsewhere. Put nothing
+else in them. The platform packages append the root to `sys.path` only when
+`kakaocommon` is missing, so a suite run inside `windows/` or `macos/` never
+picks up these redirects instead of the real package.
 
 ## Commands
 

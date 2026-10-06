@@ -12,23 +12,26 @@
 두 빌드의 `serve`는 같은 HTTP + SSE 계약, 저장소 루트의
 [`openapi.json`](openapi.json)에 답합니다.
 
-## 설치
+## 설치와 실행
+
+합치기 전과 같은 명령을 저장소 루트에서 그대로 씁니다. `install.py`는 이 컴퓨터의
+빌드(맥이면 `macos/`, 그 밖에는 `windows/`)를 골라 설치합니다.
 
 ```powershell
 # Windows
-cd windows
 python install.py
+python -m kanao status
 ```
 
 ```bash
 # macOS
-cd macos
 python3 install.py
+python3 -m kamado status
 ```
 
-설치되는 스킬 이름(`kanao-cli`, `kamado-cli`)과 실행 스크립트 경로는 저장소를 합치기
-전과 같습니다. 이미 설치한 스킬은 그대로 동작하고, 업데이트할 때만 해당 디렉터리에서
-`install.py --force`를 다시 실행하면 됩니다.
+`windows/`나 `macos/` 안에서 실행해도 같습니다. 설치되는 스킬 이름(`kanao-cli`,
+`kamado-cli`)과 실행 스크립트 경로도 합치기 전과 같습니다. 이미 설치한 스킬은 그대로
+동작하고, 업데이트할 때만 `install.py --force`를 다시 실행하면 됩니다.
 
 ## 저장소 이전
 
