@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="windows/assets/logo.png" alt="kanao — 나비" width="120">
-&nbsp;&nbsp;&nbsp;&nbsp;
-<img src="macos/assets/logo.png" alt="kamado — 불꽃" width="120">
+<img src="assets/og-nichirin.png" alt="nichirin — PC와 Mac의 카카오톡을 터미널에서 읽고, 따라가고, 보낸다" width="900">
 
 # nichirin
 
@@ -98,6 +96,7 @@ Mac에서는 `python3`를 씁니다. 빌드 이름으로 직접 불러도 됩니
 | [`macos/`](macos/) | macOS 빌드: 패키지 `kamado`, 테스트, 스킬, 문서 |
 | [`kakaocommon/`](kakaocommon/) | 두 빌드가 그대로 같이 쓰는 코드(`wal`, `sixel`) |
 | [`openapi.json`](openapi.json) | 두 `serve`가 답하는 HTTP + SSE 계약 하나 |
+| [`assets/`](assets/) | 저장소 로고와 소셜 미리보기 이미지 |
 | `nichirin/`, `kanao/`, `kamado/`, `kakaoread/`, `install.py` | 루트 진입점. 자기 코드 없이 빌드로 연결만 합니다 |
 
 테스트는 각 빌드 디렉터리에서 그 플랫폼 위에서 돌립니다.
