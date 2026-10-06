@@ -26,9 +26,10 @@ import hashlib
 import json
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Protocol, TypedDict, cast
+from typing import Callable, Iterable, Iterator, Optional, Protocol, TypedDict, cast
 
 from .errors import ErrorCode, KanaoError
 
@@ -453,10 +454,18 @@ class RoomOpener:
         if search is None:
             return False, None
         try:
-            results = search(room)
-            if results is None:
-                return False, None
-            return True, self._try_row(results, row, wanted, known, scroll=False)
+            # The catalog title first, then the window's own: the self-chat
+            # is listed and searched under the account's name, so searching
+            # for 나와의 채팅 finds nothing (#82).
+            terms = [room, *sorted(wanted - {room})]
+            for index, term in enumerate(terms):
+                results = search(term)
+                if results is None:
+                    return index > 0, None
+                found = self._try_row(results, row if index == 0 else 0, wanted, known, scroll=False)
+                if found is not None:
+                    return True, found
+            return True, None
         finally:
             clear = getattr(self._backend, "clear_search", None)
             if clear is not None:
@@ -933,6 +942,8 @@ _BM_CLICK = 0x00F5
 _GW_OWNER = 4
 _SMTO_ABORTIFHUNG = 0x0002
 _WM_NULL = 0x0000
+_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+"""DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: the client's own pixels."""
 _DESKTOP_SWITCHDESKTOP = 0x0100
 _POPUP_CLASS = "EVA_Window_Dblclk"
 _POPUP_SLACK = 0.2
@@ -968,6 +979,8 @@ class Win32Backend:
         u.SendMessageTimeoutW.restype = ctypes.c_ssize_t
         u.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
         u.PostMessageW.restype = wintypes.BOOL
+        u.SetThreadDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
 
     def _message(self, control: int, code: int, wp: int = 0, lp: int = 0) -> int:
         """Bound synchronous cross-process messages to two seconds."""
@@ -1048,10 +1061,31 @@ class Win32Backend:
                 return found[0]
         return None
 
+    @contextmanager
+    def _physical(self) -> Iterator[None]:
+        """Read and write window coordinates in the client's own pixels (#82).
+
+        Python is DPI-unaware, so on a monitor scaled past 100% Windows hands it
+        window sizes shrunk to 96 DPI while ``GetDpiForWindow`` still reports
+        the window's real 192. Mixing the two put the file button's click in
+        the message list. Per-monitor aware for the length of one measurement,
+        every size, point and DPI is the one the client itself draws with.
+        """
+        try:
+            previous = self._user32.SetThreadDpiAwarenessContext(_PER_MONITOR_AWARE_V2)
+        except (AttributeError, OSError):
+            previous = None
+        try:
+            yield
+        finally:
+            if previous:
+                self._user32.SetThreadDpiAwarenessContext(previous)
+
     def _dpi(self, handle: int) -> int:
         """The scaling this window is drawn at, or the measured one."""
         try:
-            dpi = int(self._user32.GetDpiForWindow(handle))
+            with self._physical():
+                dpi = int(self._user32.GetDpiForWindow(handle))
         except (AttributeError, OSError, ValueError):
             return MEASURED_DPI
         return dpi if dpi > 0 else MEASURED_DPI
@@ -1065,7 +1099,8 @@ class Win32Backend:
 
         _pitch, first_centre, column = row_geometry(self._dpi(control))
         point = _Point(column, first_centre)
-        self._user32.ClientToScreen(control, ctypes.byref(point))
+        with self._physical():
+            self._user32.ClientToScreen(control, ctypes.byref(point))
         position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
         for _notch in range(_WHEEL_NOTCHES):
             self._user32.PostMessageW(
@@ -1407,7 +1442,9 @@ class Win32Backend:
         from ctypes import wintypes
 
         rect = wintypes.RECT()
-        if not self._user32.GetWindowRect(handle, ctypes.byref(rect)):
+        with self._physical():
+            found = self._user32.GetWindowRect(handle, ctypes.byref(rect))
+        if not found:
             raise OSError(f"GetWindowRect failed: {ctypes.get_last_error()}")
         return rect.left, rect.top, rect.right, rect.bottom
 
@@ -1429,7 +1466,8 @@ class Win32Backend:
         self._message(handle, _WM_NULL)
         left, top, _right, _bottom = self._rect(handle)
         point = wintypes.POINT(left + x, top + y)
-        self._user32.ScreenToClient(handle, ctypes.byref(point))
+        with self._physical():
+            self._user32.ScreenToClient(handle, ctypes.byref(point))
         position = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
         result = ctypes.c_size_t()
         for message, button in (

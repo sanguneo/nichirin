@@ -81,8 +81,9 @@ class FakeDesktop:
             return None
         self.searches.append(text)
         self.log.append(f"search:{text}")
-        self._all_rows = self.rows
-        self.rows = [title for title in self.rows if text in title]
+        if self._all_rows is None:
+            self._all_rows = self.rows
+        self.rows = [title for title in self._all_rows if text in title]
         return LIST_CONTROL
 
     def clear_search(self) -> None:
@@ -398,6 +399,17 @@ class FarRoomTests(unittest.TestCase):
         desktop.searchable = True
         with self.assertRaises(KanaoError):
             opener(desktop, rows=2).open("없는 방", hint=9)
+        self.assertEqual(desktop.cleared, 1)
+
+    def test_the_self_chat_is_searched_under_its_window_title(self) -> None:
+        # The catalog calls it 나와의 채팅; the client lists it under the
+        # account's own name, which is what the search box matches (#82).
+        desktop = FakeDesktop(["하나", "둘", "합성 이름"])
+        desktop.searchable = True
+        window = opener(desktop, rows=2).open("나와의 채팅", aliases=["합성 이름"], hint=9)
+        self.assertEqual(window.title, "합성 이름")
+        self.assertEqual(desktop.searches, ["나와의 채팅", "합성 이름"])
+        self.assertEqual(desktop.closed, [])
         self.assertEqual(desktop.cleared, 1)
 
     def test_a_filtered_row_that_is_someone_else_is_closed(self) -> None:
