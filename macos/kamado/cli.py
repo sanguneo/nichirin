@@ -377,6 +377,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         from . import paths, snapshot
         from .macauto import client_session
         from .serve import (
+            SharedReads,
             UploadStage,
             make_live_account_reader,
             make_live_attachments_provider,
@@ -408,23 +409,26 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         snapshot.sweep_orphans()
         # Texts and files share one line, so they share the warm reader too.
         send_reader = make_live_account_reader()
+        # Reads share one decrypted snapshot instead of decrypting per request.
+        reads = SharedReads()
+        reads.warm_in_background()
         return serve_run(
             host=arguments.host,
             port=arguments.port,
             send=make_live_send(send_reader),
             token=token,
             min_interval=arguments.min_interval,
-            rooms_provider=make_live_rooms_provider(lambda: Reader()),
-            context_provider=make_live_context_provider(lambda: Reader()),
-            digest_provider=make_live_digest_provider(lambda: Reader()),
+            rooms_provider=make_live_rooms_provider(reads.reading),
+            context_provider=make_live_context_provider(reads.reading),
+            digest_provider=make_live_digest_provider(reads.reading),
             watcher_factory=make_live_watcher_factory(
-                lambda: Reader(), interval=arguments.poll_interval
+                reads.open_reader, interval=arguments.poll_interval, lock=lambda: reads.lock
             ),
             poll_interval=arguments.poll_interval,
-            notice_provider=make_live_notice_provider(lambda: Reader()),
-            attachments_provider=make_live_attachments_provider(lambda: Reader()),
-            revisions_provider=make_live_revisions_provider(lambda: Reader()),
-            file_provider=make_live_file_provider(lambda: Reader()),
+            notice_provider=make_live_notice_provider(reads.reading),
+            attachments_provider=make_live_attachments_provider(reads.reading),
+            revisions_provider=make_live_revisions_provider(reads.reading),
+            file_provider=make_live_file_provider(reads.reading),
             upload=make_live_upload(send_reader),
             upload_stage=UploadStage(paths.state_directory() / "uploads"),
             session_provider=client_session,
