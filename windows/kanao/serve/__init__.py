@@ -47,6 +47,7 @@ re-exported here, so ``from kanao import serve`` still reaches all of it.
 from __future__ import annotations
 
 from .backends import (
+    SharedReads,
     make_live_attachments_provider,
     make_live_file_provider,
     make_live_notice_provider,
@@ -94,6 +95,7 @@ __all__ = [
     "MIN_TOKEN_LENGTH",
     "QuietDisconnects",
     "ServeHTTPServer",
+    "SharedReads",
     "build_handler",
     "make_live_attachments_provider",
     "make_live_file_provider",

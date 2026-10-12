@@ -248,8 +248,8 @@ def build_handler(
     """Set once the server is stopping: streams end, unstarted writes are refused."""
     writes = threading.Condition()
     writing = [0]
-    # Every read builds its own reader and cache, so reads at once are bounded
-    # here; a refusal is a 503 the caller may repeat, never a wait.
+    # Reads at once are bounded here; a refusal is a 503 the caller may
+    # repeat, never a wait.
     read_slots = threading.Semaphore(max_concurrent_reads)
 
     class Handler(BaseHTTPRequestHandler):

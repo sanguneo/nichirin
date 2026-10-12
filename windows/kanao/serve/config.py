@@ -75,9 +75,9 @@ MAX_HIGHLIGHTS = 20
 """Most representative lines a digest slice may be asked for."""
 
 MAX_CONCURRENT_READS = 4
-"""Read requests answered at once. Each builds its own reader and snapshot
-cache, so this is what bounds the memory reads hold together; streams are
-limited separately by ``MAX_STREAMS``."""
+"""Read requests answered at once. They share one snapshot and take turns on
+it (``SharedReads``), so this bounds how many wait rather than how many
+decrypt; streams are limited separately by ``MAX_STREAMS``."""
 
 MAX_CONCURRENT_UPLOADS = 2
 """Upload bodies held at once. A body is kept whole until its file is handed

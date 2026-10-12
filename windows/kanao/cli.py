@@ -361,6 +361,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
 
     if arguments.command == "serve":
         from .serve import (
+            SharedReads,
             make_live_attachments_provider,
             make_live_file_provider,
             make_live_notice_provider,
@@ -385,24 +386,29 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
                 file=sys.stderr,
                 flush=True,
             )
+        # Reads share one decrypted snapshot instead of decrypting per request.
+        reads = SharedReads()
+        reads.warm_in_background()
         return serve_run(
             host=arguments.host,
             port=arguments.port,
             send=make_live_send(),
             token=token,
             min_interval=arguments.min_interval,
-            rooms_provider=make_live_rooms_provider(lambda: Reader()),
-            context_provider=make_live_context_provider(lambda: Reader()),
-            digest_provider=make_live_digest_provider(lambda: Reader()),
+            rooms_provider=make_live_rooms_provider(reads.reading),
+            context_provider=make_live_context_provider(reads.reading),
+            digest_provider=make_live_digest_provider(reads.reading),
             watcher_factory=make_live_watcher_factory(
-                lambda: Reader(), interval=arguments.poll_interval
+                reads.open_reader, interval=arguments.poll_interval, lock=lambda: reads.lock
             ),
             poll_interval=arguments.poll_interval,
+            # Opening a room drives the client and waits for its key, seconds
+            # at a time; it keeps a reader of its own so reads are not held.
             room_opener=make_live_room_opener(lambda: Reader()),
-            notice_provider=make_live_notice_provider(lambda: Reader()),
-            attachments_provider=make_live_attachments_provider(lambda: Reader()),
-            revisions_provider=make_live_revisions_provider(lambda: Reader()),
-            file_provider=make_live_file_provider(lambda: Reader()),
+            notice_provider=make_live_notice_provider(reads.reading),
+            attachments_provider=make_live_attachments_provider(reads.reading),
+            revisions_provider=make_live_revisions_provider(reads.reading),
+            file_provider=make_live_file_provider(reads.reading),
             upload=make_live_upload(),
         )
 
