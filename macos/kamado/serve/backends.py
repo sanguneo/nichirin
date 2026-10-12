@@ -7,9 +7,82 @@ platform-specific half of the server is one import away from the rest of it.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+import contextlib
+import sys
+import threading
+from typing import Any, Callable, ContextManager, Iterator, Optional
 
 from ..errors import ErrorCode, KamadoError
+
+
+class SharedReads:
+    """One snapshot cache and one account for every read the server answers.
+
+    A reader built with neither decrypts the whole database on each request.
+    On a measured 880 MB account that was minutes per ``GET /rooms`` once a
+    few requests overlapped, each holding its own decrypted copy, until the
+    read slots ran out and every later read was refused BUSY. Sharing the
+    cache makes the first read pay for the decryption and every later one a
+    stat, or a log overlay when only the log moved.
+
+    ``SnapshotCache`` takes no lock, so every use of the shared one happens
+    under :attr:`lock`. That is also what makes concurrent requests share the
+    work: the first one decrypts while the rest wait on the lock, then find
+    the snapshot already cached. Refreshing outside the lock was tried and
+    kept several stale images alive at once, so it stays inside.
+    """
+
+    def __init__(self) -> None:
+        from ..snapshot import SnapshotCache
+
+        self.lock = threading.RLock()
+        self._snapshots = SnapshotCache()
+        self._account: dict[str, Any] = {}
+
+    def open_reader(self) -> Any:
+        """A fresh reader on the shared cache; use it only under :attr:`lock`.
+
+        Like the reads it replaces it records no names: the ledger stays the
+        send line's. The account is resolved on the first read, not at startup.
+        """
+        from ..reader import Reader
+
+        if "keyring" not in self._account:
+            from ..keyring import Keyring
+
+            self._account["keyring"] = Keyring.discover()
+        return Reader(cache=self._snapshots, keyring=self._account["keyring"])
+
+    @contextlib.contextmanager
+    def reading(self) -> Iterator[Any]:
+        """Hold the line for one read; the reader itself is fresh each time."""
+        with self.lock:
+            reader = self.open_reader()
+            try:
+                yield reader
+            finally:
+                reader.close()
+
+    def warm(self) -> None:
+        """Decrypt once so the first request does not wait for it.
+
+        Failure is only reported: an install that cannot read yet should still
+        serve ``/health`` and explain itself on the request that needs it.
+        """
+        try:
+            with self.reading() as reader:
+                reader.rooms()
+        except Exception as error:  # noqa: BLE001 - the request path retries
+            print(
+                f"warning: warming the snapshot failed: {type(error).__name__}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def warm_in_background(self) -> threading.Thread:
+        thread = threading.Thread(target=self.warm, name="kamado-warm", daemon=True)
+        thread.start()
+        return thread
 
 
 def make_live_rooms_provider(reader_factory) -> Callable[[], list[Any]]:
@@ -154,8 +227,8 @@ def make_live_send(
 
     Sharing is safe here and nowhere else in this package: ``SnapshotCache``
     takes no lock, and every call to this function is made under the handler's
-    ``send_lock``, so exactly one thread is ever inside it. The read paths run
-    concurrently and keep a cache per request for that reason.
+    ``send_lock``, so exactly one thread is ever inside it. The read paths
+    share a different cache under a lock of their own (:class:`SharedReads`).
     """
     if open_reader is None:
         open_reader = make_live_account_reader()
@@ -285,8 +358,17 @@ def make_live_file_provider(reader_factory) -> Callable[[int, int], Any]:
     return provider
 
 
-def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], Any]:
-    """Return one ``watch.Watcher`` per SSE connection on a live server."""
+def make_live_watcher_factory(
+    reader_factory,
+    interval: float,
+    lock: Optional[Callable[[], ContextManager[Any]]] = None,
+) -> Callable[[], Any]:
+    """Return one ``watch.Watcher`` per SSE connection on a live server.
+
+    *lock* is entered around every step that touches the database, for a
+    reader whose cache is shared with other requests (see :class:`SharedReads`).
+    """
+    guard: Callable[[], ContextManager[Any]] = lock if lock is not None else contextlib.nullcontext
 
     class _LiveWatcher:
         """Own the reader alongside the watcher so disconnect closes both."""
@@ -298,17 +380,21 @@ def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], A
             self._watcher = Watcher(self._reader, interval=interval)
 
         def prime(self) -> None:
-            self._watcher.prime()
+            with guard():
+                self._watcher.prime()
 
         def resume(self, cursor) -> None:
-            self._watcher.resume(cursor)
+            with guard():
+                self._watcher.resume(cursor)
 
         def poll(self):
-            return self._watcher.poll()
+            with guard():
+                return self._watcher.poll()
 
         def close(self) -> None:
             try:
-                self._reader.close()
+                with guard():
+                    self._reader.close()
             except Exception:
                 pass
 

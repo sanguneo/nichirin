@@ -66,9 +66,11 @@ class ServeRuntimeTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # Starting sweeps the real temporary directory and may warn on stderr;
-        # neither belongs to these tests unless one asks for it.
+        # neither belongs to these tests unless one asks for it. Warming would
+        # read the real account on a thread that outlives the test.
         for target, value in (("kamado.snapshot._warned", [True]),
-                              ("kamado.snapshot.sweep_orphans", mock.Mock())):
+                              ("kamado.snapshot.sweep_orphans", mock.Mock()),
+                              ("kamado.serve.SharedReads.warm_in_background", mock.Mock())):
             patcher = mock.patch(target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -118,6 +120,49 @@ class ServeRuntimeTests(unittest.TestCase):
             status = cli.run(arguments, mock.Mock())
         self.assertEqual(status, 0)
         self.assertEqual(captured["token"], "flag-token-1234567890")
+
+    def test_every_read_route_shares_one_snapshot_cache(self) -> None:
+        """A cache per request decrypted the whole database per request."""
+        import kamado.keyring as keyring_module
+        import kamado.reader as reader_module
+
+        caches: list = []
+
+        class _RecordingReader:
+            def __init__(self, cache=None, keyring=None, ledger=None, connection=None):
+                caches.append(cache)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exception):
+                return None
+
+            def rooms(self):
+                return []
+
+            def close(self) -> None:
+                return None
+
+        captured: dict = {}
+
+        def fake_run(host, port, send, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+        with mock.patch.object(reader_module, "Reader", _RecordingReader), \
+                mock.patch.object(cli, "Reader", _RecordingReader), \
+                mock.patch.object(keyring_module.Keyring, "discover",
+                                  staticmethod(lambda: object())), \
+                mock.patch("kamado.serve.run", side_effect=fake_run):
+            cli.run(self._args("--token", "flag-token-1234567890"), mock.Mock())
+            captured["rooms_provider"]()
+            captured["rooms_provider"]()
+            captured["watcher_factory"]()
+
+        self.assertEqual(len(caches), 3)
+        self.assertNotIn(None, caches, "a reader built its own cache")
+        self.assertEqual(len({id(cache) for cache in caches}), 1)
 
     def test_starting_warns_about_the_disk_path_and_sweeps_orphans(self) -> None:
         arguments = self._args("--token", "flag-token-1234567890")

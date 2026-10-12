@@ -9,7 +9,9 @@ character was typed.
 
 from __future__ import annotations
 
+import threading
 import unittest
+from unittest import mock
 
 from kamado.serve import backends
 
@@ -214,6 +216,113 @@ class RoomIdTests(unittest.TestCase):
             self.send("10", "hello")
         self.assertEqual(raised.exception.code, ErrorCode.AMBIGUOUS_CHAT)
         self.assertEqual(self.sent, [])
+
+
+class SharedReadsTests(unittest.TestCase):
+    """Reads share one snapshot and take turns on it.
+
+    A reader per request with a cache per request decrypted the whole database
+    once per request, all at the same time: minutes per read on an 880 MB
+    account, until every read slot was taken and the rest were refused BUSY.
+    """
+
+    def setUp(self) -> None:
+        import kamado.keyring as keyring_module
+        import kamado.reader as reader_module
+        import kamado.snapshot as snapshot_module
+
+        test = self
+        self.decrypts = 0
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.ledgers: list = []
+        self.discovered: list = []
+
+        class _CountingCache:
+            """Decrypts on its first connect, as a real cache does for one database."""
+
+            def __init__(self, budget_bytes=None) -> None:
+                self._ready = False
+
+            def connect(self, database, geometry):
+                if not self._ready:
+                    test.decrypts += 1
+                    test.entered.set()
+                    test.assertTrue(test.release.wait(10), "the first read was never let go")
+                    self._ready = True
+                return object()
+
+            def close(self) -> None:
+                return None
+
+        class _Reader:
+            def __init__(self, cache=None, keyring=None, ledger=None, connection=None):
+                self._cache = cache if cache is not None else _CountingCache()
+                test.ledgers.append(ledger)
+
+            def rooms(self):
+                self._cache.connect(None, None)
+                return []
+
+            def close(self) -> None:
+                return None
+
+        def _discover():
+            self.discovered.append(object())
+            return self.discovered[-1]
+
+        for owner, name, value in (
+            (snapshot_module, "SnapshotCache", _CountingCache),
+            (reader_module, "Reader", _Reader),
+            (keyring_module.Keyring, "discover", staticmethod(_discover)),
+        ):
+            patcher = mock.patch.object(owner, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_reads_at_once_decrypt_once_and_take_turns(self) -> None:
+        reads = backends.SharedReads()
+        rooms = backends.make_live_rooms_provider(reads.reading)
+        threads = [threading.Thread(target=rooms) for _ in range(6)]
+        threads[0].start()
+        self.assertTrue(self.entered.wait(10), "the first read never reached the cache")
+        for thread in threads[1:]:
+            thread.start()
+        self.assertFalse(
+            reads.lock.acquire(blocking=False), "the cache was in use without the lock"
+        )
+        self.release.set()
+        for thread in threads:
+            thread.join(10)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(self.decrypts, 1, "each request decrypted the database again")
+        self.assertEqual(len(self.discovered), 1, "the account was rediscovered")
+        self.assertEqual(self.ledgers, [None] * 6, "a read recorded names")
+
+    def test_a_stream_polls_under_the_same_lock(self) -> None:
+        import kamado.watch as watch_module
+
+        reads = backends.SharedReads()
+        free_while_polling: list = []
+
+        class _Watcher:
+            def __init__(self, reader, interval) -> None:
+                return None
+
+            def poll(self):
+                probe = threading.Thread(
+                    target=lambda: free_while_polling.append(reads.lock.acquire(blocking=False))
+                )
+                probe.start()
+                probe.join(10)
+                return []
+
+        with mock.patch.object(watch_module, "Watcher", _Watcher):
+            factory = backends.make_live_watcher_factory(
+                reads.open_reader, interval=1.0, lock=lambda: reads.lock
+            )
+            factory().poll()
+        self.assertEqual(free_while_polling, [False])
 
 
 if __name__ == "__main__":
