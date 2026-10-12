@@ -7,16 +7,102 @@ platform-specific half of the server is one import away from the rest of it.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 import shutil
+import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, ContextManager, Iterator, Optional
 
 from ..errors import ErrorCode, KanaoError
 from .config import UPLOAD_KEEP_SECONDS
+
+
+class SharedReads:
+    """One snapshot cache and one key ring for every read the server answers.
+
+    Ported from kamado (nichirin #93). A reader built with neither decrypted
+    the catalog and the room's log again on each request, and overlapping
+    requests each held their own decrypted copy until the read slots ran out.
+    Sharing the cache makes the first read pay for the decryption and every
+    later one a fingerprint check, or a log overlay when only the log moved.
+
+    ``SnapshotCache`` takes no lock, so every use of the shared one happens
+    under :attr:`lock`; the first request decrypts while the rest wait, then
+    find the snapshot cached.
+
+    Windows differs from the Mac in where the keys come from: each room has
+    its own key, found in the running client's heap, and a room the client
+    opens later is not in a key ring found before it. A read's rescan is kept
+    for the next read, and a read that ends ``KEY_UNAVAILABLE`` drops the
+    shared ring, so the read the handler retries after ``open=true`` looks
+    for the account again instead of reusing one that cannot know the room.
+    """
+
+    def __init__(self) -> None:
+        from ..snapshot import SnapshotCache
+
+        self.lock = threading.RLock()
+        self._snapshots = SnapshotCache()
+        self._account: dict[str, Any] = {}
+
+    def open_reader(self) -> Any:
+        """A fresh reader on the shared cache; use it only under :attr:`lock`.
+
+        Like the reads it replaces it records no names: the ledger stays the
+        send line's.
+        """
+        from ..reader import Reader
+
+        return Reader(cache=self._snapshots, keyring=self._account.get("keyring"))
+
+    @contextlib.contextmanager
+    def reading(self) -> Iterator[Any]:
+        """Hold the line for one read; the reader itself is fresh each time."""
+        with self.lock:
+            reader = self.open_reader()
+            try:
+                yield reader
+            except KanaoError as error:
+                if error.code == ErrorCode.KEY_UNAVAILABLE:
+                    self._account.pop("keyring", None)
+                else:
+                    self._keep_keyring(reader)
+                raise
+            else:
+                self._keep_keyring(reader)
+            finally:
+                reader.close()
+
+    def _keep_keyring(self, reader: Any) -> None:
+        found = getattr(reader, "_keyring", None)
+        if found is not None:
+            self._account["keyring"] = found
+
+    def warm(self) -> None:
+        """Decrypt the catalog once so the first request does not wait for it.
+
+        Failure is only reported: a client that is closed or signed out should
+        still serve ``/health`` and explain itself on the request that needs it.
+        """
+        try:
+            with self.reading() as reader:
+                reader.rooms()
+        except Exception as error:  # noqa: BLE001 - the request path retries
+            print(
+                f"warning: warming the snapshot failed: {type(error).__name__}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def warm_in_background(self) -> threading.Thread:
+        thread = threading.Thread(target=self.warm, name="kanao-warm", daemon=True)
+        thread.start()
+        return thread
 
 
 def make_live_rooms_provider(reader_factory) -> Callable[[], list[Any]]:
@@ -89,9 +175,9 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
     bypassed; and the reader itself is still new each time, so nothing it
     memoises about names or columns carries into the next request.
 
-    Only the send path shares these.  ``SnapshotCache`` takes no locks, and
-    sends run one at a time under the handler's send lock; the read routes run
-    concurrently, so they keep a cache per request.
+    ``SnapshotCache`` takes no locks, and sends run one at a time under the
+    handler's send lock, so this cache needs no lock of its own. The read
+    routes share a different cache under a lock of theirs (:class:`SharedReads`).
     """
     from ..names import NameLedger
     from ..reader import Reader
@@ -345,8 +431,17 @@ def make_live_file_provider(reader_factory) -> Callable[[int, int], Any]:
     return provider
 
 
-def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], Any]:
-    """Return one ``watch.Watcher`` per SSE connection on a live server."""
+def make_live_watcher_factory(
+    reader_factory,
+    interval: float,
+    lock: Optional[Callable[[], ContextManager[Any]]] = None,
+) -> Callable[[], Any]:
+    """Return one ``watch.Watcher`` per SSE connection on a live server.
+
+    *lock* is entered around every step that touches the database, for a
+    reader whose cache is shared with other requests (see :class:`SharedReads`).
+    """
+    guard: Callable[[], ContextManager[Any]] = lock if lock is not None else contextlib.nullcontext
 
     class _LiveWatcher:
         """Own the reader alongside the watcher so disconnect closes both."""
@@ -358,17 +453,21 @@ def make_live_watcher_factory(reader_factory, interval: float) -> Callable[[], A
             self._watcher = Watcher(self._reader, interval=interval)
 
         def prime(self) -> None:
-            self._watcher.prime()
+            with guard():
+                self._watcher.prime()
 
         def resume(self, cursor) -> None:
-            self._watcher.resume(cursor)
+            with guard():
+                self._watcher.resume(cursor)
 
         def poll(self):
-            return self._watcher.poll()
+            with guard():
+                return self._watcher.poll()
 
         def close(self) -> None:
             try:
-                self._reader.close()
+                with guard():
+                    self._reader.close()
             except Exception:
                 pass
 

@@ -109,6 +109,48 @@ class ServeRuntimeTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(captured["token"], "flag-token-1234567890")
 
+    def test_every_read_route_shares_one_snapshot_cache(self) -> None:
+        """A cache per request decrypted the catalog and logs per request."""
+        import kanao.reader as reader_module
+
+        caches: list = []
+
+        class _RecordingReader:
+            def __init__(self, user_directory=None, cache=None, keyring=None, ledger=None):
+                caches.append(cache)
+                self._keyring = keyring
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exception):
+                return None
+
+            def rooms(self):
+                return []
+
+            def close(self) -> None:
+                return None
+
+        captured: dict = {}
+
+        def fake_run(host, port, send, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+        with mock.patch.object(reader_module, "Reader", _RecordingReader), \
+                mock.patch.object(cli, "Reader", _RecordingReader), \
+                mock.patch("kanao.serve.SharedReads.warm_in_background", mock.Mock()), \
+                mock.patch("kanao.serve.run", side_effect=fake_run):
+            cli.run(self._args("--token", "flag-token-1234567890"), mock.Mock())
+            captured["rooms_provider"]()
+            captured["rooms_provider"]()
+            captured["watcher_factory"]()
+
+        self.assertEqual(len(caches), 3)
+        self.assertNotIn(None, caches, "a reader built its own cache")
+        self.assertEqual(len({id(cache) for cache in caches}), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
