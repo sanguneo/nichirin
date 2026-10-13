@@ -72,9 +72,12 @@ class _WindowsRecovery:
             function = getattr(library, name)
             function.argtypes = arguments
             function.restype = result
-        self.user = self._user_sid()
+        # A file this account's processes wrote is owned by the token's user,
+        # or, from an elevated process, by the token's default owner (the
+        # Administrators group), so both identify a file of ours.
+        self.owners: tuple[bytes, ...] = (self._token_sid(1), self._token_sid(4))  # TokenUser, TokenOwner
 
-    def _user_sid(self) -> bytes:
+    def _token_sid(self, information_class: int) -> bytes:
         token = w.HANDLE()
         if not self.security.OpenProcessToken(
             self.kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)  # TOKEN_QUERY
@@ -82,13 +85,17 @@ class _WindowsRecovery:
             raise ctypes.WinError(ctypes.get_last_error())
         try:
             size = w.DWORD()
-            self.security.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            self.security.GetTokenInformation(
+                token, information_class, None, 0, ctypes.byref(size)
+            )
             if ctypes.get_last_error() != 122:  # ERROR_INSUFFICIENT_BUFFER
                 raise ctypes.WinError(ctypes.get_last_error())
             data = ctypes.create_string_buffer(size.value)
-            if not self.security.GetTokenInformation(token, 1, data, size, ctypes.byref(size)):
+            if not self.security.GetTokenInformation(
+                token, information_class, data, size, ctypes.byref(size)
+            ):
                 raise ctypes.WinError(ctypes.get_last_error())
-            # TOKEN_USER starts with SID_AND_ATTRIBUTES; its first field is PSID.
+            # TOKEN_USER (SID_AND_ATTRIBUTES) and TOKEN_OWNER both start with a PSID.
             sid = ctypes.c_void_p.from_buffer(data).value
             if not sid:
                 raise ctypes.WinError(1337)  # ERROR_INVALID_SID
@@ -137,7 +144,9 @@ class _WindowsRecovery:
         if result != 0:
             return False
         try:
-            return bool(owner.value and self.security.EqualSid(owner, self.user))
+            return bool(owner.value) and any(
+                self.security.EqualSid(owner, sid) for sid in self.owners
+            )
         finally:
             self.kernel.LocalFree(descriptor)
 
