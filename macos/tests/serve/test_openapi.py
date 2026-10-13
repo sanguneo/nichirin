@@ -97,9 +97,9 @@ class DocumentTests(unittest.TestCase):
 
         Two are macOS-only (a room key and an error code). The reads added
         in 0.15.0 were Windows-only until this schema was checked for them;
-        since 0.16.0 both builds answer them. Contract 0.22.0 still marks
-        `POST /upload` and the `features` that declares it Windows-only; the
-        marks go in a contract change made on both sides together.
+        since 0.16.0 both builds answer them. `POST /upload` and the
+        `features` that declares it are answered by both builds since contract
+        0.22.1 (this build since 0.27.0).
         """
         marked = set()
         def walk(node, trail=()):
@@ -119,8 +119,6 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
-                "paths//upload/post",
-                "paths//health/get/responses/200/content/application/json/schema/properties/features",
             },
         )
 

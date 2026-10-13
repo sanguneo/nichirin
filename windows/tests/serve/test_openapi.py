@@ -97,9 +97,9 @@ class DocumentTests(unittest.TestCase):
     def test_the_platform_differences_are_the_ones_that_are_known(self) -> None:
         """Another divergence has to be declared here, not discovered later.
 
-        Two are macOS-only (a room key and an error code), and the file send
-        added in 0.22.0 is Windows-only with the health key that declares it
-        until the macOS build answers it. The reads added
+        Two are macOS-only (a room key and an error code). The file send added
+        in 0.22.0 and the health key that declares it are answered by both
+        builds since contract 0.22.1 (kamado 0.27.0). The reads added
         in 0.15.0 are answered by both builds since contract 0.16.0, and the
         profile pictures added in 0.17.0 since 0.18.1, and a cut-off
         notice's whole text since 0.20.0, because both clients cut the
@@ -123,8 +123,6 @@ class DocumentTests(unittest.TestCase):
             {
                 "components/schemas/ErrorCode",
                 "components/schemas/Room/properties/typeCode",
-                "paths//upload/post",
-                "paths//health/get/responses/200/content/application/json/schema/properties/features",
             },
         )
 
