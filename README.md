@@ -26,6 +26,12 @@ answers in JSON.*
 
 </div>
 
+> [!CAUTION]
+> **카카오와 무관한 비공식 도구입니다.** 주식회사 카카오가 만들거나 승인·지원하지 않았고, "카카오톡"은 카카오의 상표입니다.
+> 저장된 데이터를 직접 읽고 로그인된 클라이언트를 대신 조작하므로, **카카오 약관상 계정이 일시 또는 영구 제한될 수 있습니다.**
+> 무엇을 읽고 보내고 보관할지, 그 결과와 약관·법령 준수의 **책임은 모두 사용자 본인에게 있습니다.** 보증은 없습니다.
+> 쓰기 전에 면책 고지를 읽어 주세요: [Windows](windows/DISCLAIMER.md) · [macOS](macos/DISCLAIMER.md)
+
 > [!IMPORTANT]
 > **업그레이드 안내 (2026-10-06): saya 연결 방식이 바뀌었습니다.** saya 쪽에 코어 주소·토큰을 적지 않고, `serve` 가 saya 에 스스로 등록합니다(kanao 0.31.0 / kamado 0.29.0부터, 아래 「saya에서 보기」).
 > 기존 배포는 [업그레이드 가이드](https://github.com/sanguneo/saya/blob/main/docs/upgrade-registration.md)를 따라 옮기세요. 에이전트에게 그 문서를 주고 "이대로 옮겨 줘"라고
@@ -158,5 +164,5 @@ Mac만 있으면 Mac 쪽을, Windows만 있으면 Windows 쪽을 작업하고 �
 ## 라이선스와 면책
 
 MIT([Windows](windows/LICENSE), [macOS](macos/LICENSE)). 카카오와 관계없는 비공식 도구이며, 자기
-계정의 데이터를 자기 컴퓨터에서 읽는 용도입니다. 자세한 내용은
-[windows/DISCLAIMER.md](windows/DISCLAIMER.md)를 읽어 주세요.
+계정의 데이터를 자기 컴퓨터에서 읽는 용도입니다. 사용 책임은 본인에게 있습니다. 자세한 내용은
+[windows/DISCLAIMER.md](windows/DISCLAIMER.md)와 [macos/DISCLAIMER.md](macos/DISCLAIMER.md)를 읽어 주세요.
