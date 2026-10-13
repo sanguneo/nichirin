@@ -16,9 +16,10 @@ synthesised and no open panel is navigated.
 * **``submitted`` is the client taking the file, not delivery.** Read the room
   back for a new ``fromMe`` message.
 
-The paste path has not been watched on a live client: the only machine at hand
-was locked when this was written. Every step therefore checks for the element
-it is about to use and refuses, sending nothing, when it is not there.
+The paste path was watched on a live client (0.27.1, and again on 2026-10-13:
+a PNG sent to 나와의 채팅 and read back as a ``fromMe`` photo). Every step
+still checks for the element it is about to use and refuses, sending nothing,
+when it is not there.
 """
 
 from __future__ import annotations
