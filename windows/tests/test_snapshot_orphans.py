@@ -118,9 +118,10 @@ class OrphanSafetyTests(_Fixture):
 
     def test_a_different_user_cannot_reclaim_a_file(self) -> None:
         candidate = self.candidate()
-        # LocalSystem's valid SID differs from this user's SID. Keep the native
-        # GetSecurityInfo/EqualSid calls; change only the expected identity.
-        self.recovery.user = bytes.fromhex("010100000000000512000000")
+        # LocalSystem's valid SID differs from this account's user and default
+        # owner. Keep the native GetSecurityInfo/EqualSid calls; change only the
+        # expected identities.
+        self.recovery.owners = (bytes.fromhex("010100000000000512000000"),)
         self.assertFalse(self.recovery._remove(candidate))
         self.assertEqual(candidate.read_bytes(), self.image)
 

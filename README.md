@@ -33,6 +33,8 @@ answers in JSON.*
 
 ## 빠른 시작
 
+> nichirin이 유용하셨다면 [GitHub Star ⭐](https://github.com/sanguneo/nichirin)를 눌러 응원해 주세요!
+
 저장소 루트에서 `nichirin`으로 실행하면 이 컴퓨터에 맞는 빌드가 실행됩니다. Mac에서는
 `kamado`, Windows에서는 `kanao`입니다. 인자와 JSON 봉투는 두 빌드가 같습니다.
 

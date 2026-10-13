@@ -117,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Installed kanao-cli skill: {target}")
     print(f"Run it with: python \"{target / LAUNCHER}\" status")
+    print("\n⭐ nichirin이 유용하셨다면 GitHub Star로 응원해 주세요: https://github.com/sanguneo/nichirin")
     return 0
 
 
