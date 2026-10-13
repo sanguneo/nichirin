@@ -22,7 +22,7 @@ from kanao.keyring import Keyring
 from kanao.reader import Reader
 
 PROFILE = Path("C:/synthetic-profile")
-OWN_ID = 80133957
+OWN_ID = 500000001
 PEER_ID = 111222333
 FRIEND_ID = 444555666
 STRANGER_ID = 777888999
