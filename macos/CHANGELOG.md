@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.29.2] — 2026-10-13
+
 ### 바뀜
 
 - `install.py`가 설치를 마치면 nichirin GitHub Star 안내를 한 줄 덧붙입니다.
