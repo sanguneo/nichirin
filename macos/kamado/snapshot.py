@@ -28,6 +28,7 @@ erasure and that limitation is documented rather than hidden.
 
 from __future__ import annotations
 
+import mmap
 import os
 import re
 import shutil
@@ -90,8 +91,65 @@ _REAP_SECONDS: Final = 2.0
 """How long a terminated child is given to go before it is killed."""
 
 
+class Plaintext(mmap.mmap):
+    """Anonymous memory that compares by content, the way the ``bytes`` it replaced did."""
+
+    __hash__ = None  # type: ignore[assignment]  # mutable, like bytearray
+
+    def __eq__(self, other: object) -> bool:
+        try:
+            with memoryview(self) as mine, memoryview(other) as theirs:  # type: ignore[arg-type]
+                return mine.cast("B") == theirs.cast("B")
+        except TypeError:
+            return NotImplemented
+
+    def __ne__(self, other: object) -> bool:
+        equal = self.__eq__(other)
+        return equal if equal is NotImplemented else not equal
+
+
+def _anonymous(size: int) -> Plaintext:
+    """Zeroed memory of *size* bytes that goes back to the system when closed.
+
+    A decrypted image is the size of the whole database, and the allocator
+    behind ``bytes`` and ``bytearray`` keeps a freed block of that size
+    resident: measured on macOS 26 with Python 3.14, freeing 900 MiB left the
+    process footprint exactly where it was. Every transient copy therefore
+    raised the process for good. An anonymous mapping is unmapped when it is
+    closed or collected, so only the copies alive at the same moment count.
+    It is shared, so a forked child writes into the parent's pages, and it is
+    never backed by a file, so no plaintext reaches the disk.
+    """
+    return Plaintext(-1, max(size, 1))
+
+
+def _read_whole(path: Path) -> "tuple[mmap.mmap, int]":
+    """Read a file into anonymous memory, raising when it changed size mid-read.
+
+    The size comes back beside the mapping because an empty file still gets a
+    one-byte mapping; nothing can be mapped at length zero.
+    """
+    with path.open("rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        buffer = _anonymous(size)
+        try:
+            with memoryview(buffer) as view:
+                done = 0
+                while done < size:
+                    count = handle.readinto(view[done:size])
+                    if not count:
+                        raise ConsistencyError(f"{path.name} shrank while it was read")
+                    done += count
+            if handle.read(1):
+                raise ConsistencyError(f"{path.name} grew while it was read")
+        except BaseException:
+            buffer.close()
+            raise
+    return buffer, size
+
+
 def _decrypt_pages_worker(
-    shm_name: str,
+    buffer: mmap.mmap,
     key_bytes: bytes,
     page_size: int,
     reserve: int,
@@ -103,24 +161,16 @@ def _decrypt_pages_worker(
 
     Only ever reached from a process that was single-threaded when it forked;
     see :func:`_forkable` for why that is the condition rather than a matter
-    of what this function is careful about.
+    of what this function is careful about. *buffer* is the parent's shared
+    anonymous mapping, inherited across the fork rather than passed by name.
     """
-    from multiprocessing import shared_memory
-
-    shm = shared_memory.SharedMemory(name=shm_name)
-    buffer = shm.buf
-    if buffer is None:  # the segment was closed under this worker
-        raise RuntimeError(f"shared memory {shm_name} is already closed")
-    try:
-        with PreparedKey(key_bytes) as prepared:
-            for number in range(start_page, end_page + 1):
-                start = (number - 1) * page_size
-                page_data = pages.reconstruct_page(
-                    prepared, number, encrypted[start : start + page_size], page_size, reserve
-                )
-                buffer[start : start + page_size] = page_data
-    finally:
-        shm.close()
+    with PreparedKey(key_bytes) as prepared:
+        for number in range(start_page, end_page + 1):
+            start = (number - 1) * page_size
+            page_data = pages.reconstruct_page(
+                prepared, number, encrypted[start : start + page_size], page_size, reserve
+            )
+            buffer[start : start + page_size] = page_data
 
 
 def _decrypt_serially(
@@ -129,16 +179,20 @@ def _decrypt_serially(
     base_pages: int,
     page_size: int,
     reserve: int,
-) -> bytes:
+) -> mmap.mmap:
     """Decrypt every base page on this thread, in order."""
-    base_image = bytearray(len(encrypted))
-    with geometry.prepared() as prepared:
-        for number in range(1, base_pages + 1):
-            start = (number - 1) * page_size
-            base_image[start : start + page_size] = pages.reconstruct_page(
-                prepared, number, encrypted[start : start + page_size], page_size, reserve
-            )
-    return bytes(base_image)
+    base_image = _anonymous(len(encrypted))
+    try:
+        with geometry.prepared() as prepared:
+            for number in range(1, base_pages + 1):
+                start = (number - 1) * page_size
+                base_image[start : start + page_size] = pages.reconstruct_page(
+                    prepared, number, encrypted[start : start + page_size], page_size, reserve
+                )
+    except BaseException:
+        base_image.close()
+        raise
+    return base_image
 
 
 def _forkable() -> bool:
@@ -170,7 +224,7 @@ def _decrypt_base_pages(
     base_pages: int,
     page_size: int,
     reserve: int,
-) -> bytes:
+) -> mmap.mmap:
     """Decrypt all base pages, across CPU cores when this process may fork."""
     num_cpus = os.cpu_count() or 4
     num_workers = min(num_cpus, 8)
@@ -195,7 +249,7 @@ def _decrypt_in_parallel(
     page_size: int,
     reserve: int,
     num_workers: int,
-) -> bytes:
+) -> mmap.mmap:
     """Decrypt across forked children, or raise with every child already gone.
 
     The children are started one at a time, and any of them can fail to
@@ -203,16 +257,20 @@ def _decrypt_in_parallel(
     those into a command that never returned, with no fallback reached. So
     the wait has one overall deadline, and on the way out - success or not -
     every child that was started is terminated if it is still there and
-    collected, *before* the shared segment it writes into is released and
+    collected, *before* the shared mapping it writes into is released and
     before the caller begins decrypting the same pages serially.
+
+    The children write straight into the mapping that is returned, so the
+    decrypted pages are never copied out of a shared segment into a second
+    buffer the size of the database.
     """
-    from multiprocessing import get_context, shared_memory
+    from multiprocessing import get_context
 
     total_size = len(encrypted)
-    shm = None
+    shared = _anonymous(total_size)
     processes: list = []
+    finished = False
     try:
-        shm = shared_memory.SharedMemory(create=True, size=total_size)
         ctx = get_context("fork")
         chunk_size = (base_pages + num_workers - 1) // num_workers
         for w in range(num_workers):
@@ -223,7 +281,7 @@ def _decrypt_in_parallel(
             proc = ctx.Process(
                 target=_decrypt_pages_worker,
                 args=(
-                    shm.name,
+                    shared,
                     geometry.key,
                     page_size,
                     reserve,
@@ -242,19 +300,12 @@ def _decrypt_in_parallel(
             raise RuntimeError("parallel page decryption did not finish in time")
         if any(proc.exitcode != 0 for proc in processes):
             raise RuntimeError("parallel page decryption worker failed")
-
-        view = shm.buf
-        if view is None:  # as above: only reachable if it was closed
-            raise RuntimeError("shared memory closed during decryption")
-        return bytes(view[:total_size])
+        finished = True
+        return shared
     finally:
         _reap(processes)
-        if shm is not None:
-            try:
-                shm.close()
-                shm.unlink()
-            except Exception:
-                pass
+        if not finished:
+            shared.close()
 
 
 def _reap(processes: list) -> None:
@@ -463,20 +514,24 @@ class BasePages:
     exactly what changes the salt in this header.
     """
 
-    image: bytes
+    image: "bytes | mmap.mmap"
     generation: bytes
 
     def __len__(self) -> int:
         return len(self.image) + len(self.generation)
 
 
-class DecryptedImage(bytes):
+class DecryptedImage(Plaintext):
     """A decrypted SQLite image that also carries the base file it came from.
 
     The log is what moves when a message arrives, so keeping the base pages
     lets the next read overlay the log alone instead of decrypting the whole
     file again.  It is an attribute rather than a second return value because
     these images travel through code that only wants the bytes.
+
+    It is anonymous memory (see :func:`_anonymous`) rather than ``bytes``:
+    SQLite copies the image when it opens it, and closing this afterwards
+    hands the pages straight back instead of leaving them resident.
     """
 
     base: Optional[BasePages] = None
@@ -492,26 +547,41 @@ def _undefined_pages(committed: wal_format.WalSnapshot, base_pages: int) -> list
 
 
 def _overlay_log(
-    base_image: bytes,
+    base_image: "bytes | mmap.mmap",
     committed: wal_format.WalSnapshot,
     prepared: PreparedKey,
     page_size: int,
     reserve: int,
-) -> bytearray:
+) -> DecryptedImage:
     """Lay the committed log over decrypted base pages, growing or truncating.
 
     Both the full decryption and the log-only update assemble their result
     this way, so a commit that shrank the database is handled once rather than
-    remembered in two places.
+    remembered in two places.  The result is allocated once at its final
+    size, so growing it never reallocates a database-sized buffer.
     """
     base_pages = len(base_image) // page_size
     total_pages = committed.database_pages
-    if total_pages < base_pages:
-        image = bytearray(base_image[: total_pages * page_size])
-    else:
-        image = bytearray(base_image)
-        image.extend(bytes((total_pages - base_pages) * page_size))
+    kept = min(base_pages, total_pages) * page_size
+    image = DecryptedImage(-1, max(total_pages * page_size, 1))
+    try:
+        with memoryview(base_image) as source:
+            image[:kept] = source[:kept]
+        _apply_frames(image, committed, total_pages, prepared, page_size, reserve)
+    except BaseException:
+        image.close()
+        raise
+    return image
 
+
+def _apply_frames(
+    image: mmap.mmap,
+    committed: wal_format.WalSnapshot,
+    total_pages: int,
+    prepared: PreparedKey,
+    page_size: int,
+    reserve: int,
+) -> None:
     for number, raw in committed.pages.items():
         if number > total_pages:
             continue  # A later commit truncated the database past this page.
@@ -523,7 +593,6 @@ def _overlay_log(
     # The image is a standalone file with no log beside it, so it must not
     # claim write-ahead logging mode.
     image[_JOURNAL_MODE_OFFSET : _JOURNAL_MODE_OFFSET + 2] = _ROLLBACK_JOURNAL
-    return image
 
 
 def build_image(database: Path, geometry: Geometry) -> DecryptedImage:
@@ -536,42 +605,56 @@ def build_image(database: Path, geometry: Geometry) -> DecryptedImage:
     pages.validate_geometry(page_size, reserve)
 
     log = _read_log(database)
-    encrypted = database.read_bytes()
+    # Anonymous memory rather than ``bytes``: this copy is dropped as soon as
+    # it has been decrypted and checked, and a dropped ``bytes`` of this size
+    # would stay resident for the life of the process.
+    encrypted, size = _read_whole(database)
+    try:
+        if not size:
+            raise KamadoError(ErrorCode.READ_FAILED, f"{database.name} is empty")
+        if size % page_size:
+            raise KamadoError(
+                ErrorCode.READ_FAILED,
+                f"{database.name} ends with a partial page ({size % page_size} bytes)",
+            )
 
-    if not encrypted:
-        raise KamadoError(ErrorCode.READ_FAILED, f"{database.name} is empty")
-    if len(encrypted) % page_size:
-        raise KamadoError(
-            ErrorCode.READ_FAILED,
-            f"{database.name} ends with a partial page ({len(encrypted) % page_size} bytes)",
-        )
+        base_pages = size // page_size
+        committed = wal_format.parse(log, page_size, base_pages)
 
-    base_pages = len(encrypted) // page_size
-    committed = wal_format.parse(log, page_size, base_pages)
+        missing = _undefined_pages(committed, base_pages)
+        if missing:
+            raise KamadoError(
+                ErrorCode.READ_FAILED,
+                f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
+            )
 
-    missing = _undefined_pages(committed, base_pages)
-    if missing:
-        raise KamadoError(
-            ErrorCode.READ_FAILED,
-            f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
-        )
+        base_image = _decrypt_base_pages(encrypted, geometry, base_pages, page_size, reserve)
+        # The file is compared with what was read before the encrypted copy is
+        # let go, so the copy and the image are never alive together.
+        unchanged = _matches(database, encrypted)
+    finally:
+        encrypted.close()
 
-    base_image_bytes = _decrypt_base_pages(
-        encrypted, geometry, base_pages, page_size, reserve
-    )
-    with geometry.prepared() as prepared:
-        image = _overlay_log(base_image_bytes, committed, prepared, page_size, reserve)
+    try:
+        if not unchanged:
+            raise ConsistencyError(f"{database.name} changed while it was being read")
+        with geometry.prepared() as prepared:
+            image = _overlay_log(base_image, committed, prepared, page_size, reserve)
+    except BaseException:
+        base_image.close()
+        raise
 
-    if not _matches(database, encrypted) or not _read_log(database).startswith(log):
+    if not _read_log(database).startswith(log):
+        image.close()
+        base_image.close()
         raise ConsistencyError(f"{database.name} changed while it was being read")
-    result = DecryptedImage(image)
-    result.base = BasePages(base_image_bytes, log[: wal_format.WAL_HEADER_SIZE])
-    return result
+    image.base = BasePages(base_image, log[: wal_format.WAL_HEADER_SIZE])
+    return image
 
 
 def update_image_with_wal(
     base: BasePages, database: Path, geometry: Geometry
-) -> bytes:
+) -> DecryptedImage:
     """Lay a freshly read log over base pages decrypted earlier, in ~10ms.
 
     Only the log is read, which is the whole point: a message that arrives
@@ -599,8 +682,9 @@ def update_image_with_wal(
         image = _overlay_log(base.image, committed, prepared, page_size, reserve)
 
     if not _read_log(database).startswith(log):
+        image.close()
         raise ConsistencyError(f"{database.name} log changed while it was being read")
-    return bytes(image)
+    return image
 
 
 class ConsistencyError(RuntimeError):
@@ -648,6 +732,12 @@ def _connect(image: bytes) -> sqlite3.Connection:
             os.unlink(name)
         except OSError:
             pass
+
+
+def _release(image: object) -> None:
+    """Unmap an image once SQLite has its own copy; ``bytes`` need nothing."""
+    if isinstance(image, mmap.mmap):
+        image.close()
 
 
 _TEMP_NAME: Final = re.compile(r"kamado-(?:plain|clone|wal)-([0-9]+)-")
@@ -876,14 +966,14 @@ class SnapshotCache:
                 return connection
 
         image = self._decrypt_with_retry(database, geometry)
-        connection = open_image(image, database.name)
-        self._store(
-            database,
-            current,
-            connection,
-            len(image),
-            getattr(image, "base", None),
-        )
+        base = getattr(image, "base", None)
+        size = len(image)
+        try:
+            connection = open_image(image, database.name)
+        finally:
+            # SQLite holds its own copy now; give this one back at once.
+            _release(image)
+        self._store(database, current, connection, size, base)
         return connection
 
     def invalidate(self, database: Path) -> None:
@@ -921,7 +1011,11 @@ class SnapshotCache:
         """
         try:
             image = self._update_wal_with_retry(base, database, geometry)
-            connection = _connect(image)
+            size = len(image)
+            try:
+                connection = _connect(image)
+            finally:
+                _release(image)
             try:
                 connection.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
             except BaseException:
@@ -934,12 +1028,12 @@ class SnapshotCache:
             sqlite3.DatabaseError,
         ):
             return None
-        self._store(database, current, connection, len(image), base)
+        self._store(database, current, connection, size, base)
         return connection
 
     def _update_wal_with_retry(
         self, base: BasePages, database: Path, geometry: Geometry
-    ) -> bytes:
+    ) -> DecryptedImage:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
             staging = Path(tempfile.mkdtemp(prefix=_temp_prefix("wal")))
@@ -959,7 +1053,7 @@ class SnapshotCache:
             f"KakaoTalk kept writing {database.name} log; incremental update retried"
         ) from last
 
-    def _decrypt_with_retry(self, database: Path, geometry: Geometry) -> bytes:
+    def _decrypt_with_retry(self, database: Path, geometry: Geometry) -> DecryptedImage:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
             staging = Path(tempfile.mkdtemp(prefix=_temp_prefix("clone")))
