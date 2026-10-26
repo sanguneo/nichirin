@@ -161,13 +161,19 @@ class BasePages:
         return len(self.image) + len(self.generation)
 
 
-class DecryptedImage(bytes):
+class DecryptedImage(bytearray):
     """A decrypted image that also carries the base file it was assembled from.
 
     The log is what moves when a message arrives, so keeping the base pages
     lets the next read overlay the log alone instead of decrypting the file
     again.  It is an attribute rather than a second return value because these
     images travel through code that only wants the bytes.
+
+    A ``bytearray`` rather than ``bytes`` so the image is assembled in place
+    and handed back as it is: converting it to ``bytes`` cost one more copy
+    the size of the whole database, alive beside the one it was copied from.
+    SQLite copies the image when it opens it, so nothing relies on it being
+    immutable.
     """
 
     base: Optional[BasePages] = None
@@ -188,15 +194,21 @@ def _overlay_log(
     prepared: PreparedKey,
     page_size: int,
     reserve: int,
-) -> bytearray:
-    """Lay the committed log over decrypted base pages, growing or truncating."""
+) -> DecryptedImage:
+    """Lay the committed log over decrypted base pages, growing or truncating.
+
+    The result is allocated once at its final size and the kept base pages are
+    copied into it through a view, so neither a truncating slice nor a growing
+    ``extend`` makes a second database-sized buffer on the way.
+    """
     base_pages = len(base_image) // page_size
     total_pages = committed.database_pages
-    if total_pages < base_pages:
-        image = bytearray(base_image[: total_pages * page_size])
-    else:
-        image = bytearray(base_image)
-        image.extend(bytes((total_pages - base_pages) * page_size))
+    kept = min(base_pages, total_pages) * page_size
+    image = DecryptedImage(total_pages * page_size)
+    # View to view: assigning a memoryview into a bytearray slice copies the
+    # source into a temporary bytearray first, the very buffer this avoids.
+    with memoryview(base_image) as source, memoryview(image) as target:
+        target[:kept] = source[:kept]
 
     for number, raw in committed.pages.items():
         if number > total_pages:
@@ -250,21 +262,29 @@ def build_image(
             f"the committed log for {database.name} leaves pages {missing[:4]} undefined",
         )
 
-    base_image = bytearray(len(encrypted))
+    decrypted = bytearray(len(encrypted))
     with PreparedKey(key) as prepared:
         for number in range(1, base_pages + 1):
             start = (number - 1) * page_size
-            base_image[start : start + page_size] = pages.reconstruct_page(
+            decrypted[start : start + page_size] = pages.reconstruct_page(
                 prepared, number, encrypted[start : start + page_size], page_size, reserve
             )
-        image = _overlay_log(bytes(base_image), committed, prepared, page_size, reserve)
+        # The file is compared with what was read as soon as it is decrypted,
+        # so the encrypted copy is let go before the image is assembled and
+        # the two are never alive together. The log was read before this
+        # check, so a checkpoint in between still shows up here.
+        if not _matches(database, encrypted):
+            raise ConsistencyError(f"{database.name} changed while it was being read")
+        del encrypted
+        base_image = bytes(decrypted)
+        del decrypted
+        image = _overlay_log(base_image, committed, prepared, page_size, reserve)
 
-    if not _matches(database, encrypted) or not _read_log(database).startswith(log):
+    if not _read_log(database).startswith(log):
         raise ConsistencyError(f"{database.name} changed while it was being read")
 
-    decrypted = DecryptedImage(image)
-    decrypted.base = BasePages(bytes(base_image), log[: wal_format.WAL_HEADER_SIZE])
-    return decrypted
+    image.base = BasePages(base_image, log[: wal_format.WAL_HEADER_SIZE])
+    return image
 
 
 def update_image_with_wal(
@@ -273,7 +293,7 @@ def update_image_with_wal(
     key: bytes,
     page_size: int = PAGE_SIZE,
     reserve: int = RESERVE_SIZE,
-) -> bytes:
+) -> DecryptedImage:
     """Lay a freshly read log over base pages that were decrypted earlier.
 
     Only the log is read, which is the whole point: a message that arrives
@@ -305,7 +325,7 @@ def update_image_with_wal(
 
     if not _read_log(database).startswith(log):
         raise ConsistencyError(f"{database.name} changed while its log was being read")
-    return bytes(image)
+    return image
 
 
 class ConsistencyError(RuntimeError):
@@ -322,7 +342,7 @@ class LogRestarted(ConsistencyError):
     """
 
 
-def _connect(image: bytes) -> sqlite3.Connection:
+def _connect(image: "bytes | bytearray") -> sqlite3.Connection:
     """Open an image as an in-memory database, avoiding disk where possible.
 
     ``check_same_thread=False`` because a cached snapshot outlives the thread
@@ -377,7 +397,7 @@ def _connect(image: bytes) -> sqlite3.Connection:
             )
 
 
-def open_image(image: bytes, label: str) -> sqlite3.Connection:
+def open_image(image: "bytes | bytearray", label: str) -> sqlite3.Connection:
     """Open a decrypted image and refuse it unless SQLite reports it intact.
 
     A wrong key produces plausible-looking bytes rather than an error, so this
@@ -672,7 +692,7 @@ class SnapshotCache:
         key: bytes,
         page_size: int,
         reserve: int,
-    ) -> bytes:
+    ) -> DecryptedImage:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
             try:
@@ -692,7 +712,7 @@ class SnapshotCache:
 
     def _decrypt_with_retry(
         self, database: Path, key: bytes, page_size: int, reserve: int
-    ) -> bytes:
+    ) -> DecryptedImage:
         last: Optional[ConsistencyError] = None
         for attempt in range(_READ_ATTEMPTS):
             try:
