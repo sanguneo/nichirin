@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### 고침
+
+- **복호화 한 번에 동시에 살던 DB 크기 사본이 5개에서 2개로 줄었습니다** (kamado #99에서 Windows에 맞는 부분만 이식).
+  암호문을 조립 전에 비교하고 놓고, `bytes(base_image)`를 두 번 만들던 것을 한 번으로, 로그 덧씌우기 결과를 최종
+  크기로 한 번 할당해 뷰끼리 복사하고, `DecryptedImage`를 `bytearray`로 바꿔 마지막 `bytes` 변환을 없앴습니다.
+  합성 64MiB DB에서 tracemalloc 피크가 전체 복호화 5.03배 → 2.06배, 로그만 덧씌우기 2.03배 → 1.05배입니다.
+  결과 바이트와 일관성 검사는 같습니다. macOS처럼 해제한 메모리가 남는 문제는 Windows에서 측정하지 않았고,
+  `mmap`은 들이지 않았습니다.
+
 ### 바뀜
 
 - 계약 0.22.1: `POST /upload`와 그것을 알리는 `/health`의 `features`에서 Windows 전용 표시(`x-platform`)를 뗐습니다.
