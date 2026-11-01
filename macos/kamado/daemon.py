@@ -181,7 +181,10 @@ class DaemonServer:
                     time.sleep(0.05)
                 print(
                     json.dumps(
-                        {"ok": False, "error": {"code": "START_TIMEOUT", "message": "daemon startup timed out"}},
+                        {"ok": False, "error": {
+                            "code": "START_TIMEOUT", "message": "daemon startup timed out",
+                            "disposition": {"retry": "safe"},
+                        }},
                         ensure_ascii=False,
                     )
                 )
@@ -228,7 +231,10 @@ class DaemonServer:
                 return 0
             except (OSError, ValueError):
                 pass
-        print(json.dumps({"ok": False, "error": {"code": "NOT_RUNNING", "message": "daemon is not running"}}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": {
+            "code": "NOT_RUNNING", "message": "daemon is not running",
+            "disposition": {"retry": "safe"},
+        }}, ensure_ascii=False))
         return 1
 
     def status(self) -> int:
@@ -273,6 +279,7 @@ class DaemonServer:
                     break
 
                 with conn:
+                    command = ""
                     try:
                         try:
                             raw = _receive_line(
@@ -304,7 +311,7 @@ class DaemonServer:
                         else:
                             resp = self._dispatch(command, args)
                     except Exception as err:
-                        resp = as_envelope(err)
+                        resp = as_envelope(err, writing=command == "send")
 
                     try:
                         out = json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n"

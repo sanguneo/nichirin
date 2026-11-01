@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable, Optional, Type
 
-from ..errors import ErrorCode, KanaoError, as_envelope
+from ..errors import ErrorCode, KanaoError, as_envelope, success
 from ..model import ATTACHMENT_KINDS
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
@@ -852,7 +852,7 @@ def build_handler(
                 what="message",
             )
             if result is not None:
-                self._reply(200, {"ok": True, **result})
+                self._reply(200, success(result))
 
         def _handle_upload(self) -> None:
             if not upload_slots.acquire(blocking=False):
@@ -864,6 +864,7 @@ def build_handler(
                         KanaoError(
                             ErrorCode.BUSY,
                             "too many files are being received at once; this file was not sent",
+                            disposition={"delivery": "not_delivered", "retry": "safe"},
                         )
                     ),
                 )
@@ -890,7 +891,7 @@ def build_handler(
                 what="file",
             )
             if result is not None:
-                self._reply(200, {"ok": True, **result})
+                self._reply(200, success(result))
 
         def _read_upload(self) -> tuple[str, str, bytes, bool]:
             """The room, the file's name and bytes, and ``openRoom``, or a refusal.
@@ -994,6 +995,7 @@ def build_handler(
                                 KanaoError(
                                     ErrorCode.BUSY,
                                     f"the server is shutting down; this {what} was not sent",
+                                    disposition={"delivery": "not_delivered", "retry": "safe"},
                                 )
                             ),
                         )
@@ -1009,6 +1011,7 @@ def build_handler(
                                         ErrorCode.BUSY,
                                         "the server is shutting down; this "
                                         f"{what} was not sent",
+                                        disposition={"delivery": "not_delivered", "retry": "safe"},
                                     )
                                 ),
                             )
@@ -1019,7 +1022,7 @@ def build_handler(
                     except KanaoError as error:
                         self._reply(_status_for(error), as_envelope(error))
                         return None
-                    except OSError as error:
+                    except Exception as error:  # noqa: BLE001 - write boundary reports unknown outcome
                         self._reply(
                             500,
                             as_envelope(KanaoError(ErrorCode.SEND_FAILED, str(error))),

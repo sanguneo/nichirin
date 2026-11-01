@@ -1040,6 +1040,21 @@
           "PERMISSION_REQUIRED": "macOS (kamado-cli) only — this code does not exist in the Windows build."
         }
       },
+      "Disposition": {
+        "type": "object",
+        "required": ["retry"],
+        "description": "Retry only when safe. submitted is client acceptance (S), never log confirmation (L). Read failures omit delivery; failures after a possible submission require a log check before retrying.",
+        "properties": {
+          "delivery": {
+            "type": "string",
+            "enum": ["not_delivered", "unknown", "submitted"]
+          },
+          "retry": {
+            "type": "string",
+            "enum": ["safe", "unsafe", "after_check"]
+          }
+        }
+      },
       "ErrorEnvelope": {
         "type": "object",
         "required": ["ok", "error"],
@@ -1049,7 +1064,7 @@
           },
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": ["code", "message", "disposition"],
             "properties": {
               "code": {
                 "$ref": "#/components/schemas/ErrorCode"
@@ -1057,6 +1072,9 @@
               "message": {
                 "type": "string",
                 "description": "For a person reading a log. Do not branch on it; branch on `code`."
+              },
+              "disposition": {
+                "$ref": "#/components/schemas/Disposition"
               }
             }
           },
@@ -1539,8 +1557,11 @@
       },
       "SendResult": {
         "type": "object",
-        "required": ["ok", "submitted", "dryRun", "room", "length", "roomId"],
+        "required": ["ok", "submitted", "dryRun", "room", "length", "roomId", "disposition"],
         "properties": {
+          "disposition": {
+            "$ref": "#/components/schemas/Disposition"
+          },
           "ok": {
             "const": true
           },
@@ -1596,8 +1617,11 @@
       },
       "UploadResult": {
         "type": "object",
-        "required": ["ok", "submitted", "room", "roomId", "name", "size"],
+        "required": ["ok", "submitted", "room", "roomId", "name", "size", "disposition"],
         "properties": {
+          "disposition": {
+            "$ref": "#/components/schemas/Disposition"
+          },
           "ok": {
             "const": true
           },

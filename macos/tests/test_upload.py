@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from kamado.errors import ErrorCode, KamadoError
 from kamado.macauto import ChatWindow
@@ -117,6 +118,7 @@ class UploaderTests(unittest.TestCase):
         backend, sender, _result, error = self.upload(locked=True)
         self.assertIs(error.code, ErrorCode.SEND_FAILED)
         self.assertIn("nothing was sent", error.message)
+        self.assertEqual(error.disposition, {"delivery": "not_delivered", "retry": "safe"})
         self.assertEqual(sender.resolved, [])
         self.assertEqual(backend.steps, [])
 
@@ -126,6 +128,7 @@ class UploaderTests(unittest.TestCase):
                 backend, _sender, _result, error = self.upload(**{step: True})
                 self.assertIs(error.code, ErrorCode.SEND_FAILED)
                 self.assertIn("nothing was sent", error.message)
+                self.assertEqual(error.disposition, {"delivery": "not_delivered", "retry": "safe"})
                 self.assertNotIn("confirm", backend.steps)
                 self.assertEqual(backend.pasteboard, ["person's clipboard"])
 
@@ -133,6 +136,21 @@ class UploaderTests(unittest.TestCase):
         backend, _sender, _result, error = self.upload(no_composer=True)
         self.assertIs(error.code, ErrorCode.INPUT_NOT_FOUND)
         self.assertNotIn("put_file", backend.steps)
+
+    def test_native_failures_before_the_paste_are_typed_and_safe(self) -> None:
+        for method in ("screen_locked", "input_handle"):
+            backend = ScriptedBackend()
+            uploader = Uploader(backend, ScriptedSender())
+            with self.subTest(method=method), patch.object(
+                backend, method, side_effect=OSError("synthetic native failure")
+            ):
+                with self.assertRaises(KamadoError) as caught:
+                    uploader.upload("Room", self.path, "a.png")
+                self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
+                self.assertEqual(
+                    caught.exception.disposition, {"delivery": "not_delivered", "retry": "safe"}
+                )
+                self.assertNotIn("paste", backend.steps)
 
     def test_a_paste_that_landed_as_text_is_taken_back_out(self) -> None:
         backend, _sender, _result, error = self.upload(paste_as_text=True)
@@ -145,6 +163,7 @@ class UploaderTests(unittest.TestCase):
                 backend, _sender, _result, error = self.upload(**{step: True})
                 self.assertIs(error.code, ErrorCode.SEND_FAILED)
                 self.assertIn("outcome is unknown", error.message)
+                self.assertEqual(error.disposition, {"delivery": "unknown", "retry": "after_check"})
                 self.assertNotIn("nothing was sent", error.message)
                 self.assertEqual(backend.pasteboard, ["person's clipboard"])
         backend, _sender, _result, _error = self.upload(stays_open=True)

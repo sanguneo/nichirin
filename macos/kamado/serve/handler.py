@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable, Optional, Type
 
-from ..errors import ErrorCode, KamadoError, as_envelope
+from ..errors import ErrorCode, KamadoError, as_envelope, success
 from ..model import ATTACHMENT_KINDS
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
@@ -857,6 +857,7 @@ def build_handler(
                         KamadoError(
                             ErrorCode.BUSY,
                             "too many files are being received at once; this file was not sent",
+                            disposition={"delivery": "not_delivered", "retry": "safe"},
                         )
                     ),
                 )
@@ -957,6 +958,7 @@ def build_handler(
                                 KamadoError(
                                     ErrorCode.BUSY,
                                     f"the server is shutting down; this {what} was not sent",
+                                    disposition={"delivery": "not_delivered", "retry": "safe"},
                                 )
                             ),
                         )
@@ -972,6 +974,7 @@ def build_handler(
                                         ErrorCode.BUSY,
                                         "the server is shutting down; "
                                         f"this {what} was not sent",
+                                        disposition={"delivery": "not_delivered", "retry": "safe"},
                                     )
                                 ),
                             )
@@ -982,7 +985,7 @@ def build_handler(
                     except KamadoError as error:
                         self._reply(_status_for(error), as_envelope(error))
                         return
-                    except OSError as error:
+                    except Exception as error:  # noqa: BLE001 - write boundary reports unknown outcome
                         self._reply(
                             500,
                             as_envelope(KamadoError(ErrorCode.SEND_FAILED, str(error))),
@@ -997,7 +1000,7 @@ def build_handler(
             finally:
                 if paced:
                     queue.release()
-            self._reply(200, {"ok": True, **result})
+            self._reply(200, success(result))
 
     # Bind the validated secret and validated tunables onto the class so a
     # reviewer can see what each connection closes over.

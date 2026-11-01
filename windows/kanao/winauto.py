@@ -774,46 +774,51 @@ class Sender:
         if "\x00" in text:
             raise KanaoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
-        window = self.resolve(
-            room,
-            open_if_needed=open_if_needed,
-            aliases=aliases,
-            hint=hint,
-            search_rows=search_rows,
-            self_chat=self_chat,
-        )
-        control = self._backend.input_handle(window.handle)
-        if control is None:
-            raise KanaoError(
-                ErrorCode.INPUT_NOT_FOUND,
-                f"found the window for {window.title!r} but not its message box; "
-                "the client version may differ",
-                room=window.title,
-            )
-
-        # An unfinished draft is cleared rather than refused. Whoever is
-        # sending has already named the room and the words, and a refusal that
-        # can only be resolved by walking to the client is worse than losing a
-        # line nobody finished. It is reported rather than done quietly.
-        existing = bool(self._backend.get_text(control))
-
-        if dry_run:
-            return {
-                "submitted": False,
-                "dryRun": True,
-                "room": window.title,
-                "length": len(text),
-                "wouldClearDraft": existing,
-            }
-
+        title = room
+        submitting = False
         try:
+            window = self.resolve(
+                room,
+                open_if_needed=open_if_needed,
+                aliases=aliases,
+                hint=hint,
+                search_rows=search_rows,
+                self_chat=self_chat,
+            )
+            title = window.title
+            control = self._backend.input_handle(window.handle)
+            if control is None:
+                raise KanaoError(
+                    ErrorCode.INPUT_NOT_FOUND,
+                    f"found the window for {window.title!r} but not its message box; "
+                    "the client version may differ",
+                    room=window.title,
+                )
+
+            # An unfinished draft is cleared rather than refused. Whoever is
+            # sending has already named the room and the words, and a refusal that
+            # can only be resolved by walking to the client is worse than losing a
+            # line nobody finished. It is reported rather than done quietly.
+            existing = bool(self._backend.get_text(control))
+
+            if dry_run:
+                return {
+                    "submitted": False,
+                    "dryRun": True,
+                    "room": window.title,
+                    "length": len(text),
+                    "wouldClearDraft": existing,
+                }
+
             self._backend.set_text(control, text)
+            submitting = True
             self._backend.submit(control)
             self._confirm_sent(control)
         except OSError as error:
             raise KanaoError(
-                ErrorCode.SEND_FAILED, f"could not send to {window.title!r}: {error}",
-                room=window.title,
+                ErrorCode.SEND_FAILED, f"could not send to {title!r}: {error}",
+                room=title,
+                disposition=None if submitting else {"delivery": "not_delivered", "retry": "safe"},
             ) from error
         return {
             "submitted": True,
@@ -854,22 +859,31 @@ class Sender:
         # Every backend this is built with drives files too; the text-only
         # protocol is narrower only so the text tests need not fake files.
         backend = cast(FileBackend, self._backend)
-        if backend.desktop_locked():
+        try:
+            if backend.desktop_locked():
+                raise KanaoError(
+                    ErrorCode.SEND_FAILED,
+                    "Windows is locked, so the client cannot show its open-file dialog; "
+                    "nothing was sent",
+                    disposition={"delivery": "not_delivered", "retry": "safe"},
+                )
+            window = self.resolve(
+                room,
+                open_if_needed=open_if_needed,
+                aliases=aliases,
+                hint=hint,
+                search_rows=search_rows,
+                self_chat=self_chat,
+            )
+            previous = backend.foreground()
+            parked = backend.show_unfocused(window.handle)
+        except OSError as error:
             raise KanaoError(
                 ErrorCode.SEND_FAILED,
-                "Windows is locked, so the client cannot show its open-file dialog; "
-                "nothing was sent",
-            )
-        window = self.resolve(
-            room,
-            open_if_needed=open_if_needed,
-            aliases=aliases,
-            hint=hint,
-            search_rows=search_rows,
-            self_chat=self_chat,
-        )
-        previous = backend.foreground()
-        parked = backend.show_unfocused(window.handle)
+                f"could not upload to {room!r}: {error}; nothing was sent",
+                room=room,
+                disposition={"delivery": "not_delivered", "retry": "safe"},
+            ) from error
         try:
             if parked and self._wait_for(
                 lambda: None if backend.is_minimized(window.handle) else window.handle
@@ -879,19 +893,32 @@ class Sender:
                     f"the window for {window.title!r} could not be restored to press its "
                     "file button; nothing was sent",
                     room=window.title,
+                    disposition={"delivery": "not_delivered", "retry": "safe"},
                 )
             return self._upload_into(backend, window, path, size)
+        except OSError as error:
+            raise KanaoError(
+                ErrorCode.SEND_FAILED, f"could not upload to {window.title!r}: {error}",
+                room=window.title,
+            ) from error
         finally:
-            if parked:
-                backend.minimize_window(window.handle)
-                # A posted minimise is asked of the client and can go untaken;
-                # the room is never left standing where it was parked before.
-                if self._wait_for(
-                    lambda: window.handle if backend.is_minimized(window.handle) else None
-                ) is None:
-                    backend.park_quietly(window.handle)
-            if previous is not None and previous != window.handle:
-                backend.return_focus(previous)
+            try:
+                if parked:
+                    backend.minimize_window(window.handle)
+                    # A posted minimise is asked of the client and can go untaken;
+                    # the room is never left standing where it was parked before.
+                    if self._wait_for(
+                        lambda: window.handle if backend.is_minimized(window.handle) else None
+                    ) is None:
+                        backend.park_quietly(window.handle)
+                if previous is not None and previous != window.handle:
+                    backend.return_focus(previous)
+            except OSError as error:
+                raise KanaoError(
+                    ErrorCode.SEND_FAILED, f"could not restore the desktop after uploading "
+                    f"to {window.title!r}: {error}",
+                    room=window.title,
+                ) from error
 
     def _upload_into(
         self, backend: FileBackend, window: ChatWindow, path: str, size: int
@@ -901,49 +928,66 @@ class Sender:
                 ErrorCode.SEND_FAILED,
                 f"{step} in {window.title!r}; nothing was sent",
                 room=window.title,
+                disposition={"delivery": "not_delivered", "retry": "safe"},
             )
 
-        before = backend.top_windows()
-        dialog = None
-        # Pressing the file button sends nothing; it only opens the dialog, so
-        # a press the client did not take is pressed once more. With the
-        # dialog up the room is disabled and a second press goes nowhere.
-        for attempts in (FIRST_PRESS_ATTEMPTS, UPLOAD_ATTEMPTS):
-            try:
-                backend.click_file_button(window.handle)
-            except OSError as error:
-                raise nothing_sent(f"the file button could not be pressed ({error})") from error
-            dialog = self._wait_for(lambda: backend.file_dialog(window.handle), attempts)
-            if dialog is not None:
-                break
-        if dialog is None:
-            # A dialog the client opened late, or one a re-park hid, would
-            # outlive this call and disable the room; none of them sent anything.
-            backend.dismiss_dialogs(window.handle)
-            raise nothing_sent("the file button showed no open-file dialog")
         try:
-            backend.choose_file(dialog, path)
+            before = backend.top_windows()
+            dialog = None
+            # Pressing the file button sends nothing; it only opens the dialog, so
+            # a press the client did not take is pressed once more. With the
+            # dialog up the room is disabled and a second press goes nowhere.
+            for attempts in (FIRST_PRESS_ATTEMPTS, UPLOAD_ATTEMPTS):
+                try:
+                    backend.click_file_button(window.handle)
+                except OSError as error:
+                    raise nothing_sent(f"the file button could not be pressed ({error})") from error
+                dialog = self._wait_for(lambda: backend.file_dialog(window.handle), attempts)
+                if dialog is not None:
+                    break
+            if dialog is None:
+                # A dialog the client opened late, or one a re-park hid, would
+                # outlive this call and disable the room; none of them sent anything.
+                backend.dismiss_dialogs(window.handle)
+                raise nothing_sent("the file button showed no open-file dialog")
+            try:
+                backend.choose_file(dialog, path)
+            except OSError as error:
+                backend.cancel_dialog(dialog)
+                raise nothing_sent(f"the file could not be named in the dialog ({error})") from error
+            popup = self._wait_for(lambda: backend.file_popup(before))
+            if popup is None:
+                backend.dismiss_dialogs(window.handle)
+                raise nothing_sent("the client showed no file-send confirmation")
         except OSError as error:
-            backend.cancel_dialog(dialog)
-            raise nothing_sent(f"the file could not be named in the dialog ({error})") from error
-        popup = self._wait_for(lambda: backend.file_popup(before))
-        if popup is None:
-            backend.dismiss_dialogs(window.handle)
-            raise nothing_sent("the client showed no file-send confirmation")
+            raise nothing_sent(str(error)) from error
         try:
             backend.press_popup_send(popup)
         except OSError as error:
             backend.close_window(popup)
-            raise nothing_sent(f"the confirmation's send button could not be pressed ({error})") from error
-        if self._wait_for(lambda: True if not backend.is_visible(popup) else None) is None:
-            backend.close_window(popup)
             raise KanaoError(
                 ErrorCode.SEND_FAILED,
-                f"the file-send confirmation in {window.title!r} stayed open after its send "
-                "button was pressed and was closed; whether the file went is unknown, so read "
-                "the room back before trying again",
+                f"the confirmation's send button could not be pressed ({error}) "
+                f"in {window.title!r}; nothing was sent",
                 room=window.title,
-            )
+            ) from error
+        try:
+            if self._wait_for(lambda: True if not backend.is_visible(popup) else None) is None:
+                backend.close_window(popup)
+                raise KanaoError(
+                    ErrorCode.SEND_FAILED,
+                    f"the file-send confirmation in {window.title!r} stayed open after its send "
+                    "button was pressed and was closed; whether the file went is unknown, so read "
+                    "the room back before trying again",
+                    room=window.title,
+                )
+        except OSError as error:
+            raise KanaoError(
+                ErrorCode.SEND_FAILED,
+                f"could not confirm the upload to {window.title!r}: {error}; "
+                "whether the file went is unknown, so read the room back before trying again",
+                room=window.title,
+            ) from error
         return {
             "submitted": True,
             "room": window.title,

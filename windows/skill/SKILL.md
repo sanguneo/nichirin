@@ -35,6 +35,10 @@ Every command returns JSON with the same shape: `{"ok": true, ...}` or
 `{"ok": false, "error": {"code", "message"}}`. Exit status is 0, 1 for a
 handled failure, 2 for a malformed command.
 
+Retry a failed send only when `error.disposition.retry` is `safe`.
+`after_check` means read the room before deciding; never automatically resend.
+`delivery: submitted` on a success is client acceptance, not log confirmation.
+
 Read the answer in this order:
 
 | Field | What it means and what to do |

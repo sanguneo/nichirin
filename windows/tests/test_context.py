@@ -132,7 +132,7 @@ class RefusalTests(unittest.TestCase):
                 read_context(reader, 999999)
         envelope = raised.exception.envelope()
         self.assertIs(envelope["ok"], False)
-        self.assertEqual(set(envelope["error"]), {"code", "message"})
+        self.assertEqual(set(envelope["error"]), {"code", "message", "disposition"})
 
 
 class EmptyRoomTests(unittest.TestCase):

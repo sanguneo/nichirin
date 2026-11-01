@@ -183,6 +183,20 @@ class SendTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
         self.assertEqual(self.backend.actions, ["fill", "submit"])
         self.assertEqual(self.backend.draft, "synthetic text")
+        self.assertEqual(caught.exception.disposition, {"delivery": "unknown", "retry": "after_check"})
+
+    def test_native_failures_before_submit_are_typed_and_safe(self) -> None:
+        for method in ("chat_windows", "input_handle", "get_text", "set_text"):
+            with self.subTest(method=method), patch.object(
+                self.backend, method, side_effect=OSError("synthetic native failure")
+            ):
+                with self.assertRaises(KanaoError) as caught:
+                    self.sender.send("Synthetic room", "synthetic text")
+                self.assertEqual(caught.exception.code, ErrorCode.SEND_FAILED)
+                self.assertEqual(
+                    caught.exception.disposition, {"delivery": "not_delivered", "retry": "safe"}
+                )
+                self.assertNotIn("submit", self.backend.actions)
 
 
 class Win32MessageTests(unittest.TestCase):
