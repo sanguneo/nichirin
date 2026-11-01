@@ -32,6 +32,7 @@ from typing import Callable, Iterable, Literal, Optional, Protocol, TypedDict
 from . import ax, paths
 from .errors import ErrorCode, KamadoError
 import kakaocommon.trace as trace
+from kakaocommon.disposition import write_disposition
 
 BUNDLE_ID = paths.BUNDLE_ID
 EXECUTABLE = "/Applications/KakaoTalk.app/Contents/MacOS/KakaoTalk"
@@ -588,14 +589,13 @@ class Sender:
         The message is validated and the window resolved before anything is
         written. Queue acceptance is not proof of network delivery.
         """
-        if not text or not text.strip():
-            raise KamadoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
-        if "\x00" in text:
-            raise KamadoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
-
         title = room
         submitting = False
         try:
+            if not text or not text.strip():
+                raise KamadoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
+            if "\x00" in text:
+                raise KamadoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
             with trace.stage("discovery"):
                 window = self.resolve(
                     room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
@@ -636,6 +636,10 @@ class Sender:
             submitting = True
             with trace.stage("submit"):
                 self._backend.submit(control)
+        except KamadoError as error:
+            if not submitting:
+                error.disposition = write_disposition(error.disposition)
+            raise
         except (OSError, ax.AccessibilityDenied) as error:
             raise KamadoError(
                 ErrorCode.SEND_FAILED, f"could not send to {title!r}: {error}",

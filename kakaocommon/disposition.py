@@ -34,6 +34,14 @@ def default_disposition(code: str) -> Disposition:
     return DEFAULTS[code].copy()
 
 
+def write_disposition(disposition: Disposition) -> Disposition:
+    """Complete an already-safe write refusal without upgrading uncertainty."""
+    result = disposition.copy()
+    if result.get("retry") == "safe":
+        _ = result.setdefault("delivery", "not_delivered")
+    return result
+
+
 def submission_disposition(submitted: bool) -> Disposition:
     """Submission is S, not log confirmation L; never resend a submitted write."""
     if submitted:

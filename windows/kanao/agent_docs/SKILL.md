@@ -25,6 +25,8 @@ events are not permission to resend; keep following `error.disposition`.
 
 Retry a failed send only when `error.disposition.retry` is `safe`.
 `after_check` means read the room before deciding; never automatically resend.
+Known safe write refusals carry `delivery: not_delivered`; read defaults and
+explicit uncertain outcomes are unchanged.
 `delivery: submitted` on a success is client acceptance, not log confirmation.
 
 For first use, `skills get` returns this full document in a success JSON

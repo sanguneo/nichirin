@@ -33,6 +33,7 @@ from typing import Callable, Iterable, Iterator, Mapping, Optional, Protocol, Ty
 
 from .errors import ErrorCode, KanaoError
 import kakaocommon.trace as trace
+from kakaocommon.disposition import write_disposition
 
 MAIN_WINDOW_TITLE = "카카오톡"
 INPUT_CLASS = "RICHEDIT50W"
@@ -770,14 +771,13 @@ class Sender:
         own account of having taken the message; it is still not proof of
         network delivery.
         """
-        if not text or not text.strip():
-            raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
-        if "\x00" in text:
-            raise KanaoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
-
         title = room
         submitting = False
         try:
+            if not text or not text.strip():
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty message")
+            if "\x00" in text:
+                raise KanaoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
             with trace.stage("discovery"):
                 window = self.resolve(
                     room,
@@ -826,6 +826,10 @@ class Sender:
             with trace.stage("confirm"):
                 self._confirm_sent(control)
                 trace.observed("S")
+        except KanaoError as error:
+            if not submitting:
+                error.disposition = write_disposition(error.disposition)
+            raise
         except OSError as error:
             raise KanaoError(
                 ErrorCode.SEND_FAILED, f"could not send to {title!r}: {error}",
