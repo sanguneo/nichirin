@@ -77,6 +77,10 @@ Details such as `candidates` and `permission` are at the top level, not inside
 invalid command line. Help and argument errors are ordinary CLI text.
 `follow` emits NDJSON; `tui` is an interactive terminal interface, not JSON.
 
+Retry a failed send only when `error.disposition.retry` is `safe`.
+`after_check` means read the room before deciding; never automatically resend.
+`delivery: submitted` on a success is client acceptance, not log confirmation.
+
 `status` is diagnostic: `ok: true` means it reported successfully, **not that
 reading works**. Inspect `ready` and `detail`; its other fields are `account`,
 `database`, and `rooms`. It can report unavailable permissions as

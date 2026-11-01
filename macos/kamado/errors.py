@@ -9,7 +9,9 @@ machine-readable code an agent can act on without parsing prose.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
+
+from kakaocommon.disposition import Disposition, default_disposition, submission_disposition
 
 
 class ErrorCode(str, Enum):
@@ -81,26 +83,39 @@ class KamadoError(Exception):
         self,
         code: ErrorCode,
         message: str,
+        *,
+        disposition: Optional[Disposition] = None,
         **details: Any,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.disposition = (
+            default_disposition(code.value) if disposition is None else disposition.copy()
+        )
         self.details = details
 
     def envelope(self) -> dict[str, Any]:
         """Render this failure as the standard JSON response body."""
-        error: dict[str, Any] = {"code": self.code.value, "message": self.message}
+        error: dict[str, Any] = {
+            "code": self.code.value,
+            "message": self.message,
+            "disposition": self.disposition.copy(),
+        }
         return {"ok": False, "error": error, **self.details}
 
 
 def success(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Render a successful response with the same envelope shape as failures."""
-    return {"ok": True, **payload}
+    result = {"ok": True, **payload}
+    if "submitted" in payload:
+        result["disposition"] = submission_disposition(payload["submitted"])
+    return result
 
 
-def as_envelope(error: BaseException) -> dict[str, Any]:
+def as_envelope(error: BaseException, *, writing: bool = False) -> dict[str, Any]:
     """Render any exception as a response body, preserving known codes."""
     if isinstance(error, KamadoError):
         return error.envelope()
-    return KamadoError(ErrorCode.READ_FAILED, str(error) or type(error).__name__).envelope()
+    code = ErrorCode.SEND_FAILED if writing else ErrorCode.READ_FAILED
+    return KamadoError(code, str(error) or type(error).__name__).envelope()

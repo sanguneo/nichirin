@@ -95,7 +95,9 @@ class UploadRouteTests(ServedCase):
         self.assertEqual(status, 200, payload)
         self.assertEqual(
             payload,
-            {"ok": True, "submitted": True, "room": "Room", "name": "synthetic.png", "size": 20, "roomId": "1"},
+            {"ok": True, "submitted": True, "room": "Room", "name": "synthetic.png",
+             "size": 20, "roomId": "1",
+             "disposition": {"delivery": "submitted", "retry": "unsafe"}},
         )
         self.assertEqual(
             self.uploader.calls,

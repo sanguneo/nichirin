@@ -293,6 +293,9 @@ class SendTests(ServedCase):
         )
         self.assertEqual(status, 429)
         self.assertEqual(body["error"]["code"], "RATE_LIMITED")
+        self.assertEqual(
+            body["error"]["disposition"], {"delivery": "not_delivered", "retry": "safe"}
+        )
         self.assertEqual(sender.calls, [])
 
     def test_a_dry_run_walks_past_a_full_queue(self) -> None:
@@ -389,6 +392,9 @@ class SendTests(ServedCase):
         )
         self.assertEqual(status, 500)
         self.assertEqual(body["error"]["code"], "SEND_FAILED")
+        self.assertEqual(
+            body["error"]["disposition"], {"delivery": "unknown", "retry": "after_check"}
+        )
         sender.fail_with = None
         status, body, _ = _request(
             self.base, "POST", "/send", {"room": "Synthetic", "text": "y"}

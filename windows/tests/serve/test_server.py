@@ -273,6 +273,10 @@ class ShutdownTests(ThreadedServerCase):
         self.assertEqual(answers["first"][0], 200)
         self.assertEqual(answers["second"][0], 503)
         self.assertEqual(answers["second"][1]["error"]["code"], "BUSY")
+        self.assertEqual(
+            answers["second"][1]["error"]["disposition"],
+            {"delivery": "not_delivered", "retry": "safe"},
+        )
         self.assertEqual([call["text"] for call in sender.calls], ["one"])
 
 

@@ -592,40 +592,45 @@ class Sender:
         if "\x00" in text:
             raise KamadoError(ErrorCode.INVALID_REQUEST, "message contains a null character")
 
-        window = self.resolve(
-            room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
-        )
-        control = self._backend.input_handle(window.handle)
-        if control is None:
-            raise KamadoError(
-                ErrorCode.INPUT_NOT_FOUND,
-                f"found the window for {window.title!r} but not its message box; "
-                "the client version may differ",
-                room=window.title,
-            )
-
-        # An unfinished draft is cleared rather than refused. Whoever is
-        # sending has already named the room and the words, and a refusal that
-        # can only be resolved by walking to the client is worse than losing a
-        # line nobody finished. It is reported rather than done quietly.
-        existing = bool(self._backend.get_text(control))
-
-        if dry_run:
-            return {
-                "submitted": False,
-                "dryRun": True,
-                "room": window.title,
-                "length": len(text),
-                "wouldClearDraft": existing,
-            }
-
+        title = room
+        submitting = False
         try:
+            window = self.resolve(
+                room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
+            )
+            title = window.title
+            control = self._backend.input_handle(window.handle)
+            if control is None:
+                raise KamadoError(
+                    ErrorCode.INPUT_NOT_FOUND,
+                    f"found the window for {window.title!r} but not its message box; "
+                    "the client version may differ",
+                    room=window.title,
+                )
+
+            # An unfinished draft is cleared rather than refused. Whoever is
+            # sending has already named the room and the words, and a refusal that
+            # can only be resolved by walking to the client is worse than losing a
+            # line nobody finished. It is reported rather than done quietly.
+            existing = bool(self._backend.get_text(control))
+
+            if dry_run:
+                return {
+                    "submitted": False,
+                    "dryRun": True,
+                    "room": window.title,
+                    "length": len(text),
+                    "wouldClearDraft": existing,
+                }
+
             self._backend.set_text(control, text)
+            submitting = True
             self._backend.submit(control)
         except (OSError, ax.AccessibilityDenied) as error:
             raise KamadoError(
-                ErrorCode.SEND_FAILED, f"could not send to {window.title!r}: {error}",
-                room=window.title,
+                ErrorCode.SEND_FAILED, f"could not send to {title!r}: {error}",
+                room=title,
+                disposition=None if submitting else {"delivery": "not_delivered", "retry": "safe"},
             ) from error
         return {
             "submitted": True,

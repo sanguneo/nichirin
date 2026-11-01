@@ -665,7 +665,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except BaseException as error:  # noqa: BLE001 - reported, never swallowed
         if isinstance(error, SystemExit):
             raise
-        _emit(as_envelope(error))
+        _emit(as_envelope(error, writing=arguments.command == "send"))
         return 1
 
 

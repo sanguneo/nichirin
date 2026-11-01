@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from kanao.errors import ErrorCode, KanaoError
 from kanao.winauto import ChatWindow, FILE_BUTTON, Sender, scaled
@@ -173,6 +174,7 @@ class UploadTests(unittest.TestCase):
         error = self.failure()
         self.assertIs(error.code, ErrorCode.SEND_FAILED)
         self.assertIn("nothing was sent", error.message)
+        self.assertEqual(error.disposition, {"delivery": "not_delivered", "retry": "safe"})
         self.assertEqual(self.backend.actions.count("file button"), 2)
         self.assertNotIn("send", self.backend.actions)
         self.assertEqual(self.backend.actions[-2:], ["park", "focus 7"])
@@ -211,6 +213,33 @@ class UploadTests(unittest.TestCase):
         self.assertNotIn("nothing was sent", error.message)
         self.assertIn(f"close {POPUP}", self.backend.actions)
         self.assertEqual(self.backend.actions.count("send"), 1)
+        self.assertEqual(error.disposition, {"delivery": "unknown", "retry": "after_check"})
+
+    def test_a_confirmation_press_error_may_have_submitted(self) -> None:
+        with patch.object(self.backend, "press_popup_send", side_effect=OSError("partial click")):
+            error = self.failure()
+        self.assertEqual(error.disposition, {"delivery": "unknown", "retry": "after_check"})
+
+    def test_native_failure_after_the_confirmation_press_is_unknown(self) -> None:
+        for method in ("is_visible", "minimize_window", "return_focus"):
+            self.backend = FakeFileWindows()
+            self.sender = Sender(self.backend, running=lambda: True, settle=lambda: None)
+            with self.subTest(method=method), patch.object(
+                self.backend, method, side_effect=OSError("synthetic native failure")
+            ):
+                error = self.failure()
+                self.assertEqual(error.disposition, {"delivery": "unknown", "retry": "after_check"})
+                self.assertEqual(self.backend.actions.count("send"), 1)
+
+    def test_native_failures_before_the_confirmation_press_are_safe(self) -> None:
+        for method in ("desktop_locked", "chat_windows", "top_windows", "file_dialog"):
+            with self.subTest(method=method), patch.object(
+                self.backend, method, side_effect=OSError("synthetic native failure")
+            ):
+                error = self.failure()
+                self.assertEqual(error.code, ErrorCode.SEND_FAILED)
+                self.assertEqual(error.disposition, {"delivery": "not_delivered", "retry": "safe"})
+                self.assertNotIn("send", self.backend.actions)
 
     def test_a_room_that_will_not_restore_is_never_clicked(self) -> None:
         self.backend.restores = False
@@ -233,6 +262,7 @@ class UploadTests(unittest.TestCase):
         self.backend.locked = True
         error = self.failure()
         self.assertIs(error.code, ErrorCode.SEND_FAILED)
+        self.assertEqual(error.disposition, {"delivery": "not_delivered", "retry": "safe"})
         self.assertIn("locked", error.message)
         self.assertIn("nothing was sent", error.message)
         self.assertEqual(self.backend.actions, [])

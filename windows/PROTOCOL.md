@@ -140,6 +140,32 @@ streams as it will.
 
 ## Sending
 
+### Delivery and retry decisions
+
+Every failure carries `error.disposition`. Existing codes, messages, top-level
+details and exit statuses are unchanged. Both builds use
+`kakaocommon/disposition.py` for these defaults:
+
+| ErrorCode | delivery | retry |
+| --- | --- | --- |
+| `KAKAO_NOT_RUNNING`, `NO_USER_DATA`, `PERMISSION_REQUIRED` (macOS), `KEY_UNAVAILABLE` | omitted | `safe` |
+| `CHAT_NOT_FOUND`, `AMBIGUOUS_CHAT`, `MESSAGE_NOT_FOUND`, `FILE_EXPIRED` | omitted | `safe` |
+| `BUSY`, `READ_FAILED`, `INVALID_REQUEST` | omitted | `safe` |
+| `WINDOW_NOT_FOUND`, `INPUT_NOT_FOUND`, `UNAUTHORIZED`, `RATE_LIMITED` | `not_delivered` | `safe` |
+| `SEND_FAILED` | `unknown` | `after_check` |
+
+A proven failure before submission overrides `SEND_FAILED` with
+`not_delivered` / `safe`. Never infer this from its message. Only `safe`
+permits resubmission; `after_check` requires reading the room first.
+Write-queue shutdown and upload admission refusals also carry
+`not_delivered` / `safe`, rather than the read-only `BUSY` default.
+Unexpected exceptions at a write boundary become `SEND_FAILED` /
+`unknown` / `after_check`; unexpected read exceptions remain `READ_FAILED`.
+Successful sends/uploads carry top-level `disposition`:
+`submitted` / `unsafe`, or `not_delivered` / `safe` for a dry run.
+Submission is condition S, not log verification L; it does not prove delivery.
+`suggestion` is not required and existing detail fields remain where they were.
+
 `send` returns `submitted: true` when the client **accepted** the text — the
 input box emptied — which is not confirmed delivery. A caller that needs proof
 reads the room back and looks for a new `fromMe` message. `clearedDraft`

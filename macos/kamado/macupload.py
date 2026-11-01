@@ -58,6 +58,7 @@ class UploadResult(TypedDict):
 def _nothing_sent(reason: str, room: Optional[str] = None) -> KamadoError:
     return KamadoError(
         ErrorCode.SEND_FAILED, f"{reason}; nothing was sent",
+        disposition={"delivery": "not_delivered", "retry": "safe"},
         **({"room": room} if room else {}),
     )
 
@@ -100,14 +101,18 @@ class Uploader:
         hint: Optional[int] = None,
     ) -> UploadResult:
         backend = self._backend
-        if backend.screen_locked():
-            raise _nothing_sent("the screen is locked, so the client cannot show its confirmation")
-        size = os.path.getsize(path)
-        window = self._sender.resolve(
-            room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
-        )
-        title = window.title
-        control = backend.input_handle(window.handle)
+        title = room
+        try:
+            if backend.screen_locked():
+                raise _nothing_sent("the screen is locked, so the client cannot show its confirmation")
+            size = os.path.getsize(path)
+            window = self._sender.resolve(
+                room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
+            )
+            title = window.title
+            control = backend.input_handle(window.handle)
+        except (OSError, ax.AccessibilityDenied) as error:
+            raise _nothing_sent(f"could not upload to {title!r}: {error}", title) from error
         if control is None:
             raise KamadoError(
                 ErrorCode.INPUT_NOT_FOUND,

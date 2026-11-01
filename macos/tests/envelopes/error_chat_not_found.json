@@ -1,6 +1,9 @@
 {
   "error": {
     "code": "CHAT_NOT_FOUND",
+    "disposition": {
+      "retry": "safe"
+    },
     "message": "No conversation is titled '존재하지 않는 방'; list conversations to see the stored titles"
   },
   "ok": false
