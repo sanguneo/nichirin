@@ -11,7 +11,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Mapping, Optional
 
-from kakaocommon.disposition import Disposition, default_disposition, submission_disposition
+from kakaocommon.disposition import (
+    Disposition, default_disposition, submission_disposition, write_disposition,
+)
 
 
 class ErrorCode(str, Enum):
@@ -95,12 +97,12 @@ class KamadoError(Exception):
         )
         self.details = details
 
-    def envelope(self) -> dict[str, Any]:
+    def envelope(self, *, writing: bool = False) -> dict[str, Any]:
         """Render this failure as the standard JSON response body."""
         error: dict[str, Any] = {
             "code": self.code.value,
             "message": self.message,
-            "disposition": self.disposition.copy(),
+            "disposition": write_disposition(self.disposition) if writing else self.disposition.copy(),
         }
         return {"ok": False, "error": error, **self.details}
 
@@ -116,6 +118,6 @@ def success(payload: Mapping[str, Any]) -> dict[str, Any]:
 def as_envelope(error: BaseException, *, writing: bool = False) -> dict[str, Any]:
     """Render any exception as a response body, preserving known codes."""
     if isinstance(error, KamadoError):
-        return error.envelope()
+        return error.envelope(writing=writing)
     code = ErrorCode.SEND_FAILED if writing else ErrorCode.READ_FAILED
     return KamadoError(code, str(error) or type(error).__name__).envelope()

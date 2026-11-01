@@ -11,6 +11,8 @@ from typing import cast
 
 from kamado.errors import ErrorCode, KamadoError
 from kamado.serve.handler import _SendQueue, _ShuttingDown
+from kamado.macauto import Sender
+from tests.test_send import FakeWindows
 from tests.serve.helpers import (
     TOKEN,
     QuietHTTPServer,
@@ -80,6 +82,33 @@ def _read_answer(sock: socket.socket) -> "tuple[int, dict]":
             break
         body += chunk
     return int(lines[0].split(b" ", 2)[1]), json.loads(body)
+
+
+class PreSubmissionDispositionTests(ServedCase):
+    def assert_refused(self, text: str, running: bool, status: int, code: str) -> None:
+        # Given a native sender that can refuse without touching the desktop.
+        backend = FakeWindows()
+        self.serve(_start_server(Sender(backend, running=lambda: running)))
+        # When the real HTTP handler receives the request.
+        actual, body, _ = _request(
+            self.base, "POST", "/send", {"room": "Synthetic room", "text": text}
+        )
+        # Then its known pre-input refusal is explicit and submitted nothing.
+        self.assertEqual(actual, status)
+        self.assertEqual(body["error"]["code"], code)
+        self.assertEqual(backend.actions.count("submit"), 0)
+        self.assertEqual(
+            body["error"]["disposition"], {"delivery": "not_delivered", "retry": "safe"}
+        )
+
+    def test_empty_text_is_not_delivered(self) -> None:
+        self.assert_refused("", True, 400, "INVALID_REQUEST")
+
+    def test_null_text_is_not_delivered(self) -> None:
+        self.assert_refused("synthetic\x00", True, 400, "INVALID_REQUEST")
+
+    def test_stopped_client_is_not_delivered(self) -> None:
+        self.assert_refused("synthetic", False, 503, "KAKAO_NOT_RUNNING")
 
 
 class SendTests(ServedCase):

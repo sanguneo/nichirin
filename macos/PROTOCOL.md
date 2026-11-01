@@ -215,6 +215,10 @@ details and exit statuses are unchanged. Both builds use
 A proven failure before submission overrides `SEND_FAILED` with
 `not_delivered` / `safe`. Never infer this from its message. Only `safe`
 permits resubmission; `after_check` requires reading the room first.
+Known safe write refusals, including empty/NUL text and a stopped client,
+carry `delivery: not_delivered`. CLI/daemon writing boundaries and HTTP
+`POST /send`/`POST /upload` preserve this operation context; read defaults
+still omit delivery. No explicit delivery value or retry decision is replaced.
 Write-queue shutdown and upload admission refusals also carry
 `not_delivered` / `safe`, rather than the read-only `BUSY` default.
 Unexpected exceptions at a write boundary become `SEND_FAILED` /

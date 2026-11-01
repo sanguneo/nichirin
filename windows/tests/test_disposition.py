@@ -3,9 +3,51 @@
 import unittest
 
 from kanao.errors import ErrorCode, KanaoError, as_envelope, success
+from kanao.winauto import Sender
+from tests.test_send import FakeWindows
 
 
 class DispositionTests(unittest.TestCase):
+    def test_native_pre_input_refusals_report_non_submission(self):
+        for text, running in (("", True), ("synthetic\x00", True), ("synthetic", False)):
+            # Given a synthetic native sender, including a stopped-client case.
+            backend = FakeWindows()
+            with self.subTest(text=text, running=running):
+                # When native preflight refuses.
+                with self.assertRaises(KanaoError) as caught:
+                    Sender(backend, running=lambda: running).send("Synthetic room", text)
+                # Then direct users get the same non-submission decision.
+                self.assertEqual(backend.actions.count("submit"), 0)
+                self.assertEqual(
+                    caught.exception.disposition,
+                    {"delivery": "not_delivered", "retry": "safe"},
+                )
+
+    def test_known_write_refusal_does_not_mutate_read_default(self):
+        # Given a read default with no delivery assertion.
+        failure = KanaoError(ErrorCode.INVALID_REQUEST, "synthetic failure")
+        original = failure.envelope()
+        # When the same known error crosses a writing boundary.
+        answer = as_envelope(failure, writing=True)
+        # Then the write is not delivered, without changing the read contract.
+        self.assertEqual(
+            answer["error"]["disposition"], {"delivery": "not_delivered", "retry": "safe"}
+        )
+        self.assertEqual(failure.envelope(), original)
+
+    def test_write_context_preserves_explicit_uncertainty(self):
+        # Given an explicit outcome from after a possible submission.
+        failure = KanaoError(
+            ErrorCode.READ_FAILED, "synthetic failure",
+            disposition={"delivery": "unknown", "retry": "after_check"},
+        )
+        # When a writing boundary renders it.
+        answer = as_envelope(failure, writing=True)
+        # Then known uncertainty is not downgraded to a safe retry.
+        self.assertEqual(
+            answer["error"]["disposition"], {"delivery": "unknown", "retry": "after_check"}
+        )
+
     def test_every_error_code_has_a_retry_decision(self):
         for code in ErrorCode:
             with self.subTest(code=code):

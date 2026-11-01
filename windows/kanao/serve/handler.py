@@ -18,6 +18,7 @@ from contextlib import ExitStack
 from typing import Any, Callable, Optional, Type
 
 import kakaocommon.trace as trace
+from kakaocommon.disposition import write_disposition
 from .. import __version__
 from ..errors import ErrorCode, KanaoError, as_envelope, success
 from ..model import ATTACHMENT_KINDS
@@ -381,6 +382,8 @@ def build_handler(
 
         def _reply(self, status: int, payload: dict[str, Any]) -> None:
             if payload.get("ok") is False:
+                if self.command == "POST" and urllib.parse.urlsplit(self.path).path in ("/send", "/upload"):
+                    payload["error"]["disposition"] = write_disposition(payload["error"]["disposition"])
                 trace.refused("validation", payload["error"]["code"])
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)

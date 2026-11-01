@@ -1086,7 +1086,7 @@
       "Disposition": {
         "type": "object",
         "required": ["retry"],
-        "description": "Retry only when safe. submitted is client acceptance (S), never log confirmation (L). Read failures omit delivery; failures after a possible submission require a log check before retrying.",
+        "description": "Retry only when safe. submitted is client acceptance (S), never log confirmation (L). Known safe write refusals, including invalid text and a stopped client, carry not_delivered. Read defaults omit delivery; explicit delivery/retry decisions are preserved. Failures after a possible submission require a log check before retrying.",
         "properties": {
           "delivery": {
             "type": "string",
