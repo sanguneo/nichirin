@@ -242,9 +242,12 @@ def make_live_send(
         hint=None,
     ) -> dict[str, Any]:
         from ..macauto import make_sender
+        import kakaocommon.trace as trace
 
         with open_reader() as reader:
-            resolved, window_aliases, position = _send_target(reader, room)
+            with trace.stage("catalog"):
+                resolved, window_aliases, position = _send_target(reader, room)
+                trace.identify("room", resolved.id)
             try:
                 result = make_sender().send(
                     resolved.title,

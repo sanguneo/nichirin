@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator, Mapping, Optional, Protocol, TypedDict, cast
 
 from .errors import ErrorCode, KanaoError
+import kakaocommon.trace as trace
 
 MAIN_WINDOW_TITLE = "카카오톡"
 INPUT_CLASS = "RICHEDIT50W"
@@ -777,29 +778,36 @@ class Sender:
         title = room
         submitting = False
         try:
-            window = self.resolve(
-                room,
-                open_if_needed=open_if_needed,
-                aliases=aliases,
-                hint=hint,
-                search_rows=search_rows,
-                self_chat=self_chat,
-            )
-            title = window.title
-            control = self._backend.input_handle(window.handle)
-            if control is None:
-                raise KanaoError(
-                    ErrorCode.INPUT_NOT_FOUND,
-                    f"found the window for {window.title!r} but not its message box; "
-                    "the client version may differ",
-                    room=window.title,
+            with trace.stage("discovery"):
+                window = self.resolve(
+                    room,
+                    open_if_needed=open_if_needed,
+                    aliases=aliases,
+                    hint=hint,
+                    search_rows=search_rows,
+                    self_chat=self_chat,
                 )
+                trace.identify("window", window.handle)
+                trace.observed("D")
+                trace.observed("U")
+            title = window.title
+            with trace.stage("input"):
+                control = self._backend.input_handle(window.handle)
+                if control is None:
+                    raise KanaoError(
+                        ErrorCode.INPUT_NOT_FOUND,
+                        f"found the window for {window.title!r} but not its message box; "
+                        "the client version may differ",
+                        room=window.title,
+                    )
+                trace.identify("control", control)
+                trace.observed("E")
 
-            # An unfinished draft is cleared rather than refused. Whoever is
-            # sending has already named the room and the words, and a refusal that
-            # can only be resolved by walking to the client is worse than losing a
-            # line nobody finished. It is reported rather than done quietly.
-            existing = bool(self._backend.get_text(control))
+                # An unfinished draft is cleared rather than refused. Whoever is
+                # sending has already named the room and the words, and a refusal that
+                # can only be resolved by walking to the client is worse than losing a
+                # line nobody finished. It is reported rather than done quietly.
+                existing = bool(self._backend.get_text(control))
 
             if dry_run:
                 return {
@@ -810,10 +818,14 @@ class Sender:
                     "wouldClearDraft": existing,
                 }
 
-            self._backend.set_text(control, text)
+            with trace.stage("write"):
+                self._backend.set_text(control, text)
             submitting = True
-            self._backend.submit(control)
-            self._confirm_sent(control)
+            with trace.stage("submit"):
+                self._backend.submit(control)
+            with trace.stage("confirm"):
+                self._confirm_sent(control)
+                trace.observed("S")
         except OSError as error:
             raise KanaoError(
                 ErrorCode.SEND_FAILED, f"could not send to {title!r}: {error}",
@@ -1513,6 +1525,7 @@ class Win32Backend:
         actual = self.get_text(control).replace("\r\n", "\n").replace("\r", "\n")
         if actual != expected:
             raise OSError("input text differs from the request; Enter was not posted")
+        trace.observed("W")
 
     def get_text(self, control: int) -> str:
         count = self._message(control, 0x000E)

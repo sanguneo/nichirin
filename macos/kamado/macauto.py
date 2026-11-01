@@ -31,6 +31,7 @@ from typing import Callable, Iterable, Literal, Optional, Protocol, TypedDict
 
 from . import ax, paths
 from .errors import ErrorCode, KamadoError
+import kakaocommon.trace as trace
 
 BUNDLE_ID = paths.BUNDLE_ID
 EXECUTABLE = "/Applications/KakaoTalk.app/Contents/MacOS/KakaoTalk"
@@ -595,24 +596,31 @@ class Sender:
         title = room
         submitting = False
         try:
-            window = self.resolve(
-                room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
-            )
-            title = window.title
-            control = self._backend.input_handle(window.handle)
-            if control is None:
-                raise KamadoError(
-                    ErrorCode.INPUT_NOT_FOUND,
-                    f"found the window for {window.title!r} but not its message box; "
-                    "the client version may differ",
-                    room=window.title,
+            with trace.stage("discovery"):
+                window = self.resolve(
+                    room, open_if_needed=open_if_needed, aliases=aliases, hint=hint
                 )
+                trace.identify("window", window.handle)
+                trace.observed("D")
+                trace.observed("U")
+            title = window.title
+            with trace.stage("input"):
+                control = self._backend.input_handle(window.handle)
+                if control is None:
+                    raise KamadoError(
+                        ErrorCode.INPUT_NOT_FOUND,
+                        f"found the window for {window.title!r} but not its message box; "
+                        "the client version may differ",
+                        room=window.title,
+                    )
+                trace.identify("control", control)
+                trace.observed("E")
 
-            # An unfinished draft is cleared rather than refused. Whoever is
-            # sending has already named the room and the words, and a refusal that
-            # can only be resolved by walking to the client is worse than losing a
-            # line nobody finished. It is reported rather than done quietly.
-            existing = bool(self._backend.get_text(control))
+                # An unfinished draft is cleared rather than refused. Whoever is
+                # sending has already named the room and the words, and a refusal that
+                # can only be resolved by walking to the client is worse than losing a
+                # line nobody finished. It is reported rather than done quietly.
+                existing = bool(self._backend.get_text(control))
 
             if dry_run:
                 return {
@@ -623,9 +631,11 @@ class Sender:
                     "wouldClearDraft": existing,
                 }
 
-            self._backend.set_text(control, text)
+            with trace.stage("write"):
+                self._backend.set_text(control, text)
             submitting = True
-            self._backend.submit(control)
+            with trace.stage("submit"):
+                self._backend.submit(control)
         except (OSError, ax.AccessibilityDenied) as error:
             raise KamadoError(
                 ErrorCode.SEND_FAILED, f"could not send to {title!r}: {error}",
@@ -807,6 +817,7 @@ class AXBackend:
         for attempt in range(_WRITE_ATTEMPTS):
             if composer.set_attribute("AXValue", text) and composer.value == text:
                 self._text_by_control[control] = text
+                trace.observed("W")
                 return
             if attempt + 1 < _WRITE_ATTEMPTS:
                 time.sleep(_SETTLE_SECONDS)
@@ -854,11 +865,6 @@ class AXBackend:
             text = self._text_by_control.get(control)
             if window is None or text is None:
                 raise OSError("cannot target Return without a chat window and placed text")
-            window.perform("AXRaise")
-            window.set_attribute("AXMain", True)
-            activate()
-            composer.set_attribute("AXFocused", True)
-
             def focused_composer() -> bool:
                 focused = self._app.attribute("AXFocusedUIElement")
                 if not isinstance(focused, ax.Element) or not focused.same_as(composer):
@@ -870,16 +876,24 @@ class AXBackend:
                     and focused.value == text
                 )
 
-            if not self._wait(focused_composer):
-                raise OSError(
-                    "could not verify the target composer's focus, window and text; "
-                    "Return was not posted"
-                )
-            ax.post_key(self._pid, 36)
+            with trace.stage("focus_guard"):
+                window.perform("AXRaise")
+                window.set_attribute("AXMain", True)
+                activate()
+                composer.set_attribute("AXFocused", True)
+                if not self._wait(focused_composer):
+                    raise OSError(
+                        "could not verify the target composer's focus, window and text; "
+                        "Return was not posted"
+                    )
+            with trace.stage("focused_return"):
+                ax.post_key(self._pid, 36)
         else:
-            if not self._wait(lambda: button.attribute("AXEnabled") is True):
-                raise OSError("the send button did not become enabled; it was not pressed")
-            button.perform("AXPress")
+            with trace.stage("button_guard"):
+                if not self._wait(lambda: button.attribute("AXEnabled") is True):
+                    raise OSError("the send button did not become enabled; it was not pressed")
+            with trace.stage("ax_button"):
+                button.perform("AXPress")
 
         def emptied() -> bool:
             remaining = composer.value
@@ -887,8 +901,10 @@ class AXBackend:
                 raise OSError("could not read the composer after submission; outcome unknown")
             return not remaining.strip() or remaining.strip() in _EMPTY_HINTS
 
-        if not self._wait(emptied):
-            raise OSError("the message stayed in the composer; it was not sent")
+        with trace.stage("confirm"):
+            if not self._wait(emptied):
+                raise OSError("the message stayed in the composer; it was not sent")
+            trace.observed("S")
 
     @staticmethod
     def _wait(ready, timeout: float = _WAIT_SECONDS) -> bool:
@@ -1199,26 +1215,28 @@ def send_to_room(
     """
     from .context import _resolve
 
-    if isinstance(target, str) and not target.strip():
-        raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
-    room = _resolve(reader, target)
-    catalogued = reader.rooms()
-    # A window title cannot distinguish two catalog rooms with the same name,
-    # even if the caller supplied an id and only one window is currently open.
-    duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
-    if len(duplicates) != 1:
-        raise KamadoError(
-            ErrorCode.AMBIGUOUS_CHAT,
-            "multiple catalog rooms share this window title; give the target a unique title",
-            candidates=[r.as_json() for r in duplicates],
-        )
-    # The window carries the catalog's own title, which differs from the one
-    # resolved here for the self-chat and for groups with no custom name.
-    stored = reader.stored_title(room.id)
-    aliases = [stored] if stored and stored != room.title else []
-    # The client lists rooms by recency too, so this is close before it is
-    # right - close enough that opening one usually costs a single click.
-    hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
+    with trace.stage("catalog"):
+        if isinstance(target, str) and not target.strip():
+            raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+        room = _resolve(reader, target)
+        catalogued = reader.rooms()
+        # A window title cannot distinguish two catalog rooms with the same name,
+        # even if the caller supplied an id and only one window is currently open.
+        duplicates = [r for r in catalogued if r.title.casefold() == room.title.casefold()]
+        if len(duplicates) != 1:
+            raise KamadoError(
+                ErrorCode.AMBIGUOUS_CHAT,
+                "multiple catalog rooms share this window title; give the target a unique title",
+                candidates=[r.as_json() for r in duplicates],
+            )
+        # The window carries the catalog's own title, which differs from the one
+        # resolved here for the self-chat and for groups with no custom name.
+        stored = reader.stored_title(room.id)
+        aliases = [stored] if stored and stored != room.title else []
+        # The client lists rooms by recency too, so this is close before it is
+        # right - close enough that opening one usually costs a single click.
+        hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
+        trace.identify("room", room.id)
     try:
         result = make_sender().send(
             room.title,

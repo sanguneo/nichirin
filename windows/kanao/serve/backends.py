@@ -193,6 +193,7 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
     """
 
     def write(room: str, act: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+        import kakaocommon.trace as trace
         from ..context import _resolve
         from ..model import SELF_CHAT
         from ..opening import search_rows
@@ -214,28 +215,30 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
             # back the id `/rooms` gave it was answered CHAT_NOT_FOUND. The id
             # is tried first and only when it names a room, so a room whose
             # title is a number still resolves by title.
-            resolved = None
-            if room.strip().isdigit():
-                resolved = reader.room(int(room.strip()))
-            if resolved is None:
-                resolved = _resolve(reader, room)
-            catalogued = reader.rooms()
-            duplicates = [
-                r for r in catalogued if r.title.casefold() == resolved.title.casefold()
-            ]
-            if len(duplicates) != 1:
-                raise KanaoError(
-                    ErrorCode.AMBIGUOUS_CHAT,
-                    "multiple catalog rooms share this window title; "
-                    "give the target a unique title",
-                    candidates=[r.as_json() for r in duplicates],
+            with trace.stage("catalog"):
+                resolved = None
+                if room.strip().isdigit():
+                    resolved = reader.room(int(room.strip()))
+                if resolved is None:
+                    resolved = _resolve(reader, room)
+                catalogued = reader.rooms()
+                duplicates = [
+                    r for r in catalogued if r.title.casefold() == resolved.title.casefold()
+                ]
+                if len(duplicates) != 1:
+                    raise KanaoError(
+                        ErrorCode.AMBIGUOUS_CHAT,
+                        "multiple catalog rooms share this window title; "
+                        "give the target a unique title",
+                        candidates=[r.as_json() for r in duplicates],
+                    )
+                stored = reader.stored_title(resolved.id)
+                window_aliases = [stored] if stored and stored != resolved.title else []
+                position = next(
+                    (index for index, r in enumerate(catalogued) if r.id == resolved.id),
+                    None,
                 )
-            stored = reader.stored_title(resolved.id)
-            window_aliases = [stored] if stored and stored != resolved.title else []
-            position = next(
-                (index for index, r in enumerate(catalogued) if r.id == resolved.id),
-                None,
-            )
+                trace.identify("room", resolved.id)
             try:
                 result = act(
                     make_sender(),

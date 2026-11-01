@@ -9,6 +9,49 @@
       "name": "MIT",
       "identifier": "MIT"
     },
+    "x-send-trace": {
+      "configuration": "send --trace <dir> or serve --trace <dir>; default off. The server host owns the destination; HTTP callers cannot enable tracing or choose a path. Text sends only; no new HTTP route or response fields.",
+      "failure-policy": "An invalid destination is refused before UI mutation as INVALID_REQUEST with not_delivered/safe. A later trace write failure disables that writer without repeating submission or changing a known-success response. Incomplete traces never prove non-submission; a lost daemon reply never triggers a local resend.",
+      "record": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "attempt_id", "platform", "build", "version", "route", "http_route", "stage", "event", "start_ms", "end_ms", "elapsed_ms", "outcome", "code", "conditions"],
+        "properties": {
+          "schema": {"const": 1},
+          "attempt_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+          "platform": {"enum": ["windows", "macos"]},
+          "build": {"enum": ["kanao", "kamado"]},
+          "version": {"type": "string"},
+          "route": {"enum": ["cli", "daemon", "http"]},
+          "http_route": {"enum": ["POST /send", null]},
+          "stage": {"enum": ["attempt", "validation", "catalog", "discovery", "input", "write", "submit", "confirm", "button_guard", "ax_button", "focus_guard", "focused_return", "forward", "daemon", "queue", "execution", "queue_full", "shutdown"]},
+          "event": {"enum": ["start", "end"]},
+          "start_ms": {"type": "number", "minimum": 0},
+          "end_ms": {"type": "number", "minimum": 0},
+          "elapsed_ms": {"type": "number", "minimum": 0},
+          "outcome": {"enum": ["pass", "rejected", "unknown", "error"]},
+          "code": {"enum": ["KAKAO_NOT_RUNNING", "NO_USER_DATA", "KEY_UNAVAILABLE", "CHAT_NOT_FOUND", "MESSAGE_NOT_FOUND", "FILE_EXPIRED", "AMBIGUOUS_CHAT", "BUSY", "READ_FAILED", "INVALID_REQUEST", "WINDOW_NOT_FOUND", "INPUT_NOT_FOUND", "SEND_FAILED", "UNAUTHORIZED", "RATE_LIMITED", "PERMISSION_REQUIRED", "UNEXPECTED", null]},
+          "conditions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["E", "D", "U", "W", "S", "L", "B"],
+            "properties": {
+              "E": {"enum": ["pass", "not_checked"]},
+              "D": {"enum": ["pass", "not_checked"]},
+              "U": {"enum": ["pass", "not_checked"]},
+              "W": {"enum": ["pass", "not_checked"]},
+              "S": {"enum": ["pass", "not_checked"]},
+              "L": {"const": "not_checked"},
+              "B": {"const": "not_checked"}
+            }
+          },
+          "room": {"type": "string", "pattern": "^[a-f0-9]{8}-room-[0-9]+$"},
+          "window": {"type": "string", "pattern": "^[a-f0-9]{8}-window-[0-9]+$"},
+          "control": {"type": "string", "pattern": "^[a-f0-9]{8}-control-[0-9]+$"}
+        },
+        "description": "One allowlisted JSONL event. Monotonic times are milliseconds relative to the attempt origin; nested durations overlap. Identifiers are attempt-local random aliases, never raw IDs. Bodies, titles, search terms, tokens, paths, filenames, arguments, candidates, screenshots and raw exception messages are excluded. L and B are never inferred from submitted."
+      }
+    },
     "x-builds": {
       "kanao-cli": {
         "platform": "Windows",

@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from typing import Any, Final, Optional
 
-from . import paths
+from . import paths, __version__
+import kakaocommon.trace as trace
+import kakaocommon.trace_transport as trace_transport
 from .context import DEFAULT_LIMIT, _resolve, read_context
 from .errors import ErrorCode, KamadoError, as_envelope, success
 from .names import NameLedger
@@ -121,14 +123,23 @@ def send_to_daemon(
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
             sock.connect(str(sock_path))
-            payload = json.dumps({"command": command, "args": args}, ensure_ascii=False)
-            sock.sendall(payload.encode("utf-8") + b"\n")
-            delivered = True
-            response = _receive_line(
-                sock, maximum=RESPONSE_MAX_BYTES, timeout=timeout, subject="the daemon's answer"
-            )
-            answer = json.loads(response.decode("utf-8"))
-            return answer if isinstance(answer, dict) else None
+            request = {"command": command, "args": args}
+            descriptor = trace_transport.export() if not repeatable else None
+            if descriptor is not None:
+                request["_trace"] = descriptor
+            payload = json.dumps(request, ensure_ascii=False)
+            with trace.stage("forward"):
+                sock.sendall(payload.encode("utf-8") + b"\n")
+                delivered = True
+                response = _receive_line(
+                    sock, maximum=RESPONSE_MAX_BYTES, timeout=timeout, subject="the daemon's answer"
+                )
+                answer = json.loads(response.decode("utf-8"))
+                if not isinstance(answer, dict):
+                    raise ValueError("the daemon answer is not an envelope")
+                if not repeatable and not answer.get("ok"):
+                    trace.report_failure(answer.get("error", {}))
+                return answer
     except (OSError, ValueError):
         # FrameError and a malformed body are ValueErrors: both mean the
         # answer did not arrive whole.
@@ -309,7 +320,16 @@ class DaemonServer:
                             self.running = False
                             resp = {"ok": True, "status": "stopping"}
                         else:
-                            resp = self._dispatch(command, args)
+                            with trace_transport.attach(
+                                req.get("_trace") if command == "send" else None,
+                                trace.Identity("macos", "kamado", __version__),
+                            ):
+                                resp = self._dispatch(command, args)
+                    except trace.TraceDestinationError:
+                        resp = as_envelope(KamadoError(
+                            ErrorCode.INVALID_REQUEST, str(trace.TraceDestinationError()),
+                            disposition={"delivery": "not_delivered", "retry": "safe"},
+                        ))
                     except Exception as err:
                         resp = as_envelope(err, writing=command == "send")
 
