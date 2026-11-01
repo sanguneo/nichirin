@@ -20,6 +20,8 @@ import os
 import sys
 from typing import Any, Optional, Sequence
 
+from kakaocommon.skills import configure_parser, get_document
+
 from . import __version__
 from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
@@ -81,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    configure_parser(commands.add_parser("skills", help="Read bundled agent documentation"))
     commands.add_parser("status", help="Report access without requiring it to work")
     commands.add_parser("verify", help="Prove that decryption currently works")
 
@@ -598,6 +601,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     arguments = build_parser().parse_args(argv)
     try:
+        if arguments.command == "skills":
+            _emit(success(get_document("kanao", __version__, arguments.topic)))
+            return 0
         # The real entry point is where the name ledger is switched on: a
         # rename is invisible unless something writes down what it saw, and
         # this is the one place that is certainly reading the live databases.

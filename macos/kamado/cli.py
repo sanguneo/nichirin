@@ -20,6 +20,8 @@ import os
 import sys
 from typing import Any, Optional, Sequence
 
+from kakaocommon.skills import configure_parser, get_document
+
 from . import __version__
 from . import digest as digest_defaults
 from .context import DEFAULT_LIMIT, read_context
@@ -91,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    configure_parser(commands.add_parser("skills", help="Read bundled agent documentation"))
     commands.add_parser("status", help="Report access without requiring it to work")
     commands.add_parser("verify", help="Prove that decryption currently works")
 
@@ -636,6 +639,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             stream.reconfigure(encoding="utf-8")
 
     arguments = build_parser().parse_args(argv)
+
+    if arguments.command == "skills":
+        try:
+            _emit(success(get_document("kamado", __version__, arguments.topic)))
+            return 0
+        except OSError as error:
+            _emit(as_envelope(error))
+            return 1
 
     # If the background daemon is running and this is a query command, forward it!
     # ``serve`` joins this list for the same reason ``follow`` is on it: the

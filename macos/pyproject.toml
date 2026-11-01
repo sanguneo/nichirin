@@ -20,8 +20,14 @@ kakaoread = "kakaoread.__main__:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ["kamado*", "kakaoread*"]
+[tool.setuptools]
+packages = ["kamado", "kamado.agent_docs", "kamado.serve", "kamado.tui", "kakaoread", "kakaocommon"]
+
+[tool.setuptools.package-dir]
+kakaocommon = "../kakaocommon"
+
+[tool.setuptools.package-data]
+kamado = ["agent_docs/*.md"]
 
 [tool.pyright]
 include = ["kamado", "kakaoread", "tests"]

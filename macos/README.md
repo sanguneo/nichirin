@@ -42,6 +42,12 @@ runtime dependencies. Korean-first documentation; structured commands answer in 
 
 ## 5분 안에
 
+처음 쓰는 에이전트는 `python3 -m kamado skills get`으로 동봉된 전체 사용 안내를 받으세요.
+`skills get send` (`read`, `serve`도 가능)는 해당 주제와 공통 주의사항을
+`{"ok": true, "topic": "...", "version": "...", "content": "..."}`로 돌려줍니다.
+문서 머리말과 응답 버전은 `--version`과 같습니다. 카카오톡·데몬·네트워크·계정에
+접근하지 않아 권한을 주기 전에도 쓸 수 있습니다. 기여 규칙은 [AGENTS.md](AGENTS.md)입니다.
+
 macOS와 **Python 3.9 이상**, 이 Mac에 로그인한 카카오톡 계정의 로컬 데이터가 필요합니다.
 macOS 15.7에서 확인했습니다. 저장소 디렉터리에서 실행하세요. `pip install`도 가상환경도
 필수는 아닙니다. 서드파티 런타임 패키지를 쓰지 않습니다.

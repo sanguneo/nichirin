@@ -38,7 +38,7 @@ def shipped_files(root: Path) -> dict[Path, Path]:
     """Map each installed path to the source file it comes from."""
     package = root / "kamado"
     payload: dict[Path, Path] = {
-        Path("SKILL.md"): root / "skill" / "SKILL.md",
+        Path("SKILL.md"): package / "agent_docs" / "SKILL.md",
         Path("LICENSE"): root / "LICENSE",
         LAUNCHER: root / "skill" / LAUNCHER,
         LEGACY_LAUNCHER: root / "skill" / LEGACY_LAUNCHER,
@@ -48,6 +48,12 @@ def shipped_files(root: Path) -> dict[Path, Path]:
             Path("scripts/kamado") / source.relative_to(package): source
             for source in sorted(package.rglob("*.py"))
             if "__pycache__" not in source.relative_to(package).parts
+        }
+    )
+    payload.update(
+        {
+            Path("scripts/kamado/agent_docs") / source.name: source
+            for source in sorted((package / "agent_docs").glob("*.md"))
         }
     )
     common = root.parent / "kakaocommon"
