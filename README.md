@@ -39,6 +39,11 @@ answers in JSON.*
 
 ## 빠른 시작
 
+처음 쓰는 에이전트는 `python -m nichirin skills get`으로 실행 중인 빌드에 동봉된
+사용 안내를 먼저 받을 수 있습니다. `skills get send`, `read`, `serve`로 주제를 고르면
+`ok`, `topic`, `version`, `content` JSON을 돌려줍니다. 네트워크·카카오톡·계정 접근은
+하지 않습니다. Mac에서는 `python3`를 씁니다. 기여 규칙은 [AGENTS.md](AGENTS.md)입니다.
+
 > nichirin이 유용하셨다면 [GitHub Star ⭐](https://github.com/sanguneo/nichirin)를 눌러 응원해 주세요!
 
 저장소 루트에서 `nichirin`으로 실행하면 이 컴퓨터에 맞는 빌드가 실행됩니다. Mac에서는

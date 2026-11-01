@@ -6,6 +6,7 @@ in a subprocess against a throwaway home rather than importing it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -89,6 +90,9 @@ class PayloadTests(InstallerTests):
             f"scripts/kamado/{source.relative_to(ROOT / 'kamado').as_posix()}"
             for source in (ROOT / "kamado").rglob("*.py")
         } | {
+            f"scripts/kamado/agent_docs/{source.name}"
+            for source in (ROOT / "kamado/agent_docs").glob("*.md")
+        } | {
             f"scripts/kakaocommon/{source.relative_to(COMMON).as_posix()}"
             for source in COMMON.rglob("*.py")
         }
@@ -101,7 +105,7 @@ class PayloadTests(InstallerTests):
     def test_shipped_files_are_copied_byte_for_byte(self) -> None:
         target = self.installed()
         self.assertEqual(
-            (target / "SKILL.md").read_bytes(), (ROOT / "skill/SKILL.md").read_bytes()
+            (target / "SKILL.md").read_bytes(), (ROOT / "kamado/agent_docs/SKILL.md").read_bytes()
         )
         self.assertEqual((target / "LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes())
 
@@ -146,6 +150,30 @@ class SafetyTests(InstallerTests):
 
 
 class PortabilityTests(InstallerTests):
+    def test_moved_launcher_serves_its_bundled_skill_offline(self) -> None:
+        # Given: the installed skill is moved away from the checkout.
+        moved = self.moved()
+        launcher = str(moved / LAUNCHER)
+        version = self.python("-I", "-S", launcher, "--version")
+        self.assertEqual(version.returncode, 0, version.stderr)
+        runtime_version = version.stdout.decode("utf-8").strip().split()[-1]
+        for topic in ("send", "read", "serve", None):
+            with self.subTest(topic=topic):
+                args = ["-I", "-S", launcher, "skills", "get"]
+                if topic is not None:
+                    args.append(topic)
+                # When: a topic is requested outside the repository.
+                result = self.python(*args)
+                # Then: the installed document and runtime agree.
+                self.assertEqual(result.returncode, 0, result.stderr)
+                answer = json.loads(result.stdout)
+                self.assertEqual(answer["version"], runtime_version)
+                self.assertEqual(answer["topic"], topic or "all")
+                if topic is None:
+                    self.assertEqual(
+                        answer["content"], (moved / "SKILL.md").read_text(encoding="utf-8")
+                    )
+
     def moved(self) -> Path:
         destination = self.work / f"moved {KOREAN} skill"
         shutil.move(str(self.installed()), destination)

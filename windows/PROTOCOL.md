@@ -2,7 +2,7 @@
 
 Every command prints one JSON document to standard output and exits. That
 document, not this file, is the interface: an agent, a script or a wrapper
-reads it and never imports `kanao`. `skill/SKILL.md` is how an agent *uses*
+reads it and never imports `kanao`. `kanao/agent_docs/SKILL.md` is how an agent *uses*
 the commands; this is what their output is guaranteed to look like.
 
 `kamado-cli`, the macOS sibling, emits the same shapes. A consumer written
@@ -35,6 +35,26 @@ Failure:
 `message`, and may carry more — `candidates` on an ambiguous room, for
 instance. **`message` is written for a person and its wording may change at
 any time; branch on `code`, never on `message`.**
+
+## Offline agent documentation (CLI only)
+
+`kanao skills get [send|read|serve]` returns
+`{"ok": true, "topic": "send", "version": "0.31.3", "content": "..."}`.
+With no topic it returns the full installed `SKILL.md` and `topic: "all"`.
+An explicit topic includes the matching sections plus common setup, limits
+and data-handling guidance. `content` is Markdown with YAML frontmatter;
+its `version` field and the response's `version` equal the runtime
+`kanao --version`. Markdown prose is not a machine-stable contract.
+
+This command reads only bundled package resources, before creating a Reader;
+it requires no KakaoTalk, account, permission, token or network access. There
+is no HTTP route for it. Unknown topics/actions or a missing action use
+argparse's exit 2. Resource-read failures use the existing failure envelope.
+The canonical document is `kanao/agent_docs/SKILL.md`; both the wheel and
+`install.py` ship it, and the installer also places it at the skill root.
+The repository's `skill/SKILL.md` points there rather than maintaining a copy.
+HTML `skills:` markers in the source delimit topics and are consumed by the
+CLI; they do not render in the installed full document.
 
 ## Exit status
 

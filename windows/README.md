@@ -41,6 +41,12 @@ dependencies. Korean-first documentation; every command answers in JSON.*
 
 ## 5분 안에
 
+처음 쓰는 에이전트는 `python -m kanao skills get`으로 동봉된 전체 사용 안내를 받으세요.
+`skills get send` (`read`, `serve`도 가능)는 해당 주제와 공통 주의사항을
+`{"ok": true, "topic": "...", "version": "...", "content": "..."}`로 돌려줍니다.
+문서 머리말과 응답 버전은 `--version`과 같습니다. 카카오톡이나 네트워크에 접근하지
+않으므로 설치 직후에도 쓸 수 있습니다. 기여 규칙은 [AGENTS.md](AGENTS.md)입니다.
+
 ```powershell
 python -m kanao status                     # 지금 무엇이 되는지
 python -m kanao context --room "이름"       # 방 하나를 통째로 이해하기

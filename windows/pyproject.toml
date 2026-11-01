@@ -15,8 +15,14 @@ kakaoread = "kakaoread.__main__:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ["kanao*", "kakaoread*"]
+[tool.setuptools]
+packages = ["kanao", "kanao.agent_docs", "kanao.serve", "kanao.tui", "kakaoread", "kakaocommon"]
+
+[tool.setuptools.package-dir]
+kakaocommon = "../kakaocommon"
+
+[tool.setuptools.package-data]
+kanao = ["agent_docs/*.md"]
 
 [tool.pyright]
 include = ["kanao", "kakaoread", "tests"]
