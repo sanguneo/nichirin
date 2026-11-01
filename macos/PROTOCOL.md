@@ -84,6 +84,21 @@ as an empty result.
 - `text` may be empty with a non-`text` `kind`: that is an attachment this
   tool can name but not read.
 
+## Optional text-send diagnostics
+
+`send --trace <dir>` and host-owned `serve --trace <dir>` write masked,
+per-attempt JSONL using the shared [schema and failure policy](../docs/send-trace.md).
+They default off, leave stdout/HTTP envelopes unchanged, and accept no trace
+destination from HTTP callers. Queue waiting, queue rejection, native write
+refusal and post-submit uncertainty are distinct stages. AX-button submission
+and guarded focused Return have different stages; Return activates the client.
+Unobserved L/B remain `not_checked`; `submitted` does not establish either.
+
+An invalid requested destination is refused before UI mutation with
+`INVALID_REQUEST`, `not_delivered/safe`. A later logging failure disables
+logging without repeating submission or changing a known success. CLI/daemon
+events share one attempt file; a lost daemon response never triggers a local resend.
+
 ## Streaming: `follow`
 
 `follow` writes **newline-delimited JSON** — one complete object per line,

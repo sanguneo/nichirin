@@ -31,6 +31,7 @@ from .names import NameLedger
 from .opening import open_for_reading, window_target
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
+import kakaocommon.trace as trace
 
 DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
 """How many of the newest messages a digest slices, matching the screen's /sum.
@@ -157,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_room_selector(send, required=True)
     send.add_argument("text", help="Message text (quote whitespace and newlines)")
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
+    send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
     send.add_argument(
         "--open",
         action="store_true",
@@ -204,6 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expose send, reads, file downloads and a message stream over HTTP + SSE",
     )
     serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--trace", metavar="DIR", help="Host-owned directory for masked send traces")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
         "--token",
@@ -360,9 +363,11 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return 0
 
     if arguments.command == "send":
-        return _send(reader, arguments)
+        with trace.attempt(arguments.trace, trace.Identity("windows", "kanao", __version__), "cli"):
+            return _send(reader, arguments)
 
     if arguments.command == "serve":
+        trace.validate_directory(arguments.trace)
         from .serve import (
             SharedReads,
             make_live_attachments_provider,
@@ -397,6 +402,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             port=arguments.port,
             send=make_live_send(),
             token=token,
+            trace_dir=arguments.trace,
             min_interval=arguments.min_interval,
             rooms_provider=make_live_rooms_provider(reads.reading),
             context_provider=make_live_context_provider(reads.reading),
@@ -521,8 +527,10 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
 
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
-    room = _selected_room(reader, arguments)
-    aliases, hint, rows = window_target(reader, room)
+    with trace.stage("catalog"):
+        room = _selected_room(reader, arguments)
+        aliases, hint, rows = window_target(reader, room)
+        trace.identify("room", room.id)
     try:
         result = make_sender().send(
             room.title,
@@ -607,8 +615,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # The real entry point is where the name ledger is switched on: a
         # rename is invisible unless something writes down what it saw, and
         # this is the one place that is certainly reading the live databases.
-        with Reader(ledger=NameLedger()) as reader:
+        with trace.attempt(
+            arguments.trace if arguments.command == "send" else None,
+            trace.Identity("windows", "kanao", __version__), "cli",
+        ), Reader(ledger=NameLedger()) as reader:
             return run(arguments, reader)
+    except trace.TraceDestinationError:
+        _emit(as_envelope(KanaoError(
+            ErrorCode.INVALID_REQUEST, str(trace.TraceDestinationError()),
+            disposition={"delivery": "not_delivered", "retry": "safe"},
+        )))
+        return 1
     except KeyboardInterrupt:
         return 130
     except BaseException as error:  # noqa: BLE001 - reported, never swallowed

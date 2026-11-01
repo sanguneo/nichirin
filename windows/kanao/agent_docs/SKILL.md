@@ -14,6 +14,15 @@ and content; the `send` command operates the real client.
 
 ## Locate the CLI
 
+For opt-in send diagnostics, add `--trace <dir>` to `send` or to the host's
+`serve` command. This writes masked per-attempt JSONL, not message text or
+room titles, and does not change stdout or HTTP envelopes. HTTP callers
+cannot choose a trace destination. Queue waiting and execution are separate;
+L (independent history confirmation) and B (desktop preservation) remain
+`not_checked`. An invalid destination is refused before UI mutation. A later
+logging failure never resubmits or changes a known success. Missing trace
+events are not permission to resend; keep following `error.disposition`.
+
 Retry a failed send only when `error.disposition.retry` is `safe`.
 `after_check` means read the room before deciding; never automatically resend.
 `delivery: submitted` on a success is client acceptance, not log confirmation.

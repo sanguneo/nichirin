@@ -30,6 +30,7 @@ from .model import ATTACHMENT_KINDS
 from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
+import kakaocommon.trace as trace
 
 DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
 """How many of the newest messages a digest slices, matching the screen's /sum.
@@ -166,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_room_selector(send, required=True)
     send.add_argument("text", help="Message text (quote whitespace and newlines)")
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
+    send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
     send.add_argument(
         "--open",
         action="store_true",
@@ -220,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expose send, reads, file downloads and a message stream over HTTP + SSE",
     )
     serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--trace", metavar="DIR", help="Host-owned directory for masked send traces")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
         "--token",
@@ -374,9 +377,11 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         return 0
 
     if arguments.command == "send":
-        return _send(reader, arguments)
+        with trace.attempt(arguments.trace, trace.Identity("macos", "kamado", __version__), "cli"):
+            return _send(reader, arguments)
 
     if arguments.command == "serve":
+        trace.validate_directory(arguments.trace)
         from . import paths, snapshot
         from .macauto import client_session
         from .serve import (
@@ -420,6 +425,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             port=arguments.port,
             send=make_live_send(send_reader),
             token=token,
+            trace_dir=arguments.trace,
             min_interval=arguments.min_interval,
             rooms_provider=make_live_rooms_provider(reads.reading),
             context_provider=make_live_context_provider(reads.reading),
@@ -648,29 +654,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _emit(as_envelope(error))
             return 1
 
-    # If the background daemon is running and this is a query command, forward it!
-    # ``serve`` joins this list for the same reason ``follow`` is on it: the
-    # daemon answers one query and returns, and a server that is supposed to
-    # hold a socket open would exit having printed the daemon's answer.
-    if arguments.command in DAEMON_COMMANDS:
-        from .daemon import is_daemon_running, send_to_daemon
-
-        if is_daemon_running():
-            res = send_to_daemon(
-                arguments.command,
-                vars(arguments),
-                repeatable=arguments.command != "send",
-            )
-            if res is not None:
-                _emit(res)
-                return 0 if res.get("ok") else 1
-
     try:
-        # The real entry point is where the name ledger is switched on: a
-        # rename is invisible unless something writes down what it saw, and
-        # this is the one place that is certainly reading the live databases.
-        with Reader(ledger=NameLedger()) as reader:
-            return run(arguments, reader)
+        with trace.attempt(
+            arguments.trace if arguments.command == "send" else None,
+            trace.Identity("macos", "kamado", __version__), "cli",
+        ):
+            if arguments.command in DAEMON_COMMANDS:
+                from .daemon import is_daemon_running, send_to_daemon
+
+                if is_daemon_running():
+                    res = send_to_daemon(
+                        arguments.command,
+                        vars(arguments),
+                        repeatable=arguments.command != "send",
+                    )
+                    if res is not None:
+                        _emit(res)
+                        return 0 if res.get("ok") else 1
+            # Reader lifetime stays on the command thread.
+            with Reader(ledger=NameLedger()) as reader:
+                return run(arguments, reader)
+    except trace.TraceDestinationError:
+        _emit(as_envelope(KamadoError(
+            ErrorCode.INVALID_REQUEST, str(trace.TraceDestinationError()),
+            disposition={"delivery": "not_delivered", "retry": "safe"},
+        )))
+        return 1
     except KeyboardInterrupt:
         return 130
     except BaseException as error:  # noqa: BLE001 - reported, never swallowed

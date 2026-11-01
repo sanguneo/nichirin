@@ -14,6 +14,14 @@ path has not been exercised against the live client in this change.
 
 ## The condition to preserve
 
+Optional `send --trace <dir>` / host-owned `serve --trace <dir>` diagnostics
+record the checks actually performed, using the shared
+[trace schema](../../docs/send-trace.md). AX-button and guarded focused Return
+have different stage names. Traces do not independently read back the local
+history or measure the desktop throughout an attempt: L and B are always
+`not_checked`, not implied by `submitted`. A later logging failure does not
+repeat submission or change a known-success response.
+
 For room `r`, message `m`, and desktop state `s`, distinguish:
 
 - `E`: the room has a live composer.

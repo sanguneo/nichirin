@@ -14,8 +14,11 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
+from contextlib import ExitStack
 from typing import Any, Callable, Optional, Type
 
+import kakaocommon.trace as trace
+from .. import __version__
 from ..errors import ErrorCode, KanaoError, as_envelope, success
 from ..model import ATTACHMENT_KINDS
 from .config import (
@@ -188,6 +191,7 @@ def build_handler(
     send: Callable[..., dict[str, Any]],
     *,
     token: str,
+    trace_dir: Optional[str] = None,
     min_interval: float = DEFAULT_MIN_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     rooms_provider: Optional[Callable[[], list[Any]]] = None,
@@ -231,6 +235,7 @@ def build_handler(
 
     Raises :class:`KanaoError` for a bad token, interval, or poll interval.
     """
+    trace.validate_directory(trace_dir)
     secret = validate_token(token)
     spacing = validate_min_interval(min_interval)
     period = validate_poll_interval(poll_interval)
@@ -375,6 +380,8 @@ def build_handler(
             return bytes(received)
 
         def _reply(self, status: int, payload: dict[str, Any]) -> None:
+            if payload.get("ok") is False:
+                trace.refused("validation", payload["error"]["code"])
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -808,6 +815,16 @@ def build_handler(
 
         def _handle_send(self) -> None:
             try:
+                with trace.attempt(trace_dir, trace.Identity("windows", "kanao", __version__), "http"):
+                    self._handle_traced_send()
+            except trace.TraceDestinationError:
+                self._reply(400, as_envelope(KanaoError(
+                    ErrorCode.INVALID_REQUEST, str(trace.TraceDestinationError()),
+                    disposition={"delivery": "not_delivered", "retry": "safe"},
+                )))
+
+        def _handle_traced_send(self) -> None:
+            try:
                 body = self._read_json_body()
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
@@ -973,6 +990,7 @@ def build_handler(
             if paced:
                 in_line = queue.reserve()
                 if in_line is not None:
+                    trace.refused("queue_full", "RATE_LIMITED")
                     self._reply(
                         429,
                         as_envelope(
@@ -985,40 +1003,43 @@ def build_handler(
                     )
                     return None
             try:
-                with send_lock:
-                    if stopping.is_set():
-                        # Waited for the lock through a shutdown: nothing was
-                        # typed yet, so this is a refusal, not an unknown.
-                        self._reply(
-                            503,
-                            as_envelope(
-                                KanaoError(
-                                    ErrorCode.BUSY,
-                                    f"the server is shutting down; this {what} was not sent",
-                                    disposition={"delivery": "not_delivered", "retry": "safe"},
-                                )
-                            ),
-                        )
-                        return None
-                    if paced:
-                        try:
-                            queue.wait_for_turn()
-                        except _ShuttingDown:
+                with ExitStack() as locked:
+                    with trace.stage("queue"):
+                        locked.enter_context(send_lock)
+                        if stopping.is_set():
+                            trace.refused("shutdown", "BUSY")
                             self._reply(
                                 503,
                                 as_envelope(
                                     KanaoError(
                                         ErrorCode.BUSY,
-                                        "the server is shutting down; this "
-                                        f"{what} was not sent",
+                                        f"the server is shutting down; this {what} was not sent",
                                         disposition={"delivery": "not_delivered", "retry": "safe"},
                                     )
                                 ),
                             )
                             return None
+                        if paced:
+                            try:
+                                queue.wait_for_turn()
+                            except _ShuttingDown:
+                                trace.refused("shutdown", "BUSY")
+                                self._reply(
+                                    503,
+                                    as_envelope(
+                                        KanaoError(
+                                            ErrorCode.BUSY,
+                                            "the server is shutting down; this "
+                                            f"{what} was not sent",
+                                            disposition={"delivery": "not_delivered", "retry": "safe"},
+                                        )
+                                    ),
+                                )
+                                return None
                     started = queue.begin()
                     try:
-                        result = write()
+                        with trace.stage("execution"):
+                            result = write()
                     except KanaoError as error:
                         self._reply(_status_for(error), as_envelope(error))
                         return None

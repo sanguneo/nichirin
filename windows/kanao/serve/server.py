@@ -61,6 +61,7 @@ def run(
     send: Callable[..., dict[str, Any]],
     *,
     token: str,
+    trace_dir: Optional[str] = None,
     min_interval: float = DEFAULT_MIN_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     rooms_provider: Optional[Callable[[], list[Any]]] = None,
@@ -81,6 +82,7 @@ def run(
     handler = build_handler(
         send,
         token=token,
+        trace_dir=trace_dir,
         min_interval=min_interval,
         clock=clock,
         rooms_provider=rooms_provider,
