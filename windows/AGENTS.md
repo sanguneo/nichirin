@@ -94,9 +94,15 @@ code that depends on them without re-checking will produce quiet wrong answers.
 
 - The key exists **only in the running client's memory**, and only for a
   database it has opened. A room KakaoTalk never displayed cannot be read.
-- `codec_ctx` layout (64-bit): iterations `0x04` = 256000, key size `0x10` = 32,
-  page size `0x1C` = 4096, reserve `0x24` = 80, salt pointer `0x40`, read
-  context `0x60`, and the key pointer at read context `+0x08`.
+- `codec_ctx` integer markers are shared: iterations `0x04` = 256000, key
+  size `0x10` = 32, page size `0x1C` = 4096, reserve `0x24` = 80.
+  For x64, the salt pointer is `0x40`, read context `0x60`, and pointers are
+  8 bytes. For x86, they are `0x3C`, `0x4C`, and 4 bytes. Both use the key
+  pointer at read context `+0x08`. Read only through the last needed pointer:
+  `0x68` bytes for x64, `0x50` for x86.
+- `IsWow64Process` selects the target layout for both fresh scans and cached
+  addresses. A 64-bit Python can read a 32-bit client; never infer the client's
+  layout from Python alone. A failed architecture query yields no contexts.
 - A database is matched to a key by the 16-byte salt that both the file header
   and the in-memory context carry. Never match by filename.
 - **Prepare the key once per database, not per page.** Per-page CNG setup
