@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import struct
 import unittest
+from contextlib import contextmanager
+from unittest.mock import patch
 
 from kanao.process import (
     CONTEXT_SIZE,
@@ -18,6 +20,9 @@ from kanao.process import (
     CodecContext,
     decode_context,
     resolve_context,
+    resolve_addresses,
+    resolve_many,
+    scan_process,
     scan_blocks,
 )
 
@@ -169,6 +174,141 @@ class BlockWalkTests(unittest.TestCase):
 
     def test_handles_an_empty_stream_of_blocks(self) -> None:
         self.assertEqual(list(scan_blocks([], _memory())), [])
+
+
+class X86ContextTests(unittest.TestCase):
+    """32-bit pointers must survive scanning and cached-address resolution."""
+
+    def setUp(self) -> None:
+        self.blob = bytearray(0x50)
+        for offset, value in (
+            (0x04, 256000), (0x10, 32), (0x1C, 4096), (0x24, 80),
+            (0x3C, SALT_ADDRESS), (0x4C, READ_CONTEXT_ADDRESS),
+        ):
+            struct.pack_into("<I", self.blob, offset, value)
+        self.blob = bytes(self.blob)
+        self.mapping = {
+            (BASE_ADDRESS, len(self.blob)): self.blob,
+            (SALT_ADDRESS, SALT_SIZE): SALT,
+            (READ_CONTEXT_ADDRESS + 0x08, 4): struct.pack("<I", KEY_ADDRESS),
+            (KEY_ADDRESS, KEY_SIZE): KEY,
+        }
+        self.expected = CodecContext(BASE_ADDRESS, SALT, KEY)
+        self.wow64 = True
+        self.architecture_query_ok = True
+
+    @contextmanager
+    def opened(self, pid):
+        blob = self.blob
+        wow64, query_ok = self.wow64, self.architecture_query_ok
+
+        class Library:
+            def IsWow64Process(self, handle, result):
+                result._obj.value = wow64
+                return query_ok
+
+            def VirtualQueryEx(self, handle, address, result, size):
+                if address.value:
+                    return 0
+                region = result._obj
+                region.base_address = BASE_ADDRESS
+                region.region_size = len(blob)
+                region.state = 0x1000
+                region.type = 0x20000
+                region.protect = 0x04
+                return size
+
+        yield Library(), 123, memory_reader(self.mapping)
+
+    def test_live_scan_uses_the_target_width_not_the_python_width(self) -> None:
+        with patch("kanao.process._opened", self.opened):
+            self.assertEqual(scan_process(123), [self.expected])
+
+    def test_cached_addresses_use_the_same_target_width(self) -> None:
+        with patch("kanao.process._opened", self.opened):
+            self.assertEqual(resolve_addresses(123, [BASE_ADDRESS]), [self.expected])
+
+    def test_does_not_guess_a_layout_when_the_architecture_query_fails(self) -> None:
+        self.architecture_query_ok = False
+        with patch("kanao.process._opened", self.opened):
+            self.assertEqual(scan_process(123), [])
+            self.assertEqual(resolve_addresses(123, [BASE_ADDRESS]), [])
+
+    @unittest.skipUnless(struct.calcsize("P") == 8, "native x64 requires 64-bit Python")
+    def test_native_x64_scanning_and_cached_resolution_still_work(self) -> None:
+        self.wow64 = False
+        self.blob = codec_context()
+        self.mapping = {
+            (BASE_ADDRESS, len(self.blob)): self.blob,
+            (SALT_ADDRESS, SALT_SIZE): SALT,
+            (READ_CONTEXT_ADDRESS + 0x08, 8): struct.pack("<Q", KEY_ADDRESS),
+            (KEY_ADDRESS, KEY_SIZE): KEY,
+        }
+        with patch("kanao.process._opened", self.opened):
+            self.assertEqual(scan_process(123), [self.expected])
+            self.assertEqual(resolve_addresses(123, [BASE_ADDRESS]), [self.expected])
+
+    def test_follows_four_byte_pointers(self) -> None:
+        self.assertEqual(
+            resolve_context(BASE_ADDRESS, self.blob, memory_reader(self.mapping), pointer_size=4),
+            self.expected,
+        )
+
+    def test_finds_a_context_at_the_region_end_across_every_split(self) -> None:
+        for split in range(1, len(self.blob)):
+            with self.subTest(split=split):
+                blocks = [
+                    (BASE_ADDRESS, self.blob[:split]),
+                    (BASE_ADDRESS + split, self.blob[split:]),
+                ]
+                self.assertEqual(
+                    list(scan_blocks(blocks, memory_reader(self.mapping), pointer_size=4)),
+                    [self.expected],
+                )
+
+    def test_cached_context_does_not_require_bytes_past_its_last_pointer(self) -> None:
+        self.assertEqual(
+            resolve_many([BASE_ADDRESS], memory_reader(self.mapping), pointer_size=4),
+            [self.expected],
+        )
+
+    def test_rejects_a_truncated_context_or_key_pointer(self) -> None:
+        self.assertIsNone(decode_context(self.blob[:-1], pointer_size=4))
+        self.mapping[(READ_CONTEXT_ADDRESS + 0x08, 4)] = b"\x01\x02\x03"
+        self.assertIsNone(
+            resolve_context(BASE_ADDRESS, self.blob, memory_reader(self.mapping), pointer_size=4)
+        )
+
+    def test_rejects_invalid_markers_and_null_context_pointers(self) -> None:
+        for offset, wrong in (
+            (0x04, 1000), (0x10, 16), (0x1C, 1024), (0x24, 48),
+            (0x3C, 0), (0x4C, 0),
+        ):
+            with self.subTest(offset=offset):
+                blob = bytearray(self.blob)
+                struct.pack_into("<I", blob, offset, wrong)
+                self.assertIsNone(decode_context(blob, pointer_size=4))
+
+    def test_rejects_a_null_key_pointer(self) -> None:
+        self.mapping[(READ_CONTEXT_ADDRESS + 0x08, 4)] = bytes(4)
+        self.assertIsNone(
+            resolve_context(BASE_ADDRESS, self.blob, memory_reader(self.mapping), pointer_size=4)
+        )
+
+    def test_does_not_decode_x86_bytes_as_a_native_context(self) -> None:
+        self.assertIsNone(decode_context(self.blob))
+
+    def test_x64_pointers_above_four_gib_are_not_truncated(self) -> None:
+        salt, read, key = (0x1_0000_1000, 0x1_0000_2000, 0x1_0000_3000)
+        blob = codec_context(salt_pointer=salt, read_context=read)
+        memory = memory_reader({
+            (salt, SALT_SIZE): SALT,
+            (read + 0x08, 8): struct.pack("<Q", key),
+            (key, KEY_SIZE): KEY,
+        })
+        self.assertEqual(
+            resolve_context(BASE_ADDRESS, blob, memory), self.expected,
+        )
 
 
 if __name__ == "__main__":

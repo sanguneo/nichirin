@@ -8,14 +8,18 @@ suspended, and never attached to as a debugger.
 
 A candidate is recognized by the shape of SQLCipher's ``codec_ctx`` struct
 rather than by a hard-coded address, so it survives the client being relocated
-by ASLR.  The validated 64-bit layout is::
+by ASLR.  The integer markers are shared by the 32- and 64-bit layouts::
 
     0x04  u32   PBKDF2 iterations   == 256000
     0x10  u32   key size            == 32
     0x1C  u32   page size           == 4096
     0x24  u32   reserve size        == 80
-    0x40  ptr   -> 16-byte salt
-    0x60  ptr   -> read context, whose +0x08 points at the 32-byte key
+    x86: salt pointer 0x3C, read context 0x4C, 4-byte pointers
+    x64: salt pointer 0x40, read context 0x60, 8-byte pointers
+    both: the read context's +0x08 points at the 32-byte key
+
+The target process, not Python's bitness, selects the layout. Only bytes
+through the read-context pointer are needed: 0x50 for x86, 0x68 for x64.
 
 The consequence worth knowing: a key exists only for a database the client has
 actually opened.  A room KakaoTalk has never displayed has no key in memory and
@@ -40,8 +44,10 @@ _KDF_ITERATIONS_OFFSET: Final = 0x04
 _KEY_SIZE_OFFSET: Final = 0x10
 _PAGE_SIZE_OFFSET: Final = 0x1C
 _RESERVE_OFFSET: Final = 0x24
-_SALT_POINTER_OFFSET: Final = 0x40
-_READ_CONTEXT_OFFSET: Final = 0x60
+_CONTEXT_LAYOUTS: Final = {
+    4: (0x50, 0x3C, 0x4C, "<I"),
+    8: (CONTEXT_SIZE, 0x40, 0x60, "<Q"),
+}
 _KEY_POINTER_OFFSET: Final = 0x08
 
 _SIGNATURE: Final = struct.pack("<I", KDF_ITERATIONS)
@@ -76,14 +82,15 @@ class CodecContext:
     """The 32-byte data encryption key."""
 
 
-def decode_context(blob: bytes) -> Optional[tuple[int, int]]:
+def decode_context(blob: bytes, *, pointer_size: int = 8) -> Optional[tuple[int, int]]:
     """Return the salt and read-context pointers if *blob* looks like a codec_ctx.
 
     Every field is checked against the layout this client is known to use, so
     unrelated heap bytes that happen to contain the iteration count are
     rejected rather than followed.
     """
-    if len(blob) < CONTEXT_SIZE:
+    context_size, salt_offset, read_offset, pointer_format = _CONTEXT_LAYOUTS[pointer_size]
+    if len(blob) < context_size:
         return None
     if (
         struct.unpack_from("<I", blob, _KDF_ITERATIONS_OFFSET)[0] != KDF_ITERATIONS
@@ -93,18 +100,18 @@ def decode_context(blob: bytes) -> Optional[tuple[int, int]]:
     ):
         return None
 
-    salt_pointer = struct.unpack_from("<Q", blob, _SALT_POINTER_OFFSET)[0]
-    read_context = struct.unpack_from("<Q", blob, _READ_CONTEXT_OFFSET)[0]
+    salt_pointer = struct.unpack_from(pointer_format, blob, salt_offset)[0]
+    read_context = struct.unpack_from(pointer_format, blob, read_offset)[0]
     if not salt_pointer or not read_context:
         return None
     return salt_pointer, read_context
 
 
 def resolve_context(
-    address: int, blob: bytes, read_memory: ReadMemory
+    address: int, blob: bytes, read_memory: ReadMemory, *, pointer_size: int = 8
 ) -> Optional[CodecContext]:
     """Follow a candidate's pointers and return it only if every read succeeds."""
-    pointers = decode_context(blob)
+    pointers = decode_context(blob, pointer_size=pointer_size)
     if pointers is None:
         return None
     salt_pointer, read_context = pointers
@@ -113,10 +120,10 @@ def resolve_context(
     if salt is None or len(salt) != SALT_SIZE:
         return None
 
-    key_pointer_bytes = read_memory(read_context + _KEY_POINTER_OFFSET, 8)
-    if key_pointer_bytes is None or len(key_pointer_bytes) != 8:
+    key_pointer_bytes = read_memory(read_context + _KEY_POINTER_OFFSET, pointer_size)
+    if key_pointer_bytes is None or len(key_pointer_bytes) != pointer_size:
         return None
-    key_pointer = struct.unpack("<Q", key_pointer_bytes)[0]
+    key_pointer = struct.unpack(_CONTEXT_LAYOUTS[pointer_size][3], key_pointer_bytes)[0]
     if not key_pointer:
         return None
 
@@ -127,7 +134,7 @@ def resolve_context(
 
 
 def resolve_many(
-    addresses: Iterable[int], read_memory: ReadMemory
+    addresses: Iterable[int], read_memory: ReadMemory, *, pointer_size: int = 8
 ) -> list[CodecContext]:
     """Re-read contexts at addresses a previous scan found.
 
@@ -136,26 +143,28 @@ def resolve_many(
     contexts rather than a wrong key.
     """
     found: list[CodecContext] = []
+    context_size = _CONTEXT_LAYOUTS[pointer_size][0]
     for address in addresses:
-        blob = read_memory(address, CONTEXT_SIZE)
+        blob = read_memory(address, context_size)
         if blob is None:
             continue
-        context = resolve_context(address, blob, read_memory)
+        context = resolve_context(address, blob, read_memory, pointer_size=pointer_size)
         if context is not None:
             found.append(context)
     return found
 
 
 def scan_blocks(
-    blocks: Iterable[tuple[int, bytes]], read_memory: ReadMemory
+    blocks: Iterable[tuple[int, bytes]], read_memory: ReadMemory, *, pointer_size: int = 8
 ) -> Iterator[CodecContext]:
     """Find codec contexts across a stream of ``(address, data)`` memory blocks.
 
     Heaps are read in chunks, so a struct can straddle two blocks.  Carrying
-    ``CONTEXT_SIZE - 1`` trailing bytes into the next contiguous block is
+    ``context_size - 1`` trailing bytes into the next contiguous block is
     exactly enough to catch those: a signature closer than that to the end of a
     block belongs to a struct that already fitted entirely in the block.
     """
+    context_size = _CONTEXT_LAYOUTS[pointer_size][0]
     seen: set[int] = set()
     carry = b""
     carry_address = 0
@@ -174,18 +183,19 @@ def scan_blocks(
             if hit < 0:
                 break
             start = hit - _KDF_ITERATIONS_OFFSET
-            if start >= 0 and start + CONTEXT_SIZE <= len(buffer):
+            if start >= 0 and start + context_size <= len(buffer):
                 candidate_address = base + start
                 if candidate_address not in seen:
                     context = resolve_context(
-                        candidate_address, buffer[start : start + CONTEXT_SIZE], read_memory
+                        candidate_address, buffer[start : start + context_size], read_memory,
+                        pointer_size=pointer_size,
                     )
                     if context is not None:
                         seen.add(candidate_address)
                         yield context
             position = hit + 1
 
-        carry = buffer[-(CONTEXT_SIZE - 1) :]
+        carry = buffer[-(context_size - 1) :]
         carry_address = base + len(buffer) - len(carry)
 
 
@@ -235,6 +245,8 @@ def _library() -> ctypes.CDLL:
     library.Process32NextW.restype = wintypes.BOOL
     library.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
     library.OpenProcess.restype = wintypes.HANDLE
+    library.IsWow64Process.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL))
+    library.IsWow64Process.restype = wintypes.BOOL
     library.CloseHandle.argtypes = (wintypes.HANDLE,)
     library.CloseHandle.restype = wintypes.BOOL
     library.VirtualQueryEx.argtypes = (
@@ -321,14 +333,25 @@ def _opened(pid: int) -> Iterator[Optional[tuple[ctypes.CDLL, int, ReadMemory]]]
         library.CloseHandle(handle)
 
 
+def _pointer_size(library: ctypes.CDLL, handle: int) -> Optional[int]:
+    """Use the target's WOW64 status; a failed query is not a native target."""
+    wow64 = wintypes.BOOL()
+    if not library.IsWow64Process(handle, ctypes.byref(wow64)):
+        return None
+    return 4 if wow64.value else ctypes.sizeof(ctypes.c_void_p)
+
+
 def resolve_addresses(pid: int, addresses: Iterable[int]) -> list[CodecContext]:
     """Resolve remembered context addresses inside a running process."""
     with _opened(pid) as opened:
         if opened is None:
             return []
-        _library_, _handle, read_memory = opened
+        library, handle, read_memory = opened
         try:
-            return resolve_many(addresses, read_memory)
+            pointer_size = _pointer_size(library, handle)
+            if pointer_size is None:
+                return []
+            return resolve_many(addresses, read_memory, pointer_size=pointer_size)
         except OSError:
             return []
 
@@ -343,15 +366,18 @@ def scan_process(pid: int) -> list[CodecContext]:
         if opened is None:
             return []
         library, handle, read_memory = opened
-        return _scan_opened(library, handle, read_memory)
+        pointer_size = _pointer_size(library, handle)
+        if pointer_size is None:
+            return []
+        return _scan_opened(library, handle, read_memory, pointer_size=pointer_size)
 
 
 def _scan_opened(
-    library: ctypes.CDLL, handle: int, read_memory: ReadMemory
+    library: ctypes.CDLL, handle: int, read_memory: ReadMemory, *, pointer_size: int = 8
 ) -> list[CodecContext]:
     def blocks() -> Iterator[tuple[int, bytes]]:
         address = 0
-        limit = 0x7FFF_FFFF_FFFF if ctypes.sizeof(ctypes.c_void_p) == 8 else 0x7FFF_FFFF
+        limit = 0x7FFF_FFFF_FFFF if pointer_size == 8 else 0x1_0000_0000
         while address < limit:
             region = _MemoryRegion()
             if not library.VirtualQueryEx(
@@ -370,7 +396,7 @@ def _scan_opened(
             address = base + size
 
     try:
-        return list(scan_blocks(blocks(), read_memory))
+        return list(scan_blocks(blocks(), read_memory, pointer_size=pointer_size))
     except OSError:
         # The client may exit or revoke access part-way through a scan.
         return []
