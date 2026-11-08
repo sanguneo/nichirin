@@ -459,6 +459,11 @@ python install.py --target "$HOME/.claude/skills/kanao-cli" --force
 > "회의 시간 얘기한 카톡 찾아줘."
 > "이 대화 읽고 내 말투로 답장 초안 써줘. 보내지는 마."
 
+에이전트가 프로세스를 CPU 비율이 제한된 Job Object 안에서 띄우면 명령마다 하는 복호화가
+느려져 첫 `rooms`가 수 분씩 걸릴 수 있습니다. 그때는 같은 인자로
+`scripts/kanao-wmi.py`를 부르면 WMI로 Job 밖에서 실행하고 같은 JSON과 종료 코드를
+돌려줍니다(#111). 자세한 것은 스킬 문서의 "CPU-capped sandboxes"에 있습니다.
+
 에이전트가 받는 것은 사람이 보는 화면과 같은 사실입니다. `context` 하나에 방과
 메시지뿐 아니라 **`coverage`**(로컬 한정인지, 카탈로그의 최신 메시지까지 닿았는지, 더
 오래된 기록이 남아 있는지)와 **`attention`**(이 창에서 나를 부른 줄, 내 말에 달린 답장,

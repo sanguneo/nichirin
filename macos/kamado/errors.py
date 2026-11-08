@@ -9,7 +9,7 @@ machine-readable code an agent can act on without parsing prose.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from kakaocommon.disposition import (
     Disposition, default_disposition, submission_disposition, write_disposition,
@@ -121,3 +121,40 @@ def as_envelope(error: BaseException, *, writing: bool = False) -> dict[str, Any
         return error.envelope(writing=writing)
     code = ErrorCode.SEND_FAILED if writing else ErrorCode.READ_FAILED
     return KamadoError(code, str(error) or type(error).__name__).envelope()
+
+
+def _operation_error(envelope: dict[str, Any]) -> KamadoError:
+    detail = envelope["error"]
+    return KamadoError(
+        ErrorCode(detail["code"]), detail["message"], disposition=detail["disposition"],
+        **{key: value for key, value in envelope.items() if key not in ("ok", "error")},
+    )
+
+
+def replay_operation(operation_id: Optional[str], digest: str) -> Optional[dict[str, Any]]:
+    """Replay or refuse an existing receipt before entering the send queue."""
+    if operation_id is None:
+        return None
+    from kakaocommon import operations
+
+    try:
+        return operations.replay(operation_id, digest, root=operations.directory("kamado"))
+    except operations.OperationError as error:
+        raise _operation_error(error.envelope) from error
+
+
+def run_operation(operation_id: Optional[str], digest: str, action: Callable[[], Mapping[str, Any]],
+                  *, sensitive_text: str = "") -> dict[str, Any]:
+    """Adapt the shared receipt store to this build's error contract."""
+    if operation_id is None:
+        return dict(action())
+    from kakaocommon import operations
+
+    try:
+        return operations.run(
+            operation_id, digest, action, root=operations.directory("kamado"),
+            failure=lambda error: as_envelope(error, writing=True),
+            sensitive_text=sensitive_text,
+        )
+    except operations.OperationError as error:
+        raise _operation_error(error.envelope) from error

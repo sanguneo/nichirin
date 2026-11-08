@@ -76,7 +76,7 @@ class DocumentTests(unittest.TestCase):
             health["example"]["features"]["upload"]["maxBytes"], config.MAX_UPLOAD_BYTES
         )
         form = self.spec["components"]["schemas"]["UploadRequest"]
-        self.assertEqual(set(form["properties"]), {"room", "file", "openRoom"})
+        self.assertEqual(set(form["properties"]), {"room", "file", "openRoom", "operationId"})
 
     def test_every_error_code_this_build_can_raise_is_documented(self) -> None:
         documented = set(self.spec["components"]["schemas"]["ErrorCode"]["enum"])
