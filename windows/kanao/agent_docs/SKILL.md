@@ -239,9 +239,11 @@ python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --open "Appr
 python "<skill-dir>/scripts/kanao-cli.py" sendfile --room "Sample Room" "C:\path\to\approved.pdf"
 ```
 
-`--text-file -` reads the message as UTF-8 from standard input (or a path):
-quotes, `$` and line breaks arrive exactly as written and the text never
-appears on the process command line. Give it or the positional text, not both.
+`--text-file -` reads the message as UTF-8 from standard input and drops exactly
+one trailing line ending (`\r\n` or `\n`). All other whitespace and line breaks
+are preserved. A file path preserves trailing line endings too. Quotes and `$`
+arrive as written and the text never appears on the process command line.
+Give it or the positional text, not both.
 `sendfile` sends one file through the room window's own file button, like
 `POST /upload`; `submitted: true` means the client's file-send confirmation
 closed, not delivery. It has no `--dry-run`.

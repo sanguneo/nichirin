@@ -68,6 +68,17 @@ Exit 2 prints usage to **standard error**, not an envelope. A consumer that
 parses standard output must treat empty output as a malformed call rather than
 as an empty result.
 
+## Text-send input (CLI only)
+
+`send --text-file -` reads UTF-8 standard input once, drops a leading BOM,
+and removes exactly one trailing line ending (`\r\n` or `\n`). Other trailing
+whitespace, lone `\r`, and any preceding line endings are preserved.
+`--text-file <path>` preserves file contents after UTF-8 decoding and leading
+BOM removal, including trailing line endings. Positional text is unchanged.
+An empty or whitespace-only resulting body is refused with `INVALID_REQUEST`,
+including empty stdin and a lone line ending. `--operation-id` fingerprints
+the resulting text used for sending.
+
 ## Values that cross the boundary
 
 - **Every identifier is a string.** KakaoTalk ids exceed 2^53 and ordinary
