@@ -302,8 +302,12 @@ python3 "<skill-dir>/scripts/kamado-cli.py" sendfile --room "Sample Room" "/path
 ```
 
 `--text-file -` reads the message as UTF-8 from standard input (or a path),
-with one leading BOM stripped. Quotes, `$` and line breaks arrive exactly as
-written, and the text never appears on the process command line. Give it or
+with one leading BOM stripped. Standard input alone drops exactly one trailing
+CRLF or LF; all other whitespace, lone CR and earlier line endings are preserved.
+File input and positional text keep their line endings. The body is read once,
+and `--operation-id` fingerprints the processed body. Empty or whitespace-only
+messages are refused. Quotes and `$` arrive as written, and the text never
+appears on the process command line. Give it or
 the positional text, not both.
 `sendfile` (`--room`/`--room-id`, optional `--open` and `--trace`) sends one
 file the way `POST /upload` does: file URL on the pasteboard, the client's

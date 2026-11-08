@@ -134,10 +134,35 @@ class SendCommandTests(unittest.TestCase):
 
     def test_stdin_preserves_utf8_quotes_and_line_endings_without_bom(self) -> None:
         text = 'say "hi" to $USER\n둘째 줄\r\nlast'
-        code, answer = self.main(
-            ["send", "--room", "Peer Renamed", "--text-file", "-"],
-            b"\xef\xbb\xbf" + text.encode("utf-8"),
-        )
+        for ending, kept in (
+            ("", ""), ("\n", ""), ("\r\n", ""), ("\n\n", "\n"),
+            ("\r\n\r\n", "\r\n"), ("\r", "\r"), (" \t", " \t"),
+            (" \t\n", " \t"), ("\n \t", "\n \t"), ("\r\r\n", "\r"),
+        ):
+            with self.subTest(ending=ending):
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", "-"],
+                    b"\xef\xbb\xbf" + (text + ending).encode("utf-8"),
+                )
+                self.assertEqual(code, 0, answer)
+                self.assertEqual(self.backend.draft, text + kept)
+                self.assertEqual(answer["length"], len(text + kept))
+
+    def test_empty_stdin_after_removing_one_line_ending_is_refused(self) -> None:
+        for data in (b"", b"\n", b"\r\n", b"\xef\xbb\xbf\n"):
+            with self.subTest(data=data):
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", "-"], data
+                )
+                self.assertEqual(code, 1, answer)
+                self.assertEqual(answer["error"]["code"], "INVALID_REQUEST")
+                self.assertEqual(answer["error"]["disposition"],
+                                 {"delivery": "not_delivered", "retry": "safe"})
+        self.assertEqual(self.backend.actions, [])
+
+    def test_positional_text_preserves_trailing_whitespace(self) -> None:
+        text = "synthetic \t\r\n\n"
+        code, answer = self.main(["send", "--room", "Peer Renamed", text])
         self.assertEqual(code, 0, answer)
         self.assertEqual(self.backend.draft, text)
         self.assertEqual(answer["length"], len(text))
@@ -188,7 +213,7 @@ class SendCommandTests(unittest.TestCase):
 
         def submit(control):
             original_submit(control)
-            rows.append(SimpleNamespace(id=9, text="synthetic\n", from_me=True))
+            rows.append(SimpleNamespace(id=9, text="synthetic", from_me=True))
 
         with tempfile.TemporaryDirectory() as root, \
                 patch("kakaocommon.operations.directory", return_value=Path(root)), \
@@ -198,9 +223,11 @@ class SendCommandTests(unittest.TestCase):
                     row for row in rows if row.id > kw["after_id"]
                 ]):
             first = self.main(argv, b"synthetic\n")
-            replay = self.main(argv, b"synthetic\n")
+            replay = self.main(argv, b"synthetic\r\n")
+            without_ending = self.main(argv, b"synthetic")
             changed = self.main(argv, b"different\n")
         self.assertEqual(first, replay)
+        self.assertEqual(first, without_ending)
         self.assertEqual(first[0], 0, first[1])
         self.assertEqual((first[1]["logged"], first[1]["messageId"]), (True, "9"))
         self.assertEqual(changed[1]["error"]["code"], "INVALID_REQUEST")
@@ -214,7 +241,7 @@ class SendCommandTests(unittest.TestCase):
         text = 'PRIVATE "$USER"\r\n둘째 줄'
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as root, \
-                io.TextIOWrapper(io.BytesIO(text.encode("utf-8-sig")), encoding="utf-8") as piped, \
+                io.TextIOWrapper(io.BytesIO((text + "\n\n").encode("utf-8-sig")), encoding="utf-8") as piped, \
                 patch("sys.stdin", piped), \
                 patch("kamado.daemon.is_daemon_running", return_value=True), \
                 patch("kamado.daemon.send_to_daemon", side_effect=lambda command, args, **_: (
@@ -225,7 +252,7 @@ class SendCommandTests(unittest.TestCase):
             ])
             raw = "".join(path.read_text() for path in Path(root).glob("*.jsonl"))
         self.assertEqual(code, 0, output.getvalue())
-        self.assertEqual(self.backend.draft, text)
+        self.assertEqual(self.backend.draft, text + "\n")
         self.assertEqual(self.backend.actions, ["fill", "submit"])
         self.assertNotIn("PRIVATE", raw)
 

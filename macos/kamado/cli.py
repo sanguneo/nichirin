@@ -585,7 +585,7 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
 
 
 def _message_text(arguments: argparse.Namespace) -> str:
-    """Read UTF-8 bytes once, preserving line endings and dropping a leading BOM."""
+    """Read UTF-8 once, dropping a leading BOM and one final stdin line ending."""
     if getattr(arguments, "text_file", None) is None:
         return arguments.text
     try:
@@ -593,6 +593,10 @@ def _message_text(arguments: argparse.Namespace) -> str:
             if sys.stdin is None:
                 raise OSError("there is no standard input")
             data = sys.stdin.buffer.read()
+            if data.endswith(b"\r\n"):
+                data = data[:-2]
+            elif data.endswith(b"\n"):
+                data = data[:-1]
         else:
             with open(arguments.text_file, "rb") as handle:
                 data = handle.read()

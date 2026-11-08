@@ -126,8 +126,12 @@ wait.
 
 `send --text-file PATH` reads the message from a file, and `--text-file -`
 reads it from standard input. The bytes are decoded as UTF-8 with one leading
-BOM stripped, so quotes, `$` and line breaks arrive as written and the text
-never shows up on the process command line. Give exactly one text source:
+BOM stripped. Standard input alone drops exactly one trailing CRLF or LF,
+preserving every other character, including spaces, tabs, a lone CR and any
+earlier line endings. File input and positional text keep their line endings.
+The body is read once, and `--operation-id` fingerprints the processed body.
+Empty or whitespace-only messages are still refused. Quotes and `$` arrive as
+written, and the text never shows up on the process command line. Give exactly one text source:
 `--text-file` or the positional text, not both.
 
 `sendfile --room NAME | --room-id ID [--open] [--trace DIR] PATH` sends one
