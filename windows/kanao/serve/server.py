@@ -77,6 +77,7 @@ def run(
     revisions_provider: Optional[Callable[[int, int], dict[str, Any]]] = None,
     file_provider: Optional[Callable[[int, int], Any]] = None,
     upload: Optional[Callable[..., dict[str, Any]]] = None,
+    gate: Optional[Any] = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -98,6 +99,7 @@ def run(
         revisions_provider=revisions_provider,
         file_provider=file_provider,
         upload=upload,
+        gate=gate,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kanao serve listening on {host}:{server.server_port}", flush=True)

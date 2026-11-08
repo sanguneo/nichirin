@@ -16,6 +16,7 @@ from kanao.errors import KanaoError
 from kanao.winauto import Sender
 from tests.test_send import FakeWindows
 from tests.fixtures import DIRECT_ROOM, build_reader
+from tests.test_send_cli import isolate_gate
 
 
 IDENTITY = trace.Identity("windows", "kanao", "test")
@@ -122,6 +123,7 @@ class TraceTests(unittest.TestCase):
             self.assertEqual(backend.actions, [])
 
     def test_trace_flag_preserves_stdout_envelope(self):
+        isolate_gate(self)
         with tempfile.TemporaryDirectory() as directory, build_reader() as reader:
             # Given the same synthetic room and command, with trace off and on.
             backend = FakeWindows()

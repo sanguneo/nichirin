@@ -236,6 +236,14 @@ reads the room back and looks for a new `fromMe` message. `clearedDraft`
 reports that an unfinished line was in the box and is now gone — it is
 reported rather than refused, so a caller can say so.
 
+Every text and file write, from `send`, `sendfile` or `serve`, passes one
+account-wide gate: a lock file under `%LOCALAPPDATA%\kanao-cli` that the
+operating system releases with its holder, and a record of when the last
+write started. A write that finds another process holding it is refused at
+once with `BUSY` / `not_delivered` / `safe`, and in `serve` that is a `503`.
+The holder waits out its own interval from the recorded start before typing.
+A dry run takes neither.
+
 Keep at least two seconds between sends. `serve` holds that spacing for you:
 a send that arrives sooner waits its turn rather than being refused, and the
 answer still comes back on the same request, so the wire contract does not

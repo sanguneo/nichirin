@@ -156,11 +156,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     send = commands.add_parser("send", help="Send text through an open KakaoTalk chat window")
     _add_room_selector(send, required=True)
-    send.add_argument("text", help="Message text (quote whitespace and newlines)")
+    source = send.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "text", nargs="?", default=None, help="Message text (quote whitespace and newlines)"
+    )
+    source.add_argument(
+        "--text-file",
+        metavar="PATH",
+        help="Read the message as UTF-8 from PATH, or from standard input when PATH is -",
+    )
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
     send.add_argument("--operation-id", help="Durably deduplicate this send (1-128 ASCII characters)")
     send.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_room",
+        help="Open the room from the list first when its window is closed",
+    )
+
+    sendfile = commands.add_parser(
+        "sendfile", help="Send one file through the room window's own file button"
+    )
+    _add_room_selector(sendfile, required=True)
+    sendfile.add_argument("path", help="Path of the file to send")
+    sendfile.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
+    sendfile.add_argument(
         "--open",
         action="store_true",
         dest="open_room",
@@ -367,8 +388,13 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         with trace.attempt(arguments.trace, trace.Identity("windows", "kanao", __version__), "cli"):
             return _send(reader, arguments)
 
+    if arguments.command == "sendfile":
+        with trace.attempt(arguments.trace, trace.Identity("windows", "kanao", __version__), "cli"):
+            return _sendfile(reader, arguments)
+
     if arguments.command == "serve":
         trace.validate_directory(arguments.trace)
+        from .sendgate import SendGate
         from .serve import (
             SharedReads,
             make_live_attachments_provider,
@@ -420,6 +446,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             revisions_provider=make_live_revisions_provider(reads.reading),
             file_provider=make_live_file_provider(reads.reading),
             upload=make_live_upload(),
+            gate=SendGate(),
         )
 
     if arguments.command == "search":
@@ -522,6 +549,51 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
+def send_gate():
+    """The account-wide gate a command's sends pass, shared with ``serve``."""
+    from .sendgate import SendGate
+
+    return SendGate()
+
+
+def _gated(write):
+    """Run one live write inside the gate, paced like ``serve``'s default."""
+    from .serve.config import DEFAULT_MIN_INTERVAL_SECONDS
+
+    with send_gate().turn(DEFAULT_MIN_INTERVAL_SECONDS):
+        return write()
+
+
+def _message_text(arguments: argparse.Namespace) -> str:
+    """The text to send, from argv or from ``--text-file`` read as UTF-8.
+
+    The file is taken byte for byte: quotes, ``$`` and line breaks arrive as
+    written, and only a leading byte-order mark is dropped. Its contents never
+    reach an error message.
+    """
+    if arguments.text_file is None:
+        return arguments.text
+    try:
+        if arguments.text_file == "-":
+            if sys.stdin is None:
+                raise OSError("there is no standard input")
+            data = sys.stdin.buffer.read()
+        else:
+            with open(arguments.text_file, "rb") as handle:
+                data = handle.read()
+    except OSError as error:
+        raise KanaoError(
+            ErrorCode.INVALID_REQUEST,
+            f"the message could not be read ({error.strerror or type(error).__name__})",
+        ) from error
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise KanaoError(
+            ErrorCode.INVALID_REQUEST, "the message is not valid UTF-8"
+        ) from error
+
+
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     """Replay an identified send before touching the catalog or the client."""
     from .errors import run_operation
@@ -547,14 +619,17 @@ def _send_result(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any
 
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+    with trace.stage("validation"):
+        text = _message_text(arguments)
     with trace.stage("catalog"):
         room = _selected_room(reader, arguments)
         aliases, hint, rows = window_target(reader, room)
         trace.identify("room", room.id)
-    try:
-        result = make_sender().send(
+
+    def write():
+        return make_sender().send(
             room.title,
-            arguments.text,
+            text,
             dry_run=arguments.dry_run,
             open_if_needed=arguments.open_room,
             aliases=aliases,
@@ -562,9 +637,57 @@ def _send_result(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any
             search_rows=rows,
             self_chat=room.type == SELF_CHAT,
         )
+
+    try:
+        # A dry run types nothing, so it neither waits for nor holds the gate.
+        result = write() if arguments.dry_run else _gated(write)
     except OSError as error:
         raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
     return {**result, "roomId": str(room.id)}
+
+
+def _sendfile(reader: Reader, arguments: argparse.Namespace) -> int:
+    """Send a local file the way ``POST /upload`` does, without a server.
+
+    There is no dry run: the sender's file path has no step that checks the
+    dialog without opening it, and a preview that skipped it would claim more
+    than it checked.
+    """
+    from .winauto import make_sender
+
+    if arguments.room is not None and not arguments.room.strip():
+        raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+    with trace.stage("validation"):
+        # The open-file dialog refuses forward slashes, so it is handed a native path.
+        path = os.path.normpath(os.path.abspath(arguments.path))
+        try:
+            size = os.path.getsize(path) if os.path.isfile(path) else None
+        except OSError:
+            size = None
+        if size is None:
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "there is no file at that path")
+        if size <= 0:
+            raise KanaoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty file")
+    with trace.stage("catalog"):
+        room = _selected_room(reader, arguments)
+        aliases, hint, rows = window_target(reader, room)
+        trace.identify("room", room.id)
+    try:
+        result = _gated(
+            lambda: make_sender().upload(
+                room.title,
+                path,
+                open_if_needed=arguments.open_room,
+                aliases=aliases,
+                hint=hint,
+                search_rows=rows,
+                self_chat=room.type == SELF_CHAT,
+            )
+        )
+    except OSError as error:
+        raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
+    _emit(success({**result, "roomId": str(room.id), "path": path}))
+    return 0
 
 
 def _tui(reader: Reader, fresh: bool = False) -> int:
@@ -620,6 +743,9 @@ def _follow(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
+_WRITES = ("send", "sendfile")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Parse arguments, run one command, and report failures in the same shape."""
     for stream in (sys.stdout, sys.stderr):
@@ -635,7 +761,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # rename is invisible unless something writes down what it saw, and
         # this is the one place that is certainly reading the live databases.
         with trace.attempt(
-            arguments.trace if arguments.command == "send" else None,
+            arguments.trace if arguments.command in _WRITES else None,
             trace.Identity("windows", "kanao", __version__), "cli",
         ), Reader(ledger=NameLedger()) as reader:
             return run(arguments, reader)
@@ -650,7 +776,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except BaseException as error:  # noqa: BLE001 - reported, never swallowed
         if isinstance(error, SystemExit):
             raise
-        _emit(as_envelope(error, writing=arguments.command == "send"))
+        _emit(as_envelope(error, writing=arguments.command in _WRITES))
         return 1
 
 
