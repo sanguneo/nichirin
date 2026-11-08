@@ -87,6 +87,10 @@ class Confirmation:
                     rows = self.reader.messages(self.room_id, limit=100, after_id=self.cursor)
                 except self.errors:
                     break
+                # A synchronous snapshot read cannot be cancelled, but its
+                # late answer must not count as observation within the budget.
+                if time.monotonic() >= deadline:
+                    break
                 for row in rows:
                     if row.id > self.cursor and row.from_me and row.text == self.text:
                         trace.logged(True)

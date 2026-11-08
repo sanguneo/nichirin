@@ -99,6 +99,20 @@ class ConfirmationTests(unittest.TestCase):
 
         self.assertEqual(observation.check(), {"logged": False})
 
+    def test_matching_row_returned_after_reader_deadline_is_not_confirmed(self):
+        log = Log([Row(1)])
+        observation = self.observation(log)
+        observation.capture()
+        log.rows.append(Row(2))
+        messages = log.messages
+
+        def slow_read(*args, **kwargs):
+            self.clock.now += 0.3
+            return messages(*args, **kwargs)
+
+        with patch.object(log, "messages", side_effect=slow_read):
+            self.assertEqual(observation.check(), {"logged": False})
+
     def test_failed_baseline_and_failed_post_submit_read_are_unknown(self):
         for baseline_failure in (True, False):
             with self.subTest(baseline_failure=baseline_failure):
