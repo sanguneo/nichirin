@@ -571,8 +571,8 @@ def _message_text(arguments: argparse.Namespace) -> str:
     """The text to send, from argv or from ``--text-file`` read as UTF-8.
 
     The file is taken byte for byte: quotes, ``$`` and line breaks arrive as
-    written, and only a leading byte-order mark is dropped. Its contents never
-    reach an error message.
+    written, and only a leading byte-order mark is dropped. Standard input also
+    drops exactly one trailing CRLF or LF. Contents never reach an error message.
     """
     if arguments.text_file is None:
         return arguments.text
@@ -581,6 +581,10 @@ def _message_text(arguments: argparse.Namespace) -> str:
             if sys.stdin is None:
                 raise OSError("there is no standard input")
             data = sys.stdin.buffer.read()
+            if data.endswith(b"\r\n"):
+                data = data[:-2]
+            elif data.endswith(b"\n"):
+                data = data[:-1]
         else:
             with open(arguments.text_file, "rb") as handle:
                 data = handle.read()

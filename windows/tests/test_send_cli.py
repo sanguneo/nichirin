@@ -161,6 +161,42 @@ class SendCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.backend.typed, ["합성 메시지\n"])
 
+    def test_stdin_drops_one_trailing_line_ending_only(self) -> None:
+        for supplied, expected in (
+            (b"synthetic\n", "synthetic"),
+            (b"synthetic\r\n", "synthetic"),
+            (b"synthetic\n\n", "synthetic\n"),
+            (b"synthetic\r\n\r\n", "synthetic\r\n"),
+            (b"synthetic \t\n", "synthetic \t"),
+            (b"synthetic\n \t", "synthetic\n \t"),
+            (b"synthetic\r", "synthetic\r"),
+        ):
+            with self.subTest(stdin=supplied):
+                before = len(self.backend.typed)
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", "-"],
+                    stdin=supplied,
+                )
+                self.assertEqual(code, 0, answer)
+                self.assertEqual(self.backend.typed[before:], [expected])
+                self.assertEqual(answer["length"], len(expected))
+
+    def test_empty_stdin_and_lone_line_endings_are_refused(self) -> None:
+        for supplied in (b"", b"\n", b"\r\n"):
+            with self.subTest(stdin=supplied):
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", "-"],
+                    stdin=supplied,
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(answer["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.backend.actions, [])
+
+    def test_positional_text_keeps_its_trailing_line_ending(self) -> None:
+        code, answer = self.main(["send", "--room", "Peer Renamed", "synthetic\r\n"])
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(self.backend.typed, ["synthetic\r\n"])
+
     def test_exactly_one_text_source_is_accepted(self) -> None:
         argv = ["send", "--room", "Peer Renamed", "--text-file", "-", "synthetic"]
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
@@ -279,7 +315,7 @@ class SendCommandTests(unittest.TestCase):
 
         def submit(control):
             original_submit(control)
-            rows.append(SimpleNamespace(id=9, text="synthetic\n", from_me=True))
+            rows.append(SimpleNamespace(id=9, text="synthetic", from_me=True))
 
         with tempfile.TemporaryDirectory() as root, \
                 patch("kakaocommon.operations.directory", return_value=Path(root)), \
@@ -289,13 +325,13 @@ class SendCommandTests(unittest.TestCase):
                     row for row in rows if row.id > kw["after_id"]
                 ]):
             first = self.main(argv, stdin=b"synthetic\n")
-            replay = self.main(argv, stdin=b"synthetic\n")
+            replay = self.main(argv, stdin=b"synthetic\r\n")
             changed = self.main(argv, stdin=b"different\n")
         self.assertEqual(first, replay)
         self.assertEqual(first[0], 0, first[1])
         self.assertEqual((first[1]["logged"], first[1]["messageId"]), (True, "9"))
         self.assertEqual(changed[1]["error"]["code"], "INVALID_REQUEST")
-        self.assertEqual(self.backend.typed, ["synthetic\n"])
+        self.assertEqual(self.backend.typed, ["synthetic"])
 
     def test_unique_catalog_substring_resolves_to_exact_window(self) -> None:
         room = self.reader.room(DIRECT_ROOM)
