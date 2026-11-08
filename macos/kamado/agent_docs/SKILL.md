@@ -297,7 +297,23 @@ another physical monitor has not been verified.
 python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --dry-run "Approved text"
 python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" "Approved text"
 python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --open "Approved text"
+printf '%s' "Approved text" | python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --text-file -
+python3 "<skill-dir>/scripts/kamado-cli.py" sendfile --room "Sample Room" "/path/to/approved.pdf"
 ```
+
+`--text-file -` reads the message as UTF-8 from standard input (or a path),
+with one leading BOM stripped. Standard input alone drops exactly one trailing
+CRLF or LF; all other whitespace, lone CR and earlier line endings are preserved.
+File input and positional text keep their line endings. The body is read once,
+and `--operation-id` fingerprints the processed body. Empty or whitespace-only
+messages are refused. Quotes and `$` arrive as written, and the text never
+appears on the process command line. Give it or
+the positional text, not both.
+`sendfile` (`--room`/`--room-id`, optional `--open` and `--trace`) sends one
+file the way `POST /upload` does: file URL on the pasteboard, the client's
+paste, then its file-send confirmation, with the pasteboard restored.
+`submitted: true` means that confirmation closed, not delivery. It has no
+`--dry-run`, `--confirm` or `--operation-id`.
 
 - Confirm recipient and content before sending to others. Existing explicit
   authorization for that message is sufficient. A draft request is not consent.
@@ -309,7 +325,11 @@ python3 "<skill-dir>/scripts/kamado-cli.py" send --room "Sample Room" --open "Ap
   read**. Newly opened target windows are minimized, and the main window's
   previous minimized state is restored. **`--dry-run --open` can still open
   windows**; it is not a side-effect-free check.
-- Space sends **at least two seconds apart**. The caller enforces this interval.
+- Sends and file sends are one at a time per account, across commands, the
+  daemon and `serve`, and start at least two seconds apart: the tool waits out
+  the interval itself. When another kamado process is sending at that moment
+  the answer is `BUSY` with `delivery: not_delivered`, `retry: safe`; nothing
+  was typed, so send again once it has finished. Dry runs skip the gate.
 - `submitted: true` means the composer emptied, never confirmed delivery. Read
   `context` or `messages` for a new matching `fromMe` record before saying the
   message was observed locally. That is not a recipient read receipt.

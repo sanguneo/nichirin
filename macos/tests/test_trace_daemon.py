@@ -14,6 +14,7 @@ from tests.test_send import FakeWindows
 from tests.fixtures import DIRECT_ROOM, build_reader
 from kamado.macauto import ChatWindow
 from types import SimpleNamespace
+from tests.test_send_cli import isolate_gate
 
 
 IDENTITY = trace.Identity("macos", "kamado", "test")
@@ -21,6 +22,7 @@ IDENTITY = trace.Identity("macos", "kamado", "test")
 
 class DaemonTraceTests(unittest.TestCase):
     def test_forwarded_confirmation_dispatches_once_and_retains_local_trace_result(self):
+        isolate_gate(self)
         reader = build_reader()
         self.addCleanup(reader.close)
         server = daemon.DaemonServer()

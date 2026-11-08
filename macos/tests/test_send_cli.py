@@ -16,8 +16,25 @@ from types import SimpleNamespace
 from kamado import cli
 from kamado.errors import ErrorCode, KamadoError
 from kamado.macauto import ChatWindow, Sender
+from kamado.macupload import Uploader
+from kamado.sendgate import SendGate
 from tests.fixtures import DIRECT_ROOM, build_reader
+from tests.platform import require_posix_console
 from tests.test_send import FakeWindows
+from tests.test_upload import ScriptedBackend
+
+
+def isolate_gate(case: unittest.TestCase) -> list[float]:
+    """Use synthetic pacing and private state, never the account's real gate."""
+    require_posix_console()
+    directory = tempfile.TemporaryDirectory()
+    case.addCleanup(directory.cleanup)
+    waits: list[float] = []
+    gate = SendGate(Path(directory.name), clock=lambda: 1000.0, wait=waits.append)
+    patcher = patch("kamado.macauto.send_gate", return_value=gate)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+    return waits
 
 
 class SendCommandTests(unittest.TestCase):
@@ -103,6 +120,152 @@ class SendCommandTests(unittest.TestCase):
         self.factory = patch("kamado.macauto.make_sender", return_value=self.sender)
         self.factory.start()
         self.addCleanup(self.factory.stop)
+        self.waits = isolate_gate(self)
+
+    def main(self, argv: list[str], stdin: bytes = b"") -> tuple[int, dict]:
+        output = io.StringIO()
+        with io.TextIOWrapper(io.BytesIO(stdin), encoding="utf-8") as piped, \
+                patch("sys.stdin", piped), \
+                patch("kamado.cli.Reader", side_effect=lambda **_: build_reader()), \
+                patch("kamado.daemon.is_daemon_running", return_value=False), \
+                redirect_stdout(output):
+            code = cli.main(argv)
+        return code, json.loads(output.getvalue())
+
+    def test_stdin_preserves_utf8_quotes_and_line_endings_without_bom(self) -> None:
+        text = 'say "hi" to $USER\n둘째 줄\r\nlast'
+        for ending, kept in (
+            ("", ""), ("\n", ""), ("\r\n", ""), ("\n\n", "\n"),
+            ("\r\n\r\n", "\r\n"), ("\r", "\r"), (" \t", " \t"),
+            (" \t\n", " \t"), ("\n \t", "\n \t"), ("\r\r\n", "\r"),
+        ):
+            with self.subTest(ending=ending):
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", "-"],
+                    b"\xef\xbb\xbf" + (text + ending).encode("utf-8"),
+                )
+                self.assertEqual(code, 0, answer)
+                self.assertEqual(self.backend.draft, text + kept)
+                self.assertEqual(answer["length"], len(text + kept))
+
+    def test_empty_stdin_after_removing_one_line_ending_is_refused(self) -> None:
+        for data in (b"", b"\n", b"\r\n", b"\xef\xbb\xbf\n"):
+            with self.subTest(data=data):
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", "-"], data
+                )
+                self.assertEqual(code, 1, answer)
+                self.assertEqual(answer["error"]["code"], "INVALID_REQUEST")
+                self.assertEqual(answer["error"]["disposition"],
+                                 {"delivery": "not_delivered", "retry": "safe"})
+        self.assertEqual(self.backend.actions, [])
+
+    def test_positional_text_preserves_trailing_whitespace(self) -> None:
+        text = "synthetic \t\r\n\n"
+        code, answer = self.main(["send", "--room", "Peer Renamed", text])
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(self.backend.draft, text)
+        self.assertEqual(answer["length"], len(text))
+
+    def test_file_text_is_read_as_utf8_without_newline_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "body.txt"
+            path.write_bytes("합성\r\n본문\n".encode("utf-8-sig"))
+            code, answer = self.main(
+                ["send", "--room-id", str(DIRECT_ROOM), "--text-file", str(path)]
+            )
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(self.backend.draft, "합성\r\n본문\n")
+
+    def test_exactly_one_text_source_is_accepted(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            cli.build_parser().parse_args(
+                ["send", "--room", "Peer Renamed", "--text-file", "-", "extra"]
+            )
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_unreadable_or_invalid_utf8_text_is_safe_and_private(self) -> None:
+        for path, data in (("-", b"PRIVATE\xff"), ("no-such-synthetic.txt", b"")):
+            with self.subTest(path=path):
+                code, answer = self.main(
+                    ["send", "--room", "Peer Renamed", "--text-file", path], data
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(answer["error"]["code"], "INVALID_REQUEST")
+                self.assertEqual(
+                    answer["error"]["disposition"],
+                    {"delivery": "not_delivered", "retry": "safe"},
+                )
+                self.assertNotIn("PRIVATE", json.dumps(answer))
+        self.assertEqual(self.backend.actions, [])
+
+    def test_live_commands_book_the_same_pacing_record(self) -> None:
+        for _ in range(2):
+            self.assertEqual(self.main(["send", "--room", "Peer Renamed", "synthetic"])[0], 0)
+        self.assertEqual(self.waits, [2.0])
+        self.assertEqual(self.backend.actions, ["fill", "submit", "fill", "submit"])
+
+    def test_stdin_confirmation_receipt_replays_and_rejects_changed_body(self) -> None:
+        argv = ["send", "--room", "Peer Renamed", "--text-file", "-",
+                "--operation-id", "stdin-confirmed", "--confirm"]
+        rows = []
+        original_submit = self.backend.submit
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=9, text="synthetic", from_me=True))
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch("kakaocommon.operations.directory", return_value=Path(root)), \
+                patch.object(self.backend, "submit", side_effect=submit), \
+                patch("kamado.reader.Reader.newest_log_id", return_value=8), \
+                patch("kamado.reader.Reader.messages", side_effect=lambda _, **kw: [
+                    row for row in rows if row.id > kw["after_id"]
+                ]):
+            first = self.main(argv, b"synthetic\n")
+            replay = self.main(argv, b"synthetic\r\n")
+            without_ending = self.main(argv, b"synthetic")
+            changed = self.main(argv, b"different\n")
+        self.assertEqual(first, replay)
+        self.assertEqual(first, without_ending)
+        self.assertEqual(first[0], 0, first[1])
+        self.assertEqual((first[1]["logged"], first[1]["messageId"]), (True, "9"))
+        self.assertEqual(changed[1]["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_stdin_is_consumed_once_before_daemon_dispatch_with_trace(self) -> None:
+        from kamado.daemon import DaemonServer
+
+        server = DaemonServer()
+        server._reader = self.reader
+        text = 'PRIVATE "$USER"\r\n둘째 줄'
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as root, \
+                io.TextIOWrapper(io.BytesIO((text + "\n\n").encode("utf-8-sig")), encoding="utf-8") as piped, \
+                patch("sys.stdin", piped), \
+                patch("kamado.daemon.is_daemon_running", return_value=True), \
+                patch("kamado.daemon.send_to_daemon", side_effect=lambda command, args, **_: (
+                    server._dispatch(command, args)
+                )), redirect_stdout(output):
+            code = cli.main([
+                "send", "--room", "Peer Renamed", "--text-file", "-", "--trace", root,
+            ])
+            raw = "".join(path.read_text() for path in Path(root).glob("*.jsonl"))
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual(self.backend.draft, text + "\n")
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+        self.assertNotIn("PRIVATE", raw)
+
+    def test_stdin_dry_run_does_not_book_a_send(self) -> None:
+        code, answer = self.main(
+            ["send", "--room", "Peer Renamed", "--text-file", "-", "--dry-run", "--confirm"],
+            b"synthetic\n",
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertFalse(answer["submitted"])
+        self.assertNotIn("logged", answer)
+        self.assertEqual(self.backend.actions, [])
+        self.assertEqual(self.waits, [])
 
     def test_operation_id_replays_cli_output_without_second_input(self) -> None:
         arguments = cli.build_parser().parse_args(
@@ -267,3 +430,74 @@ class SendCommandTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertIs(body["clearedDraft"], True)
         self.assertEqual(self.backend.draft, "synthetic")
+
+
+class SendFileCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.backend = ScriptedBackend()
+        windows = FakeWindows()
+        windows.windows = [ChatWindow(42, "Peer Renamed")]
+        self.sender = Sender(windows, running=lambda: True)
+        self.uploader = Uploader(self.backend, self.sender)
+        patcher = patch("kamado.macupload.make_uploader", return_value=self.uploader)
+        self.made = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.waits = isolate_gate(self)
+
+    def main(self, argv: list[str]) -> tuple[int, dict]:
+        output = io.StringIO()
+        with patch("kamado.cli.Reader", side_effect=lambda **_: build_reader()), \
+                redirect_stdout(output):
+            code = cli.main(argv)
+        return code, json.loads(output.getvalue())
+
+    def test_file_upload_uses_mac_paste_confirmation_and_string_room_id(self) -> None:
+        path = self.folder / "synthetic.txt"
+        path.write_bytes(b"synthetic bytes")
+        code, answer = self.main([
+            "sendfile", "--room-id", str(DIRECT_ROOM), "--open", str(path),
+            "--trace", str(self.folder / "trace"),
+        ])
+        self.assertEqual(code, 0, answer)
+        self.assertEqual((answer["path"], answer["name"], answer["size"]),
+                         (str(path), path.name, 15))
+        self.assertEqual(answer["roomId"], str(DIRECT_ROOM))
+        self.assertEqual(answer["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.steps.count("confirm"), 1)
+        self.assertEqual(self.backend.pasteboard, ["person's clipboard"])
+
+    def test_missing_or_empty_file_is_refused_before_upload(self) -> None:
+        empty = self.folder / "empty.txt"
+        empty.touch()
+        for path in (self.folder / "absent.txt", empty, self.folder):
+            with self.subTest(path=path):
+                code, answer = self.main(["sendfile", "--room", "Peer Renamed", str(path)])
+                self.assertEqual(code, 1)
+                self.assertEqual(answer["error"]["code"], "INVALID_REQUEST")
+                self.assertEqual(answer["error"]["disposition"],
+                                 {"delivery": "not_delivered", "retry": "safe"})
+        self.made.assert_not_called()
+        self.assertEqual(self.backend.steps, [])
+
+    def test_uncertain_upload_is_reported_without_retry(self) -> None:
+        path = self.folder / "synthetic.txt"
+        path.write_bytes(b"synthetic bytes")
+        self.backend.fail["stays_open"] = True
+        code, answer = self.main(["sendfile", "--room", "Peer Renamed", str(path)])
+        self.assertEqual(code, 1)
+        self.assertEqual(answer["error"]["code"], "SEND_FAILED")
+        self.assertEqual(answer["error"]["disposition"],
+                         {"delivery": "unknown", "retry": "after_check"})
+        self.assertEqual(self.backend.steps.count("confirm"), 1)
+
+    def test_sendfile_rejects_unsupported_text_send_flags(self) -> None:
+        for flags in (["--dry-run"], ["--confirm"], ["--operation-id", "synthetic"]):
+            with self.subTest(flags=flags), redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as caught:
+                cli.build_parser().parse_args(
+                    ["sendfile", "--room", "Peer Renamed", "synthetic.txt", *flags]
+                )
+            self.assertEqual(caught.exception.code, 2)

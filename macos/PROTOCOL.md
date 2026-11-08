@@ -112,6 +112,36 @@ An invalid requested destination is refused before UI mutation with
 logging without repeating submission or changing a known success. CLI/daemon
 events share one attempt file; a lost daemon response never triggers a local resend.
 
+## One write at a time
+
+Every text and file write, from `send`, `sendfile`, the daemon or `serve`,
+passes one account-wide gate: a user-private lock file in kamado's existing
+state directory (under `~/Library/Application Support`), taken with
+`fcntl.flock` so the kernel releases it with its holder, plus a record of when
+the last write started. A write that finds another process holding the lock
+is refused at once with `BUSY` / `not_delivered` / `safe`; in `serve` that's a
+`503`. The holder then waits out the interval since the recorded start (2
+seconds by default) before it types. Dry runs take neither the lock nor the
+wait.
+
+`send --text-file PATH` reads the message from a file, and `--text-file -`
+reads it from standard input. The bytes are decoded as UTF-8 with one leading
+BOM stripped. Standard input alone drops exactly one trailing CRLF or LF,
+preserving every other character, including spaces, tabs, a lone CR and any
+earlier line endings. File input and positional text keep their line endings.
+The body is read once, and `--operation-id` fingerprints the processed body.
+Empty or whitespace-only messages are still refused. Quotes and `$` arrive as
+written, and the text never shows up on the process command line. Give exactly one text source:
+`--text-file` or the positional text, not both.
+
+`sendfile --room NAME | --room-id ID [--open] [--trace DIR] PATH` sends one
+file through the same path as `POST /upload`: the file URL goes on the
+pasteboard, the client's own paste puts it in the room, and the tool presses
+the client's file-send confirmation. The pasteboard is restored afterwards.
+`submitted: true` means that confirmation closed, not delivery. Like the
+Windows build, `sendfile` takes no `--dry-run`, `--confirm` or
+`--operation-id`.
+
 ## Streaming: `follow`
 
 `follow` writes **newline-delimited JSON** — one complete object per line,

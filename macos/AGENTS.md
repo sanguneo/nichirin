@@ -506,8 +506,10 @@ keep rather than one to rediscover.
   `curl -N` is a complete client and no dependency is needed for either side.
 - **Sends are serialized under one lock and spaced by the server**, because the
   client's composer is a single shared resource and a remote caller may be
-  several callers. The local CLI still only asks callers to wait two seconds;
-  here it is enforced.
+  several callers. The CLI, daemon and `serve` also share one account-wide
+  `fcntl.flock` gate in the state directory: a write under contention is
+  refused at once with `BUSY` (`not_delivered` / `safe`), and the holder
+  waits out the 2 second interval itself. Dry runs bypass it.
 - **Sharing the snapshot cache across requests is one change with how its
   connections are opened.** `make_live_send` keeps a cache alive past the
   request, and every request arrives on its own thread — but a `sqlite3`
