@@ -28,7 +28,7 @@ _DEVICE_NAMES = frozenset(
     + [f"com{n}" for n in range(1, 10)]
     + [f"lpt{n}" for n in range(1, 10)]
 )
-_PARTS = ("room", "file", "openRoom")
+_PARTS = ("room", "file", "openRoom", "operationId")
 _BOUNDARY = re.compile(r'boundary=(?:"([^"]+)"|([^\s;]+))', re.IGNORECASE)
 _PARAM = re.compile(r';\s*([A-Za-z*]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;\s]*))')
 
@@ -67,6 +67,7 @@ class UploadForm(NamedTuple):
     name: str
     data: bytes
     open_room: bool
+    operation_id: Optional[str] = None
 
 
 def _params(header: str) -> dict[str, str]:
@@ -155,7 +156,15 @@ def parse_form(content_type: Optional[str], body: bytes, max_file_bytes: int) ->
     flag = parts.get("openRoom", (None, b"false"))[1]
     if flag not in (b"true", b"false"):
         raise _refuse('openRoom must be "true" or "false"')
-    return UploadForm(room, sanitize_name(filename), data, flag == b"true")
+    operation_id = None
+    if "operationId" in parts:
+        if parts["operationId"][0] is not None:
+            raise _refuse("operationId must be a text field")
+        try:
+            operation_id = parts["operationId"][1].decode("utf-8")
+        except UnicodeDecodeError:
+            raise _refuse("operationId must be UTF-8")
+    return UploadForm(room, sanitize_name(filename), data, flag == b"true", operation_id)
 
 
 class UploadStage:
