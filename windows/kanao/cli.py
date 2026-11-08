@@ -32,6 +32,7 @@ from .opening import open_for_reading, window_target
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 import kakaocommon.trace as trace
+from kakaocommon.confirm import Confirmation, DEFAULT_SECONDS, parse_seconds
 
 DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
 """How many of the newest messages a digest slices, matching the screen's /sum.
@@ -167,6 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
+    send.add_argument("--confirm", nargs="?", const=DEFAULT_SECONDS, type=parse_seconds,
+                      metavar="SECONDS", help="Observe the local log for up to 30 seconds (default: 3)")
     send.add_argument("--operation-id", help="Durably deduplicate this send (1-128 ASCII characters)")
     send.add_argument(
         "--open",
@@ -601,33 +604,40 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
 
     target = arguments.room_id if arguments.room_id is not None else arguments.room
     operation_id = getattr(arguments, "operation_id", None)
+    with trace.stage("validation"):
+        text = _message_text(arguments)
     result = run_operation(
         operation_id,
-        fingerprint("send", str(target), arguments.text.encode("utf-8"),
+        fingerprint("send", str(target), text.encode("utf-8"),
                     selectorKind="id" if arguments.room_id is not None else "title",
-                    dryRun=arguments.dry_run, openRoom=arguments.open_room) if operation_id is not None else "",
-        lambda: _send_result(reader, arguments),
-        sensitive_text=arguments.text,
+                    dryRun=arguments.dry_run, openRoom=arguments.open_room,
+                    confirm=arguments.confirm) if operation_id is not None else "",
+        lambda: _send_result(reader, arguments, text),
+        sensitive_text=text,
     )
     _emit(success(result))
     return 0
 
 
-def _send_result(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any]:
+def _send_result(reader: Reader, arguments: argparse.Namespace, text: str) -> dict[str, Any]:
     """Resolve the catalog before targeting an exact client window."""
     from .winauto import make_sender
+    import sqlite3
 
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
-    with trace.stage("validation"):
-        text = _message_text(arguments)
     with trace.stage("catalog"):
         room = _selected_room(reader, arguments)
         aliases, hint, rows = window_target(reader, room)
         trace.identify("room", room.id)
-
+    observation = (
+        Confirmation(reader, room.id, text, arguments.confirm,
+                     (KanaoError, OSError, sqlite3.Error))
+        if arguments.confirm is not None and not arguments.dry_run else None
+    )
+    confirmation = {"before_input": observation.capture} if observation is not None else {}
     def write():
-        return make_sender().send(
+        result = make_sender().send(
             room.title,
             text,
             dry_run=arguments.dry_run,
@@ -636,14 +646,16 @@ def _send_result(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any
             hint=hint,
             search_rows=rows,
             self_chat=room.type == SELF_CHAT,
+            **confirmation,
         )
+        logged = observation.check() if observation is not None and result["submitted"] else {}
+        return {**result, **logged, "roomId": str(room.id)}
 
     try:
         # A dry run types nothing, so it neither waits for nor holds the gate.
-        result = write() if arguments.dry_run else _gated(write)
+        return write() if arguments.dry_run else _gated(write)
     except OSError as error:
         raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
-    return {**result, "roomId": str(room.id)}
 
 
 def _sendfile(reader: Reader, arguments: argparse.Namespace) -> int:

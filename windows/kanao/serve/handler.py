@@ -18,6 +18,7 @@ from contextlib import ExitStack, nullcontext
 from typing import Any, Callable, Optional, Type
 
 import kakaocommon.trace as trace
+from kakaocommon.confirm import parse_seconds
 from kakaocommon.disposition import write_disposition
 from .. import __version__
 from ..errors import ErrorCode, KanaoError, as_envelope, success
@@ -885,18 +886,29 @@ def build_handler(
                         ),
                     )
                     return
+            confirmation = {}
+            if isinstance(body, dict) and "confirm" in body:
+                try:
+                    value = body["confirm"]
+                    if not isinstance(value, (int, float)) or isinstance(value, bool):
+                        raise ValueError("confirm must be seconds greater than 0 and at most 30")
+                    confirmation["confirm"] = parse_seconds(value)
+                except ValueError as error:
+                    self._reply(400, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, str(error))))
+                    return
             from kakaocommon.operations import fingerprint
             from ..errors import run_operation
 
             operation_id = body.get("operationId")
             digest = fingerprint("send", room, text.encode("utf-8"), selectorKind="http",
-                                 dryRun=dry_run, openRoom=open_room) if operation_id is not None else ""
+                                 dryRun=dry_run, openRoom=open_room,
+                                 confirm=confirmation.get("confirm")) if operation_id is not None else ""
             if self._replay_operation(operation_id, digest):
                 return
             result = self._in_line(
                 lambda: run_operation(
                     operation_id, digest,
-                    lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room),
+                    lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room, **confirmation),
                     sensitive_text=text,
                 ),
                 paced=not dry_run,

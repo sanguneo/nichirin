@@ -9,6 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from kanao import cli
 from kanao.errors import ErrorCode, KanaoError
@@ -47,6 +48,79 @@ class TypingWindows(FakeWindows):
 
 
 class SendCommandTests(unittest.TestCase):
+    def test_default_send_preserves_the_existing_json_bytes_without_log_reads(self):
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "synthetic"]
+        )
+        output = io.StringIO()
+        with patch.object(self.reader, "newest_log_id", side_effect=AssertionError("unexpected read")), \
+             redirect_stdout(output):
+            cli.run(arguments, self.reader)
+        expected = {
+            "ok": True, "submitted": True, "dryRun": False, "room": "Peer Renamed",
+            "length": 9, "clearedDraft": False, "roomId": str(DIRECT_ROOM),
+            "disposition": {"delivery": "submitted", "retry": "unsafe"},
+        }
+        self.assertEqual(output.getvalue(), json.dumps(expected, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+    def test_confirmation_captures_after_window_discovery_and_never_reuses_old_text(self):
+        rows = [SimpleNamespace(id=1, text="synthetic", from_me=True)]
+        original_input = self.backend.input_handle
+        original_submit = self.backend.submit
+
+        def discover(window):
+            rows.append(SimpleNamespace(id=2, text="synthetic", from_me=True))
+            return original_input(window)
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=3, text="synthetic", from_me=True))
+
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "synthetic", "--confirm"]
+        )
+        output = io.StringIO()
+        with patch.object(self.backend, "input_handle", side_effect=discover), \
+             patch.object(self.backend, "submit", side_effect=submit), \
+             patch.object(self.reader, "newest_log_id", side_effect=lambda _: max(row.id for row in rows)), \
+             patch.object(self.reader, "messages", side_effect=lambda _, **kw: [
+                 row for row in rows if row.id > kw["after_id"]
+             ]), redirect_stdout(output):
+            self.assertEqual(cli.run(arguments, self.reader), 0)
+        body = json.loads(output.getvalue())
+        self.assertEqual((body["logged"], body["messageId"]), (True, "3"))
+        self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_confirmation_read_failure_preserves_submission_without_resending(self):
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "synthetic", "--confirm=1"]
+        )
+        output = io.StringIO()
+        with patch.object(self.reader, "newest_log_id", side_effect=OSError("synthetic")), \
+             redirect_stdout(output):
+            self.assertEqual(cli.run(arguments, self.reader), 0)
+        body = json.loads(output.getvalue())
+        self.assertIs(body["logged"], False)
+        self.assertNotIn("messageId", body)
+        self.assertTrue(body["submitted"])
+        self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_default_and_dry_confirmation_leave_json_bytes_unchanged(self):
+        outputs = []
+        for flags in ([], ["--confirm"]):
+            arguments = cli.build_parser().parse_args(
+                ["send", "--room-id", str(DIRECT_ROOM), "--dry-run", "synthetic", *flags]
+            )
+            output = io.StringIO()
+            with patch.object(self.reader, "newest_log_id", side_effect=AssertionError("unexpected read")), \
+                 redirect_stdout(output):
+                cli.run(arguments, self.reader)
+            outputs.append(output.getvalue())
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertNotIn("logged", json.loads(outputs[0]))
+
     def setUp(self) -> None:
         self.reader = build_reader()
         self.addCleanup(self.reader.close)
@@ -148,6 +222,38 @@ class SendCommandTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
         self.assertEqual(self.backend.actions, ["fill", "submit"])
 
+    def test_operation_id_replays_complete_confirmation_and_refuses_changed_budget(self) -> None:
+        argv = ["send", "--room-id", str(DIRECT_ROOM), "--operation-id", "confirmed", "synthetic"]
+        rows = []
+        original_submit = self.backend.submit
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=9, text="synthetic", from_me=True))
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch("kakaocommon.operations.directory", return_value=Path(root)), \
+                patch.object(self.backend, "submit", side_effect=submit), \
+                patch.object(self.reader, "newest_log_id", return_value=8), \
+                patch.object(self.reader, "messages", side_effect=lambda _, **kw: [
+                    row for row in rows if row.id > kw["after_id"]
+                ]):
+            outputs = []
+            for flag in ("--confirm", "--confirm=3.0"):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(cli.run(cli.build_parser().parse_args([*argv, flag]), self.reader), 0)
+                outputs.append(output.getvalue())
+            for flags in ([], ["--confirm=1"]):
+                with self.subTest(flags=flags), self.assertRaises(KanaoError) as caught:
+                    cli.run(cli.build_parser().parse_args([*argv, *flags]), self.reader)
+                self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
+        self.assertEqual(outputs[0], outputs[1])
+        body = json.loads(outputs[0])
+        self.assertEqual((body["logged"], body["messageId"]), (True, "9"))
+        self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
     def test_dry_run_by_id_has_standard_envelope_and_string_id(self) -> None:
         arguments = cli.build_parser().parse_args(
             ["send", "--room-id", str(DIRECT_ROOM), "--dry-run", "synthetic"]
@@ -164,6 +270,32 @@ class SendCommandTests(unittest.TestCase):
         self.assertEqual(body["roomId"], str(DIRECT_ROOM))
         self.assertFalse(body["submitted"])
         self.assertEqual(self.backend.actions, [])
+
+    def test_stdin_with_operation_id_and_confirmation_replays_without_second_input(self) -> None:
+        argv = ["send", "--room", "Peer Renamed", "--text-file", "-",
+                "--operation-id", "stdin-confirmed", "--confirm"]
+        rows = []
+        original_submit = self.backend.submit
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=9, text="synthetic\n", from_me=True))
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch("kakaocommon.operations.directory", return_value=Path(root)), \
+                patch.object(self.backend, "submit", side_effect=submit), \
+                patch("kanao.reader.Reader.newest_log_id", return_value=8), \
+                patch("kanao.reader.Reader.messages", side_effect=lambda _, **kw: [
+                    row for row in rows if row.id > kw["after_id"]
+                ]):
+            first = self.main(argv, stdin=b"synthetic\n")
+            replay = self.main(argv, stdin=b"synthetic\n")
+            changed = self.main(argv, stdin=b"different\n")
+        self.assertEqual(first, replay)
+        self.assertEqual(first[0], 0, first[1])
+        self.assertEqual((first[1]["logged"], first[1]["messageId"]), (True, "9"))
+        self.assertEqual(changed[1]["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.backend.typed, ["synthetic\n"])
 
     def test_unique_catalog_substring_resolves_to_exact_window(self) -> None:
         room = self.reader.room(DIRECT_ROOM)

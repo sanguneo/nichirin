@@ -93,6 +93,19 @@ destination from HTTP callers. Queue waiting, queue rejection, native write
 refusal and post-submit uncertainty are distinct stages. AX-button submission
 and guarded focused Return have different stages; Return activates the client.
 Unobserved L/B remain `not_checked`; `submitted` does not establish either.
+With confirmation, L is `pass` for an observed local row, or `unknown` on
+timeout/read failure.
+
+`send ... "text" --confirm[=seconds]` optionally observes the local room log
+after submission (bare flag: 3 seconds; finite `0 < seconds <= 30`).
+HTTP `POST /send` accepts numeric `confirm` seconds under the same bounds.
+The daemon carries this option; capture, submission and observation stay
+serialized. The latest room logId is captured immediately before actual input;
+only a later `fromMe` row with exactly equal text matches. Successful sends add
+`logged: true` and string `messageId`, or `logged: false` on timeout/read failure.
+This never changes `submitted` or `disposition` and never resends. Omitted means
+byte-identical existing JSON; dry runs do not read or report confirmation.
+L proves local recording, not receipt by another person.
 
 An invalid requested destination is refused before UI mutation with
 `INVALID_REQUEST`, `not_delivered/safe`. A later logging failure disables
@@ -212,12 +225,13 @@ processes from both dispatching. Before input, a temporary record is flushed,
 fsynced and replaced as `receipt.json` with phase `dispatching`. The fingerprint
 hashes operation kind, exact room selector and selector kind (CLI ID,
 CLI title, or HTTP ID-or-title), payload
-SHA-256 and options; uploads also bind their cleaned name. Message/file bytes
+SHA-256 and options, including `confirm` seconds; uploads also bind their cleaned name. Message/file bytes
 are not recorded; any quoted message text in a failure message is redacted.
 Receipts retain result metadata and failure disposition,
 with terminal phase `submitted`, `unknown` or `not_delivered`.
 
-The same ID and fingerprint returns its recorded result without input.
+The same ID and fingerprint returns its recorded result, including confirmation
+fields, without input or another log observation.
 A changed fingerprint is `INVALID_REQUEST`. A claim left `dispatching`,
 empty or unreadable returns `SEND_FAILED`, `unknown/after_check`, with no
 input. A failed final receipt update does not turn a known success into a

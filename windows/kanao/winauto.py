@@ -763,6 +763,7 @@ class Sender:
         hint: Optional[int] = None,
         search_rows: Optional[Mapping[str, Optional[int]]] = None,
         self_chat: bool = False,
+        before_input: Optional[Callable[[], None]] = None,
     ) -> SendResult:
         """Type *text* into *room*'s window and send it, or preview when dry.
 
@@ -819,6 +820,8 @@ class Sender:
                 }
 
             with trace.stage("write"):
+                if before_input is not None:
+                    before_input()
                 self._backend.set_text(control, text)
             submitting = True
             with trace.stage("submit"):

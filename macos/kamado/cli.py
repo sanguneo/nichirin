@@ -31,6 +31,7 @@ from .names import NameLedger
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 import kakaocommon.trace as trace
+from kakaocommon.confirm import DEFAULT_SECONDS, parse_seconds
 
 DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
 """How many of the newest messages a digest slices, matching the screen's /sum.
@@ -168,6 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("text", help="Message text (quote whitespace and newlines)")
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
+    send.add_argument("--confirm", nargs="?", const=DEFAULT_SECONDS, type=parse_seconds,
+                      metavar="SECONDS", help="Observe the local log for up to 30 seconds (default: 3)")
     send.add_argument("--operation-id", help="Durably deduplicate this send (1-128 ASCII characters)")
     send.add_argument(
         "--open",
@@ -568,6 +571,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
         arguments.text,
         dry_run=arguments.dry_run,
         open_room=arguments.open_room,
+        confirm=arguments.confirm,
         **({"operation_id": arguments.operation_id} if getattr(arguments, "operation_id", None) is not None else {}),
     )
     _emit(success(result))
