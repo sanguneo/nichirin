@@ -2,9 +2,11 @@
 
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -99,12 +101,79 @@ class SendCommandTests(unittest.TestCase):
         self.factory.start()
         self.addCleanup(self.factory.stop)
 
+    def test_operation_id_replays_cli_output_without_second_input(self) -> None:
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "--operation-id", "cli-synthetic", "synthetic"]
+        )
+        room = self.reader.room(DIRECT_ROOM)
+        with tempfile.TemporaryDirectory() as root, \
+                patch("kakaocommon.operations.directory", return_value=Path(root)), \
+                patch.object(self.reader, "rooms", return_value=[room]):
+            outputs = []
+            for _ in range(2):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(cli.run(arguments, self.reader), 0)
+                outputs.append(output.getvalue())
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_operation_id_cannot_change_room_selector_from_id_to_title(self) -> None:
+        by_id = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "--operation-id", "selector-id", "synthetic"]
+        )
+        by_title = cli.build_parser().parse_args(
+            ["send", "--room", str(DIRECT_ROOM), "--operation-id", "selector-id", "synthetic"]
+        )
+        with tempfile.TemporaryDirectory() as root, \
+                patch("kakaocommon.operations.directory", return_value=Path(root)), \
+                redirect_stdout(io.StringIO()):
+            cli.run(by_id, self.reader)
+            with self.assertRaises(KanaoError) as caught:
+                cli.run(by_title, self.reader)
+        self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_operation_id_replays_complete_confirmation_and_refuses_changed_budget(self) -> None:
+        argv = ["send", "--room-id", str(DIRECT_ROOM), "--operation-id", "confirmed", "synthetic"]
+        rows = []
+        original_submit = self.backend.submit
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=9, text="synthetic", from_me=True))
+
+        with tempfile.TemporaryDirectory() as root, \
+                patch("kakaocommon.operations.directory", return_value=Path(root)), \
+                patch.object(self.backend, "submit", side_effect=submit), \
+                patch.object(self.reader, "newest_log_id", return_value=8), \
+                patch.object(self.reader, "messages", side_effect=lambda _, **kw: [
+                    row for row in rows if row.id > kw["after_id"]
+                ]):
+            outputs = []
+            for flag in ("--confirm", "--confirm=3.0"):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(cli.run(cli.build_parser().parse_args([*argv, flag]), self.reader), 0)
+                outputs.append(output.getvalue())
+            for flags in ([], ["--confirm=1"]):
+                with self.subTest(flags=flags), self.assertRaises(KanaoError) as caught:
+                    cli.run(cli.build_parser().parse_args([*argv, *flags]), self.reader)
+                self.assertEqual(caught.exception.code, ErrorCode.INVALID_REQUEST)
+        self.assertEqual(outputs[0], outputs[1])
+        body = json.loads(outputs[0])
+        self.assertEqual((body["logged"], body["messageId"]), (True, "9"))
+        self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
     def test_dry_run_by_id_has_standard_envelope_and_string_id(self) -> None:
         arguments = cli.build_parser().parse_args(
             ["send", "--room-id", str(DIRECT_ROOM), "--dry-run", "synthetic"]
         )
         output = io.StringIO()
-        with redirect_stdout(output):
+        with redirect_stdout(output), patch(
+            "kakaocommon.operations.directory", side_effect=AssertionError("no-ID send accessed receipts")
+        ):
             result = cli.run(arguments, self.reader)
         body = json.loads(output.getvalue())
         self.assertEqual(result, 0)

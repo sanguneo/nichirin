@@ -162,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
     send.add_argument("--confirm", nargs="?", const=DEFAULT_SECONDS, type=parse_seconds,
                       metavar="SECONDS", help="Observe the local log for up to 30 seconds (default: 3)")
+    send.add_argument("--operation-id", help="Durably deduplicate this send (1-128 ASCII characters)")
     send.add_argument(
         "--open",
         action="store_true",
@@ -525,6 +526,26 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
 
 
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
+    """Replay an identified send before touching the catalog or the client."""
+    from .errors import run_operation
+    from kakaocommon.operations import fingerprint
+
+    target = arguments.room_id if arguments.room_id is not None else arguments.room
+    operation_id = getattr(arguments, "operation_id", None)
+    result = run_operation(
+        operation_id,
+        fingerprint("send", str(target), arguments.text.encode("utf-8"),
+                    selectorKind="id" if arguments.room_id is not None else "title",
+                    dryRun=arguments.dry_run, openRoom=arguments.open_room,
+                    confirm=arguments.confirm) if operation_id is not None else "",
+        lambda: _send_result(reader, arguments),
+        sensitive_text=arguments.text,
+    )
+    _emit(success(result))
+    return 0
+
+
+def _send_result(reader: Reader, arguments: argparse.Namespace) -> dict[str, Any]:
     """Resolve the catalog before targeting an exact client window."""
     from .winauto import make_sender
     import sqlite3
@@ -556,8 +577,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     except OSError as error:
         raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
     logged = observation.check() if observation is not None and result["submitted"] else {}
-    _emit(success({**result, **logged, "roomId": str(room.id)}))
-    return 0
+    return {**result, **logged, "roomId": str(room.id)}
 
 
 def _tui(reader: Reader, fresh: bool = False) -> int:

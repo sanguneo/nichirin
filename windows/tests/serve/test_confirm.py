@@ -1,5 +1,7 @@
 """HTTP confirmation through the real live wiring and fake client/readers."""
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -23,7 +25,9 @@ class ConfirmationHTTPTests(ServedCase):
             original_submit(control)
             rows.append(SimpleNamespace(id=9, text="synthetic", from_me=True))
 
-        with patch("kanao.reader.Reader", side_effect=lambda **_: build_reader()), \
+        with tempfile.TemporaryDirectory() as root, \
+             patch("kakaocommon.operations.directory", return_value=Path(root)), \
+             patch("kanao.reader.Reader", side_effect=lambda **_: build_reader()), \
              patch("kanao.winauto.make_sender", return_value=sender), \
              patch.object(backend, "submit", side_effect=submit), \
              patch.object(Reader, "newest_log_id", return_value=8), \
@@ -32,9 +36,15 @@ class ConfirmationHTTPTests(ServedCase):
              ]):
             send = backends.make_live_send()
             self.serve(_start_server(SimpleNamespace(send=send), min_interval=0))
-            status, body, _ = _request(self.base, "POST", "/send", {
-                "room": str(DIRECT_ROOM), "text": "synthetic", "confirm": 1,
-            })
+            request = {"room": str(DIRECT_ROOM), "text": "synthetic", "operationId": "confirmed"}
+            first = _request(self.base, "POST", "/send", {**request, "confirm": 1})
+            replay = _request(self.base, "POST", "/send", {**request, "confirm": 1.0})
+            for options in ({}, {"confirm": 2}):
+                status, refusal, _ = _request(self.base, "POST", "/send", {**request, **options})
+                self.assertEqual(status, 400)
+                self.assertEqual(refusal["error"]["code"], "INVALID_REQUEST")
+        status, body, _ = first
+        self.assertEqual(first[:2], replay[:2])
         self.assertEqual(status, 200, body)
         self.assertEqual((body["logged"], body["messageId"]), (True, "9"))
         self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})

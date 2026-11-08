@@ -796,6 +796,19 @@ def build_handler(
             finally:
                 stream_slots.release()
 
+        def _replay_operation(self, operation_id: Optional[str], digest: str) -> bool:
+            from ..errors import replay_operation
+
+            try:
+                result = replay_operation(operation_id, digest)
+            except KamadoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return True
+            if result is None:
+                return False
+            self._reply(200, success(result))
+            return True
+
         def _handle_send(self) -> None:
             try:
                 with trace.attempt(trace_dir, trace.Identity("macos", "kamado", __version__), "http"):
@@ -865,8 +878,21 @@ def build_handler(
                 except ValueError as error:
                     self._reply(400, as_envelope(KamadoError(ErrorCode.INVALID_REQUEST, str(error))))
                     return
+            from kakaocommon.operations import fingerprint
+            from ..errors import run_operation
+
+            operation_id = body.get("operationId")
+            digest = fingerprint("send", room, text.encode("utf-8"), selectorKind="http",
+                                 dryRun=dry_run, openRoom=open_room,
+                                 confirm=confirmation.get("confirm")) if operation_id is not None else ""
+            if self._replay_operation(operation_id, digest):
+                return
             self._in_line(
-                lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room, **confirmation),
+                lambda: run_operation(
+                    operation_id, digest,
+                    lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room, **confirmation),
+                    sensitive_text=text,
+                ),
                 paced=not dry_run,
                 what="message",
             )
@@ -934,7 +960,20 @@ def build_handler(
                     form.room, str(path), form.name, open_if_needed=form.open_room
                 )
 
-            self._in_line(deliver, paced=True, what="file")
+            from kakaocommon.operations import fingerprint
+            from ..errors import run_operation
+
+            digest = fingerprint("upload", form.room, form.data, name=form.name, openRoom=form.open_room) \
+                if form.operation_id is not None else ""
+            if self._replay_operation(form.operation_id, digest):
+                return
+            self._in_line(
+                lambda: run_operation(
+                    form.operation_id, digest,
+                    deliver,
+                ),
+                paced=True, what="file",
+            )
 
         def _in_line(
             self,

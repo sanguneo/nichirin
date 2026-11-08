@@ -817,6 +817,19 @@ def build_handler(
             )
             self.close_connection = True
 
+        def _replay_operation(self, operation_id: Optional[str], digest: str) -> bool:
+            from ..errors import replay_operation
+
+            try:
+                result = replay_operation(operation_id, digest)
+            except KanaoError as error:
+                self._reply(_status_for(error), as_envelope(error))
+                return True
+            if result is None:
+                return False
+            self._reply(200, success(result))
+            return True
+
         def _handle_send(self) -> None:
             try:
                 with trace.attempt(trace_dir, trace.Identity("windows", "kanao", __version__), "http"):
@@ -877,8 +890,21 @@ def build_handler(
                 except ValueError as error:
                     self._reply(400, as_envelope(KanaoError(ErrorCode.INVALID_REQUEST, str(error))))
                     return
+            from kakaocommon.operations import fingerprint
+            from ..errors import run_operation
+
+            operation_id = body.get("operationId")
+            digest = fingerprint("send", room, text.encode("utf-8"), selectorKind="http",
+                                 dryRun=dry_run, openRoom=open_room,
+                                 confirm=confirmation.get("confirm")) if operation_id is not None else ""
+            if self._replay_operation(operation_id, digest):
+                return
             result = self._in_line(
-                lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room, **confirmation),
+                lambda: run_operation(
+                    operation_id, digest,
+                    lambda: send(room, text, dry_run=dry_run, open_if_needed=open_room, **confirmation),
+                    sensitive_text=text,
+                ),
                 paced=not dry_run,
                 what="message",
             )
@@ -907,7 +933,7 @@ def build_handler(
 
         def _receive_upload(self) -> None:
             try:
-                room, name, data, open_room = self._read_upload()
+                room, name, data, open_room, operation_id = self._read_upload()
             except KanaoError as error:
                 self._reply(_status_for(error), as_envelope(error))
                 return
@@ -916,15 +942,24 @@ def build_handler(
                 return
             deliver = upload
             assert deliver is not None
+            from kakaocommon.operations import fingerprint
+            from ..errors import run_operation
+
+            digest = fingerprint("upload", room, data, name=name, openRoom=open_room) if operation_id is not None else ""
+            if self._replay_operation(operation_id, digest):
+                return
             result = self._in_line(
-                lambda: deliver(room, name, data, open_if_needed=open_room),
+                lambda: run_operation(
+                    operation_id, digest,
+                    lambda: deliver(room, name, data, open_if_needed=open_room),
+                ),
                 paced=True,
                 what="file",
             )
             if result is not None:
                 self._reply(200, success(result))
 
-        def _read_upload(self) -> tuple[str, str, bytes, bool]:
+        def _read_upload(self) -> tuple[str, str, bytes, bool, Optional[str]]:
             """The room, the file's name and bytes, and ``openRoom``, or a refusal.
 
             Checked whole before anything is queued: a form that is wrong in
@@ -935,7 +970,7 @@ def build_handler(
             body = self._read_body(max_upload_bytes + MULTIPART_OVERHEAD_BYTES, too_large)
             fields: dict[str, Part] = {}
             for part in parse(body, boundary):
-                if part.name not in ("room", "file", "openRoom"):
+                if part.name not in ("room", "file", "openRoom", "operationId"):
                     raise KanaoError(
                         ErrorCode.INVALID_REQUEST, f"unknown form field {part.name!r}"
                     )
@@ -967,7 +1002,16 @@ def build_handler(
                         ErrorCode.INVALID_REQUEST, "openRoom must be true or false"
                     )
                 open_room = flag.data == b"true"
-            return room, name, file_part.data, open_room
+            operation_id = None
+            identifier = fields.get("operationId")
+            if identifier is not None:
+                if identifier.filename is not None:
+                    raise KanaoError(ErrorCode.INVALID_REQUEST, "operationId must be a text field")
+                try:
+                    operation_id = identifier.data.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise KanaoError(ErrorCode.INVALID_REQUEST, "operationId must be UTF-8")
+            return room, name, file_part.data, open_room, operation_id
 
         def _in_line(
             self,

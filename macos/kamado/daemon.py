@@ -425,6 +425,7 @@ class DaemonServer:
                     dry_run=bool(args.get("dry_run", False)),
                     open_room=bool(args.get("open_room", False)),
                     confirm=confirm,
+                    **({"operation_id": args["operation_id"]} if args.get("operation_id") is not None else {}),
                 )
             )
 

@@ -1,5 +1,7 @@
 """HTTP confirmation through the real live wiring and fake client/readers."""
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,16 +27,29 @@ class ConfirmationHTTPTests(ServedCase):
 
         send = backends.make_live_send(build_reader)
         self.serve(_start_server(SimpleNamespace(send=send), min_interval=0))
-        with patch("kamado.macauto.make_sender", return_value=sender), \
+        request = {
+            "room": str(DIRECT_ROOM), "text": "synthetic", "confirm": 1,
+            "operationId": "confirmed-http",
+        }
+        with tempfile.TemporaryDirectory() as root, \
+             patch("kakaocommon.operations.directory", return_value=Path(root)), \
+             patch("kamado.macauto.make_sender", return_value=sender), \
              patch.object(backend, "submit", side_effect=submit), \
              patch.object(Reader, "newest_log_id", return_value=8), \
              patch.object(Reader, "messages", side_effect=lambda _, **kw: [
                  row for row in rows if row.id > kw["after_id"]
              ]):
-            status, body, _ = _request(self.base, "POST", "/send", {
-                "room": str(DIRECT_ROOM), "text": "synthetic", "confirm": 1,
-            })
+            status, body, _ = _request(self.base, "POST", "/send", request)
+            replay = _request(self.base, "POST", "/send", request)
+            for confirm in ({}, {"confirm": 2}):
+                changed = {key: value for key, value in request.items() if key != "confirm"}
+                status_changed, refusal, _ = _request(
+                    self.base, "POST", "/send", {**changed, **confirm}
+                )
+                self.assertEqual(status_changed, 400, refusal)
+                self.assertEqual(refusal["error"]["code"], "INVALID_REQUEST")
         self.assertEqual(status, 200, body)
+        self.assertEqual((status, body), replay[:2])
         self.assertEqual((body["logged"], body["messageId"]), (True, "9"))
         self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
         self.assertEqual(backend.actions, ["fill", "submit"])

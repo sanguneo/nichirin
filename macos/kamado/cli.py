@@ -171,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
     send.add_argument("--confirm", nargs="?", const=DEFAULT_SECONDS, type=parse_seconds,
                       metavar="SECONDS", help="Observe the local log for up to 30 seconds (default: 3)")
+    send.add_argument("--operation-id", help="Durably deduplicate this send (1-128 ASCII characters)")
     send.add_argument(
         "--open",
         action="store_true",
@@ -571,6 +572,7 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
         dry_run=arguments.dry_run,
         open_room=arguments.open_room,
         confirm=arguments.confirm,
+        **({"operation_id": arguments.operation_id} if getattr(arguments, "operation_id", None) is not None else {}),
     )
     _emit(success(result))
     return 0
