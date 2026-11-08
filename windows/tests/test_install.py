@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMON = ROOT.parent / "kakaocommon"
 LAUNCHER = Path("scripts/kanao-cli.py")
 LEGACY_LAUNCHER = Path("scripts/kakaoread.py")
+WMI_LAUNCHER = Path("scripts/kanao-wmi.py")
 KOREAN = "\ud55c\uae00"
 
 
@@ -87,6 +88,7 @@ class PayloadTests(InstallerTests):
             "DISCLAIMER.md",
             LAUNCHER.as_posix(),
             LEGACY_LAUNCHER.as_posix(),
+            WMI_LAUNCHER.as_posix(),
         } | {
             f"scripts/kanao/{source.relative_to(ROOT / 'kanao').as_posix()}"
             for source in (ROOT / "kanao").rglob("*.py")
