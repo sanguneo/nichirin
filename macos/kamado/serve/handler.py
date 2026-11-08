@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from typing import Any, Callable, Optional, Type
 
 import kakaocommon.trace as trace
@@ -23,6 +23,7 @@ from kakaocommon.disposition import write_disposition
 from .. import __version__
 from ..errors import ErrorCode, KamadoError, as_envelope, success
 from ..model import ATTACHMENT_KINDS
+from ..sendgate import SendGate
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
@@ -211,6 +212,7 @@ def build_handler(
     max_concurrent_uploads: int = MAX_CONCURRENT_UPLOADS,
     max_concurrent_reads: int = MAX_CONCURRENT_READS,
     session_provider: Optional[Callable[[], str]] = None,
+    gate: SendGate | None = None,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -226,6 +228,10 @@ def build_handler(
     *upload* takes ``(room, path, name, open_if_needed=...)`` for a file staged
     in *upload_stage* and returns the ``UploadResult`` fields; without it
     ``POST /upload`` is not routed and ``GET /health`` names no feature.
+
+    *gate* coordinates paced texts and files with sends in other processes.
+    The CLI supplies it; without one only this server's local queue applies.
+    Dry runs bypass the gate.
 
     Raises :class:`KamadoError` for a bad token, interval, or poll interval.
     """
@@ -1052,9 +1058,11 @@ def build_handler(
                                     ),
                                 )
                                 return
-                    started = queue.begin()
                     try:
-                        with trace.stage("execution"):
+                        with trace.stage("execution"), (
+                            gate.turn(spacing) if gate is not None and paced else nullcontext()
+                        ):
+                            started = queue.begin()
                             result = action()
                     except KamadoError as error:
                         self._reply(_status_for(error), as_envelope(error))

@@ -27,12 +27,15 @@ import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Iterable, Literal, Optional, Protocol, TypedDict
+from typing import TYPE_CHECKING, Callable, Iterable, Literal, Optional, Protocol, TypedDict
 
 from . import ax, paths
 from .errors import ErrorCode, KamadoError
 import kakaocommon.trace as trace
 from kakaocommon.disposition import write_disposition
+
+if TYPE_CHECKING:
+    from .sendgate import SendGate
 
 BUNDLE_ID = paths.BUNDLE_ID
 EXECUTABLE = "/Applications/KakaoTalk.app/Contents/MacOS/KakaoTalk"
@@ -1266,7 +1269,7 @@ def send_to_room(
         if confirm is not None and not dry_run else None
     )
     confirmation = {"before_input": observation.capture} if observation is not None else {}
-    try:
+    def write():
         result = make_sender().send(
             room.title,
             text,
@@ -1276,8 +1279,23 @@ def send_to_room(
             hint=hint,
             **confirmation,
         )
+        if observation is not None and result["submitted"]:
+            return {**result, **observation.check(), "roomId": str(room.id)}
+        return {**result, "roomId": str(room.id)}
+
+    try:
+        if dry_run:
+            return write()
+        from .serve.config import DEFAULT_MIN_INTERVAL_SECONDS
+
+        with send_gate().turn(DEFAULT_MIN_INTERVAL_SECONDS):
+            return write()
     except OSError as error:
         raise KamadoError(ErrorCode.SEND_FAILED, str(error)) from error
-    if observation is not None and result["submitted"]:
-        return {**result, **observation.check(), "roomId": str(room.id)}
-    return {**result, "roomId": str(room.id)}
+
+
+def send_gate() -> SendGate:
+    """The account-wide gate shared by CLI, daemon and HTTP writes."""
+    from .sendgate import SendGate
+
+    return SendGate()

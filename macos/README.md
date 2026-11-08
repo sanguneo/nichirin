@@ -476,7 +476,24 @@ KakaoTalk for Mac 26.4.1처럼 접근성 전송 버튼을 노출하지 않는 �
 python3 -m kamado send --room "이름" --dry-run "확인만"
 python3 -m kamado send --room "이름" "보낼 말"
 python3 -m kamado send --room "이름" --open "창이 닫혀 있어도"
+printf '여러 줄\n$그대로' | python3 -m kamado send --room "이름" --text-file -
+python3 -m kamado sendfile --room "이름" ./보고서.pdf
 ```
+
+`--text-file -`는 본문을 표준 입력에서 UTF-8로 읽습니다(경로를 주면 그 파일에서). 맨 앞 BOM은
+한 번 떼어냅니다. 따옴표, `$`, 줄바꿈이 쓴 그대로 가고 본문이 프로세스 명령줄에 남지 않습니다.
+위치 인자와 함께 줄 수는 없습니다.
+`sendfile`은 `POST /upload`와 같은 길로 파일 하나를 보냅니다. 파일 URL을 붙여넣기 보드에 올려
+카카오톡의 붙여넣기로 방에 넣고, 파일 전송 확인 창을 누른 뒤 붙여넣기 보드를 되돌립니다.
+서버가 필요 없고, `--room`/`--room-id`, `--open`, `--trace`를 받습니다. `submitted: true`는 확인
+창이 닫혔다는 뜻일 뿐 전달이 아닙니다. Windows판과 같이 `--dry-run`, `--confirm`,
+`--operation-id`는 없습니다.
+
+보내기와 파일 보내기는 명령이든 데몬이든 `serve`든 **계정 하나에 한 번에 하나**입니다. 기존
+상태 디렉터리의 본인 전용 잠금 파일(`fcntl.flock`)을 함께 씁니다. 다른 kamado 프로세스가
+보내는 중이면 기다리지 않고 바로 `BUSY`(`not_delivered` / `safe`)로 거절하므로 나중에 다시
+보내도 됩니다. 마지막 전송 시작에서 2초가 지나지 않았으면 그만큼 기다렸다가 보냅니다.
+`--dry-run`은 잠금도 대기도 거치지 않습니다.
 
 기본값은 이미 생성된 채팅 창을 찾습니다. **전송 버튼이 있으면 최소화하거나 앱을 숨겨도
 창을 다시 띄우지 않고 전송합니다.** 버튼 없는 클라이언트에는 위의 포커스 확인이

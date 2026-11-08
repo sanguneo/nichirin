@@ -166,7 +166,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     send = commands.add_parser("send", help="Send text through an open KakaoTalk chat window")
     _add_room_selector(send, required=True)
-    send.add_argument("text", help="Message text (quote whitespace and newlines)")
+    source = send.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "text", nargs="?", default=None, help="Message text (quote whitespace and newlines)"
+    )
+    source.add_argument(
+        "--text-file", metavar="PATH",
+        help="Read the message as UTF-8 from PATH, or from standard input when PATH is -",
+    )
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
     send.add_argument("--confirm", nargs="?", const=DEFAULT_SECONDS, type=parse_seconds,
@@ -176,6 +183,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--open",
         action="store_true",
         dest="open_room",
+        help="Open the room from the list first when its window is closed",
+    )
+
+    sendfile = commands.add_parser(
+        "sendfile", help="Send one file through the macOS client's paste confirmation"
+    )
+    _add_room_selector(sendfile, required=True)
+    sendfile.add_argument("path", help="Path of the file to send")
+    sendfile.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
+    sendfile.add_argument(
+        "--open", action="store_true", dest="open_room",
         help="Open the room from the list first when its window is closed",
     )
 
@@ -384,10 +402,15 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
         with trace.attempt(arguments.trace, trace.Identity("macos", "kamado", __version__), "cli"):
             return _send(reader, arguments)
 
+    if arguments.command == "sendfile":
+        with trace.attempt(arguments.trace, trace.Identity("macos", "kamado", __version__), "cli"):
+            return _sendfile(reader, arguments)
+
     if arguments.command == "serve":
         trace.validate_directory(arguments.trace)
         from . import paths, snapshot
         from .macauto import client_session
+        from .sendgate import SendGate
         from .serve import (
             SharedReads,
             UploadStage,
@@ -445,6 +468,7 @@ def run(arguments: argparse.Namespace, reader: Reader) -> int:
             upload=make_live_upload(send_reader),
             upload_stage=UploadStage(paths.state_directory() / "uploads"),
             session_provider=client_session,
+            gate=SendGate(),
         )
 
     if arguments.command == "search":
@@ -560,21 +584,83 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _message_text(arguments: argparse.Namespace) -> str:
+    """Read UTF-8 bytes once, preserving line endings and dropping a leading BOM."""
+    if getattr(arguments, "text_file", None) is None:
+        return arguments.text
+    try:
+        if arguments.text_file == "-":
+            if sys.stdin is None:
+                raise OSError("there is no standard input")
+            data = sys.stdin.buffer.read()
+        else:
+            with open(arguments.text_file, "rb") as handle:
+                data = handle.read()
+    except OSError as error:
+        raise KamadoError(
+            ErrorCode.INVALID_REQUEST,
+            f"the message could not be read ({error.strerror or type(error).__name__})",
+        ) from error
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise KamadoError(
+            ErrorCode.INVALID_REQUEST, "the message is not valid UTF-8"
+        ) from error
+
+
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     """Resolve the catalog before targeting an exact client window."""
     from .macauto import send_to_room
 
     target = arguments.room_id if arguments.room_id is not None else arguments.room
+    with trace.stage("validation"):
+        text = _message_text(arguments)
     result = send_to_room(
         reader,
         target,
-        arguments.text,
+        text,
         dry_run=arguments.dry_run,
         open_room=arguments.open_room,
         confirm=arguments.confirm,
         **({"operation_id": arguments.operation_id} if getattr(arguments, "operation_id", None) is not None else {}),
     )
     _emit(success(result))
+    return 0
+
+
+def _sendfile(reader: Reader, arguments: argparse.Namespace) -> int:
+    """Hand one local file to the same uploader as HTTP, without staging it."""
+    from .macauto import send_gate
+    from .macupload import make_uploader
+    from .serve.backends import _send_target
+    from .serve.config import DEFAULT_MIN_INTERVAL_SECONDS
+
+    if arguments.room is not None and not arguments.room.strip():
+        raise KamadoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
+    with trace.stage("validation"):
+        path = os.path.normpath(os.path.abspath(arguments.path))
+        try:
+            size = os.path.getsize(path) if os.path.isfile(path) else None
+        except OSError:
+            size = None
+        if size is None:
+            raise KamadoError(ErrorCode.INVALID_REQUEST, "there is no file at that path")
+        if size <= 0:
+            raise KamadoError(ErrorCode.INVALID_REQUEST, "refusing to send an empty file")
+    with trace.stage("catalog"):
+        room = _selected_room(reader, arguments)
+        room, aliases, hint = _send_target(reader, str(room.id))
+        trace.identify("room", room.id)
+    try:
+        with send_gate().turn(DEFAULT_MIN_INTERVAL_SECONDS):
+            result = make_uploader().upload(
+                room.title, path, os.path.basename(path),
+                open_if_needed=arguments.open_room, aliases=aliases, hint=hint,
+            )
+    except OSError as error:
+        raise KamadoError(ErrorCode.SEND_FAILED, str(error)) from error
+    _emit(success({**result, "roomId": str(room.id), "path": path}))
     return 0
 
 
@@ -662,9 +748,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         with trace.attempt(
-            arguments.trace if arguments.command == "send" else None,
+            arguments.trace if arguments.command in ("send", "sendfile") else None,
             trace.Identity("macos", "kamado", __version__), "cli",
         ):
+            if arguments.command == "send":
+                # Resolve stdin here: the daemon cannot read the caller's stream,
+                # and retries/fingerprinting must use these same bytes.
+                with trace.stage("validation"):
+                    arguments.text = _message_text(arguments)
+                    arguments.text_file = None
             if arguments.command in DAEMON_COMMANDS:
                 from .daemon import is_daemon_running, send_to_daemon
 
@@ -691,7 +783,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except BaseException as error:  # noqa: BLE001 - reported, never swallowed
         if isinstance(error, SystemExit):
             raise
-        _emit(as_envelope(error, writing=arguments.command == "send"))
+        _emit(as_envelope(error, writing=arguments.command in ("send", "sendfile")))
         return 1
 
 

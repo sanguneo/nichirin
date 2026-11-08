@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 from kakaocommon.register import start_from_env
 
+from ..sendgate import SendGate
 from .config import (
     DEFAULT_MIN_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
@@ -79,6 +80,7 @@ def run(
     upload: Optional[Callable[..., dict[str, Any]]] = None,
     upload_stage: Optional[UploadStage] = None,
     session_provider: Optional[Callable[[], str]] = None,
+    gate: SendGate | None = None,
 ) -> int:
     """Serve until interrupted; return 130 on a clean Ctrl-C like the CLI."""
     handler = build_handler(
@@ -101,6 +103,7 @@ def run(
         upload=upload,
         upload_stage=upload_stage,
         session_provider=session_provider,
+        gate=gate,
     )
     server = ServeHTTPServer((host, port), handler)
     print(f"kamado serve listening on {host}:{server.server_port}", flush=True)
