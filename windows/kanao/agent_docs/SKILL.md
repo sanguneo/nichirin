@@ -44,6 +44,27 @@ This skill used to be called `kakaoread`. `scripts/kakaoread.py` still ships
 and still works, so an older instruction naming it is not broken — it prints
 one line to stderr and runs. Prefer `scripts/kanao-cli.py` in anything new.
 
+### CPU-capped sandboxes
+
+Some agent shells run every process inside a Windows Job Object with a CPU
+rate cap. Each command decrypts its databases afresh, so there the first
+`rooms` or `context` takes minutes instead of about a second, while
+`--version` and `skills get` stay quick. If that happens, call
+`scripts/kanao-wmi.py` instead of `scripts/kanao-cli.py`, with the same
+arguments:
+
+```powershell
+python "<skill-dir>/scripts/kanao-wmi.py" context --room "Sample Contact"
+```
+
+It starts the command through WMI (`Win32_Process.Create`), outside the job,
+in a hidden window and the current directory, and returns the same JSON and
+exit status. `follow`, `serve` and `tui` run directly, so they gain nothing.
+It waits up to `KANAO_WMI_TIMEOUT` seconds (default 600), then stops the
+command and returns `READ_FAILED` (`SEND_FAILED` for `send`). A failure to
+start through WMI is returned the same way and is not retried silently. Without
+a cap it only adds about half a second, so use it only where the cap is real.
+
 <!-- skills:read -->
 
 ## One call answers a conversation

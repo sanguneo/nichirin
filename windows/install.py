@@ -26,6 +26,7 @@ from pathlib import Path
 DEFAULT_TARGET = Path.home() / ".agents" / "skills" / "kanao-cli"
 LAUNCHER = Path("scripts/kanao-cli.py")
 LEGACY_LAUNCHER = Path("scripts/kakaoread.py")
+WMI_LAUNCHER = Path("scripts/kanao-wmi.py")
 
 
 def shipped_files(root: Path) -> dict[Path, Path]:
@@ -37,6 +38,7 @@ def shipped_files(root: Path) -> dict[Path, Path]:
         Path("DISCLAIMER.md"): root / "DISCLAIMER.md",
         LAUNCHER: root / "skill" / LAUNCHER,
         LEGACY_LAUNCHER: root / "skill" / LEGACY_LAUNCHER,
+        WMI_LAUNCHER: root / "skill" / WMI_LAUNCHER,
     }
     payload.update(
         {
