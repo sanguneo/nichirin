@@ -214,7 +214,16 @@ installed beside this file for what this tool does and does not warrant.
 python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --dry-run "Approved text"
 python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" "Approved text"
 python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --open "Approved text"
+"Approved text" | python "<skill-dir>/scripts/kanao-cli.py" send --room "Sample Room" --text-file -
+python "<skill-dir>/scripts/kanao-cli.py" sendfile --room "Sample Room" "C:\path\to\approved.pdf"
 ```
+
+`--text-file -` reads the message as UTF-8 from standard input (or a path):
+quotes, `$` and line breaks arrive exactly as written and the text never
+appears on the process command line. Give it or the positional text, not both.
+`sendfile` sends one file through the room window's own file button, like
+`POST /upload`; `submitted: true` means the client's file-send confirmation
+closed, not delivery. It has no `--dry-run`.
 
 <!-- skills:serve -->
 
@@ -288,7 +297,11 @@ push of small JSON messages, and SSE rides plain HTTP, passes any proxy a
   **a room opened on the way is marked read** — at most a couple of them. Rooms this opened are left minimised
   and a main window taken out of the tray is put back; a window the user
   already had open is never moved.
-- Space sends at least two seconds apart. The caller enforces the interval.
+- Sends and file sends are one at a time per account, across commands and
+  `serve`, and start at least two seconds apart: the tool waits out the
+  interval itself. When another kanao process is sending at that moment the
+  answer is `BUSY` with `delivery: not_delivered`, `retry: safe`; nothing was
+  typed, so send again once it has finished.
 - `submitted: true` means the input box emptied, not that the message was
   delivered. Read `context` or `messages` to find a new matching `fromMe`
   record before claiming success.

@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from typing import Any, Callable, Optional, Type
 
 import kakaocommon.trace as trace
@@ -212,6 +212,7 @@ def build_handler(
     max_upload_bytes: int = MAX_UPLOAD_BYTES,
     max_concurrent_uploads: int = MAX_CONCURRENT_UPLOADS,
     max_concurrent_reads: int = MAX_CONCURRENT_READS,
+    gate: Optional[Any] = None,
 ) -> Type[BaseHTTPRequestHandler]:
     """Build a request handler around injected backends.
 
@@ -233,6 +234,11 @@ def build_handler(
     file sender's envelope; without it ``POST /upload`` is not routed and
     ``/health`` declares no ``features``, which is how a build that cannot
     send files says so.
+    *gate* is a :class:`kanao.sendgate.SendGate`: every paced text and file
+    is written inside its ``turn``, so ``kanao send`` and ``kanao sendfile``
+    in other processes never type into the client while this server does,
+    and the interval holds between them. ``kanao serve`` always passes one;
+    without it (the tests) only this process's own lock applies.
 
     Raises :class:`KanaoError` for a bad token, interval, or poll interval.
     """
@@ -1039,10 +1045,11 @@ def build_handler(
                                     ),
                                 )
                                 return None
-                    started = queue.begin()
                     try:
                         with trace.stage("execution"):
-                            result = write()
+                            with gate.turn(spacing) if gate is not None and paced else nullcontext():
+                                started = queue.begin()
+                                result = write()
                     except KanaoError as error:
                         self._reply(_status_for(error), as_envelope(error))
                         return None

@@ -284,7 +284,19 @@ python -m kanao names --room-id 123 "닉네임"    # 그 이름을 쓴 적 있�
 python -m kanao send --room "이름" --dry-run "확인만"
 python -m kanao send --room "이름" "보낼 말"
 python -m kanao send --room "이름" --open "창이 닫혀 있어도"
+"여러 줄`n`$그대로" | python -m kanao send --room "이름" --text-file -
+python -m kanao sendfile --room "이름" .\보고서.pdf
 ```
+
+`--text-file -`는 본문을 표준 입력에서 UTF-8로 읽습니다(경로를 주면 그 파일에서). 따옴표, `$`,
+줄바꿈이 쓴 그대로 가고 본문이 프로세스 명령줄에 남지 않습니다. 위치 인자와 함께 줄 수는 없습니다.
+`sendfile`은 `POST /upload`와 같은 방 창의 파일 버튼으로 파일 하나를 보냅니다. 서버가 필요 없고,
+`submitted: true`는 확인 창이 닫혔다는 뜻일 뿐 전달이 아닙니다. 확인 창을 거치지 않고 미리 볼 방법이
+없어서 `--dry-run`은 없습니다.
+
+보내기와 파일 보내기는 명령이든 `serve`든 **계정 하나에 한 번에 하나**입니다. 다른 kanao 프로세스가
+보내는 중이면 기다리지 않고 바로 `BUSY`(`not_delivered` / `safe`)로 거절하므로 나중에 다시 보내도
+됩니다. 마지막 전송 시작에서 2초가 지나지 않았으면 그만큼 기다렸다가 보냅니다.
 
 `--open`은 창이 닫혀 있을 때 도구가 직접 엽니다. 카카오톡이 트레이에 내려가 있어도
 메인 창을 되살려 목록을 열고, 방을 찾고, **연 창은 최소화해두고, 트레이는 도로
