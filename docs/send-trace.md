@@ -29,7 +29,7 @@ Every line uses this exact field allowlist:
 | `start_ms`, `end_ms`, `elapsed_ms` | Nonnegative monotonic milliseconds relative to this attempt's origin; elapsed is the stage's duration |
 | `outcome` | `pass`, `rejected`, `unknown`, or `error` |
 | `code` | An allowlisted error code, `UNEXPECTED`, or `null`; never exception text |
-| `conditions` | E/D/U/W/S/L/B observations, each `pass` or `not_checked` |
+| `conditions` | E/D/U/W/S/L/B observations, each `pass` or `not_checked`; L can also be `unknown` |
 | `room`, `window`, `control` | Optional attempt-local pseudonyms, never raw IDs |
 
 No other fields are serialized. Message bodies, titles, search terms, tokens,
@@ -40,7 +40,7 @@ across attempts.
 
 Stages are `attempt`, `validation`, `catalog`, `discovery`, `input`, `write`, `submit`,
 `confirm`, `button_guard`, `ax_button`, `focus_guard`, `focused_return`,
-`forward`, `daemon`, `queue`, `execution`, `queue_full`, and `shutdown`.
+`forward`, `daemon`, `queue`, `execution`, `queue_full`, `shutdown`, and `log`.
 Nested durations overlap: do not sum them. Start events have zero elapsed
 time; an end event measures the actual enclosed work. A start without an end
 is incomplete evidence, not a successful operation.
@@ -62,8 +62,11 @@ by discovery, W verified text placement, and S observed composer emptying
 after submission. These are diagnostic predicates, not recipient delivery.
 L is independent local-history confirmation and B is preservation of desktop
 state throughout the send (see `macos/docs/background-sending.md`).
-Neither L nor B is observed by this feature, so **both are always
-`not_checked`**, including successful sends. A synthetic adapter that does
+Without optional `send --confirm[=seconds]` (HTTP `confirm` seconds), L stays
+`not_checked`. Confirmation's `log` stage records L as `pass` only for a new,
+exact-text from-me local row above the pre-input baseline; timeout or a read
+failure records `unknown`, without changing the send outcome. B always stays
+`not_checked`. A synthetic adapter that does
 not perform native checks does not earn W or S from its return value alone.
 
 `queue` includes acquiring the send lock and pacing wait, but ends before

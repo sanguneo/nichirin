@@ -192,12 +192,17 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
     that does not come up, instead of one that comes up and says so.
     """
 
-    def write(room: str, act: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+    def write(
+        room: str, act: Callable[..., dict[str, Any]], *,
+        confirm=None, text: str = "",
+    ) -> dict[str, Any]:
         import kakaocommon.trace as trace
         from ..context import _resolve
         from ..model import SELF_CHAT
         from ..opening import search_rows
         from ..winauto import make_sender
+        from kakaocommon.confirm import Confirmation
+        import sqlite3
 
         with Reader(
             cache=snapshots, keyring=account.get("keyring"), ledger=NameLedger()
@@ -239,6 +244,11 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
                     None,
                 )
                 trace.identify("room", resolved.id)
+            observation = (
+                Confirmation(reader, resolved.id, text, confirm, (KanaoError, OSError, sqlite3.Error))
+                if confirm is not None else None
+            )
+            confirmation = {"before_input": observation.capture} if observation is not None else {}
             try:
                 result = act(
                     make_sender(),
@@ -250,10 +260,12 @@ def _live_writer() -> Callable[..., dict[str, Any]]:
                     # to open is predicted from the catalog just read.
                     search_rows=search_rows(reader, resolved, window_aliases, catalogued),
                     self_chat=resolved.type == SELF_CHAT,
+                    **confirmation,
                 )
             except OSError as error:
                 raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
-            return {**result, "roomId": str(resolved.id)}
+            logged = observation.check() if observation is not None and result["submitted"] else {}
+            return {**result, **logged, "roomId": str(resolved.id)}
 
     return write
 
@@ -269,12 +281,15 @@ def make_live_send() -> Callable[..., dict[str, Any]]:
         open_if_needed: bool = False,
         aliases=(),
         hint=None,
+        confirm=None,
     ) -> dict[str, Any]:
         return write(
             room,
             lambda sender, title, **where: sender.send(
                 title, text, dry_run=dry_run, open_if_needed=open_if_needed, **where
             ),
+            confirm=confirm if not dry_run else None,
+            text=text,
         )
 
     return send

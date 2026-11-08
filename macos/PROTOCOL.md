@@ -93,6 +93,19 @@ destination from HTTP callers. Queue waiting, queue rejection, native write
 refusal and post-submit uncertainty are distinct stages. AX-button submission
 and guarded focused Return have different stages; Return activates the client.
 Unobserved L/B remain `not_checked`; `submitted` does not establish either.
+With confirmation, L is `pass` for an observed local row, or `unknown` on
+timeout/read failure.
+
+`send ... "text" --confirm[=seconds]` optionally observes the local room log
+after submission (bare flag: 3 seconds; finite `0 < seconds <= 30`).
+HTTP `POST /send` accepts numeric `confirm` seconds under the same bounds.
+The daemon carries this option; capture, submission and observation stay
+serialized. The latest room logId is captured immediately before actual input;
+only a later `fromMe` row with exactly equal text matches. Successful sends add
+`logged: true` and string `messageId`, or `logged: false` on timeout/read failure.
+This never changes `submitted` or `disposition` and never resends. Omitted means
+byte-identical existing JSON; dry runs do not read or report confirmation.
+L proves local recording, not receipt by another person.
 
 An invalid requested destination is refused before UI mutation with
 `INVALID_REQUEST`, `not_delivered/safe`. A later logging failure disables

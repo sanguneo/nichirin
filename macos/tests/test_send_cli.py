@@ -8,6 +8,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from kamado import cli
 from kamado.errors import ErrorCode, KamadoError
@@ -17,6 +18,79 @@ from tests.test_send import FakeWindows
 
 
 class SendCommandTests(unittest.TestCase):
+    def test_default_send_preserves_the_existing_json_bytes_without_log_reads(self):
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "synthetic"]
+        )
+        output = io.StringIO()
+        with patch.object(self.reader, "newest_log_id", side_effect=AssertionError("unexpected read")), \
+             redirect_stdout(output):
+            cli.run(arguments, self.reader)
+        expected = {
+            "ok": True, "submitted": True, "dryRun": False, "room": "Peer Renamed",
+            "length": 9, "clearedDraft": False, "roomId": str(DIRECT_ROOM),
+            "disposition": {"delivery": "submitted", "retry": "unsafe"},
+        }
+        self.assertEqual(output.getvalue(), json.dumps(expected, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+    def test_confirmation_captures_after_window_discovery_and_never_reuses_old_text(self):
+        rows = [SimpleNamespace(id=1, text="synthetic", from_me=True)]
+        original_input = self.backend.input_handle
+        original_submit = self.backend.submit
+
+        def discover(window):
+            rows.append(SimpleNamespace(id=2, text="synthetic", from_me=True))
+            return original_input(window)
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=3, text="synthetic", from_me=True))
+
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "synthetic", "--confirm"]
+        )
+        output = io.StringIO()
+        with patch.object(self.backend, "input_handle", side_effect=discover), \
+             patch.object(self.backend, "submit", side_effect=submit), \
+             patch.object(self.reader, "newest_log_id", side_effect=lambda _: max(row.id for row in rows)), \
+             patch.object(self.reader, "messages", side_effect=lambda _, **kw: [
+                 row for row in rows if row.id > kw["after_id"]
+             ]), redirect_stdout(output):
+            self.assertEqual(cli.run(arguments, self.reader), 0)
+        body = json.loads(output.getvalue())
+        self.assertEqual((body["logged"], body["messageId"]), (True, "3"))
+        self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_confirmation_read_failure_preserves_submission_without_resending(self):
+        arguments = cli.build_parser().parse_args(
+            ["send", "--room-id", str(DIRECT_ROOM), "synthetic", "--confirm=1"]
+        )
+        output = io.StringIO()
+        with patch.object(self.reader, "newest_log_id", side_effect=OSError("synthetic")), \
+             redirect_stdout(output):
+            self.assertEqual(cli.run(arguments, self.reader), 0)
+        body = json.loads(output.getvalue())
+        self.assertIs(body["logged"], False)
+        self.assertNotIn("messageId", body)
+        self.assertTrue(body["submitted"])
+        self.assertEqual(body["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+        self.assertEqual(self.backend.actions, ["fill", "submit"])
+
+    def test_default_and_dry_confirmation_leave_json_bytes_unchanged(self):
+        outputs = []
+        for flags in ([], ["--confirm"]):
+            arguments = cli.build_parser().parse_args(
+                ["send", "--room-id", str(DIRECT_ROOM), "--dry-run", "synthetic", *flags]
+            )
+            output = io.StringIO()
+            with patch.object(self.reader, "newest_log_id", side_effect=AssertionError("unexpected read")), \
+                 redirect_stdout(output):
+                cli.run(arguments, self.reader)
+            outputs.append(output.getvalue())
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertNotIn("logged", json.loads(outputs[0]))
+
     def setUp(self) -> None:
         self.reader = build_reader()
         self.addCleanup(self.reader.close)

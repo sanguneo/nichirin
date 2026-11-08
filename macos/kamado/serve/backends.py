@@ -240,14 +240,22 @@ def make_live_send(
         open_if_needed: bool = False,
         aliases=(),
         hint=None,
+        confirm=None,
     ) -> dict[str, Any]:
         from ..macauto import make_sender
         import kakaocommon.trace as trace
+        from kakaocommon.confirm import Confirmation
+        import sqlite3
 
         with open_reader() as reader:
             with trace.stage("catalog"):
                 resolved, window_aliases, position = _send_target(reader, room)
                 trace.identify("room", resolved.id)
+            observation = (
+                Confirmation(reader, resolved.id, text, confirm, (KamadoError, OSError, sqlite3.Error))
+                if confirm is not None and not dry_run else None
+            )
+            confirmation = {"before_input": observation.capture} if observation is not None else {}
             try:
                 result = make_sender().send(
                     resolved.title,
@@ -256,10 +264,12 @@ def make_live_send(
                     open_if_needed=open_if_needed,
                     aliases=window_aliases,
                     hint=position,
+                    **confirmation,
                 )
             except OSError as error:
                 raise KamadoError(ErrorCode.SEND_FAILED, str(error)) from error
-            return {**result, "roomId": str(resolved.id)}
+            logged = observation.check() if observation is not None and result["submitted"] else {}
+            return {**result, **logged, "roomId": str(resolved.id)}
 
     return send
 

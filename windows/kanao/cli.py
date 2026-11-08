@@ -32,6 +32,7 @@ from .opening import open_for_reading, window_target
 from .reader import Reader
 from .watch import DEFAULT_INTERVAL_SECONDS, Watcher
 import kakaocommon.trace as trace
+from kakaocommon.confirm import Confirmation, DEFAULT_SECONDS, parse_seconds
 
 DIGEST_LIMIT = digest_defaults.DEFAULT_LIMIT
 """How many of the newest messages a digest slices, matching the screen's /sum.
@@ -159,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("text", help="Message text (quote whitespace and newlines)")
     send.add_argument("--dry-run", action="store_true", help="Resolve and check without typing")
     send.add_argument("--trace", metavar="DIR", help="Write masked per-attempt JSONL diagnostics")
+    send.add_argument("--confirm", nargs="?", const=DEFAULT_SECONDS, type=parse_seconds,
+                      metavar="SECONDS", help="Observe the local log for up to 30 seconds (default: 3)")
     send.add_argument(
         "--open",
         action="store_true",
@@ -524,6 +527,7 @@ def _names(reader: Reader, arguments: argparse.Namespace) -> int:
 def _send(reader: Reader, arguments: argparse.Namespace) -> int:
     """Resolve the catalog before targeting an exact client window."""
     from .winauto import make_sender
+    import sqlite3
 
     if arguments.room is not None and not arguments.room.strip():
         raise KanaoError(ErrorCode.INVALID_REQUEST, "a nonempty room name is required")
@@ -531,6 +535,12 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
         room = _selected_room(reader, arguments)
         aliases, hint, rows = window_target(reader, room)
         trace.identify("room", room.id)
+    observation = (
+        Confirmation(reader, room.id, arguments.text, arguments.confirm,
+                     (KanaoError, OSError, sqlite3.Error))
+        if arguments.confirm is not None and not arguments.dry_run else None
+    )
+    confirmation = {"before_input": observation.capture} if observation is not None else {}
     try:
         result = make_sender().send(
             room.title,
@@ -541,10 +551,12 @@ def _send(reader: Reader, arguments: argparse.Namespace) -> int:
             hint=hint,
             search_rows=rows,
             self_chat=room.type == SELF_CHAT,
+            **confirmation,
         )
     except OSError as error:
         raise KanaoError(ErrorCode.SEND_FAILED, str(error)) from error
-    _emit(success({**result, "roomId": str(room.id)}))
+    logged = observation.check() if observation is not None and result["submitted"] else {}
+    _emit(success({**result, **logged, "roomId": str(room.id)}))
     return 0
 
 

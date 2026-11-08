@@ -11,12 +11,60 @@ import kakaocommon.trace_transport as trace_transport
 from kamado import daemon
 from kamado.macauto import Sender
 from tests.test_send import FakeWindows
+from tests.fixtures import DIRECT_ROOM, build_reader
+from kamado.macauto import ChatWindow
+from types import SimpleNamespace
 
 
 IDENTITY = trace.Identity("macos", "kamado", "test")
 
 
 class DaemonTraceTests(unittest.TestCase):
+    def test_forwarded_confirmation_dispatches_once_and_retains_local_trace_result(self):
+        reader = build_reader()
+        self.addCleanup(reader.close)
+        server = daemon.DaemonServer()
+        server._reader = reader
+        backend = FakeWindows()
+        backend.windows = [ChatWindow(42, "Peer Renamed")]
+        rows = []
+        original_submit = backend.submit
+
+        def submit(control):
+            original_submit(control)
+            rows.append(SimpleNamespace(id=2, text="synthetic", from_me=True))
+
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "daemon.sock"
+            socket_path.touch()
+            connection = MagicMock()
+            connection.__enter__.return_value = connection
+
+            def dispatch(payload):
+                request = json.loads(payload)
+                answer = server._dispatch(request["command"], request["args"])
+                connection.recv.return_value = (json.dumps(answer) + "\n").encode()
+
+            connection.sendall.side_effect = dispatch
+            with patch("kamado.daemon.socket_path", return_value=socket_path), \
+                 patch("kamado.daemon.socket.socket", return_value=connection), \
+                 patch("kamado.macauto.make_sender", return_value=Sender(backend, running=lambda: True)), \
+                 patch.object(backend, "submit", side_effect=submit), \
+                 patch.object(reader, "newest_log_id", return_value=1), \
+                 patch.object(reader, "messages", side_effect=lambda _, **kw: [
+                     row for row in rows if row.id > kw["after_id"]
+                 ]):
+                with trace.attempt(directory, IDENTITY, "cli"):
+                    answer = daemon.send_to_daemon("send", {
+                        "room_id": DIRECT_ROOM, "text": "synthetic", "confirm": 1,
+                    }, repeatable=False)
+            assert answer is not None
+            self.assertEqual((answer["logged"], answer["messageId"]), (True, "2"))
+            self.assertEqual(answer["disposition"], {"delivery": "submitted", "retry": "unsafe"})
+            events = [json.loads(line) for line in next(Path(directory).glob("*.jsonl")).read_text().splitlines()]
+            self.assertEqual(events[-1]["conditions"]["L"], "pass")
+            self.assertEqual(backend.actions, ["fill", "submit"])
+
     def test_lost_response_is_correlated_and_never_falls_back(self):
         with tempfile.TemporaryDirectory() as directory:
             # Given a daemon that receives the request but loses the answer.

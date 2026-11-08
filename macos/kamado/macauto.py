@@ -583,6 +583,7 @@ class Sender:
         open_if_needed: bool = False,
         aliases: Iterable[str] = (),
         hint: Optional[int] = None,
+        before_input: Optional[Callable[[], None]] = None,
     ) -> SendResult:
         """Write *text* into *room*'s window and send it, or preview when dry.
 
@@ -632,6 +633,8 @@ class Sender:
                 }
 
             with trace.stage("write"):
+                if before_input is not None:
+                    before_input()
                 self._backend.set_text(control, text)
             submitting = True
             with trace.stage("submit"):
@@ -1210,7 +1213,8 @@ def make_sender() -> Sender:
 
 
 def send_to_room(
-    reader, target, text: str, *, dry_run: bool = False, open_room: bool = False
+    reader, target, text: str, *, dry_run: bool = False, open_room: bool = False,
+    confirm: Optional[float] = None,
 ) -> dict:
     """Resolve the catalog before targeting an exact client window.
 
@@ -1218,6 +1222,8 @@ def send_to_room(
     and the aliases cannot drift apart between the two.
     """
     from .context import _resolve
+    from kakaocommon.confirm import Confirmation
+    import sqlite3
 
     with trace.stage("catalog"):
         if isinstance(target, str) and not target.strip():
@@ -1241,6 +1247,11 @@ def send_to_room(
         # right - close enough that opening one usually costs a single click.
         hint = next((index for index, r in enumerate(catalogued) if r.id == room.id), None)
         trace.identify("room", room.id)
+    observation = (
+        Confirmation(reader, room.id, text, confirm, (KamadoError, OSError, sqlite3.Error))
+        if confirm is not None and not dry_run else None
+    )
+    confirmation = {"before_input": observation.capture} if observation is not None else {}
     try:
         result = make_sender().send(
             room.title,
@@ -1249,7 +1260,10 @@ def send_to_room(
             open_if_needed=open_room,
             aliases=aliases,
             hint=hint,
+            **confirmation,
         )
     except OSError as error:
         raise KamadoError(ErrorCode.SEND_FAILED, str(error)) from error
+    if observation is not None and result["submitted"]:
+        return {**result, **observation.check(), "roomId": str(room.id)}
     return {**result, "roomId": str(room.id)}

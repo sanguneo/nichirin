@@ -18,7 +18,7 @@ from typing import Literal, final
 Stage = Literal[
     "attempt", "validation", "catalog", "discovery", "input", "write", "submit", "confirm",
     "ax_button", "focused_return", "focus_guard", "button_guard", "forward", "daemon",
-    "queue", "execution", "queue_full", "shutdown",
+    "queue", "execution", "queue_full", "shutdown", "log",
 ]
 Outcome = Literal["pass", "rejected", "unknown", "error"]
 Route = Literal["cli", "daemon", "http"]
@@ -223,3 +223,10 @@ def observed(condition: Literal["E", "D", "U", "W", "S"]) -> None:
     value = current_attempt.get()
     if value is not None:
         value.conditions[condition] = "pass"
+
+
+def logged(found: bool) -> None:
+    """L records local observation, never recipient delivery or send failure."""
+    value = current_attempt.get()
+    if value is not None:
+        value.conditions["L"] = "pass" if found else "unknown"

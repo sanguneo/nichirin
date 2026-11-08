@@ -139,6 +139,8 @@ def send_to_daemon(
                     raise ValueError("the daemon answer is not an envelope")
                 if not repeatable and not answer.get("ok"):
                     trace.report_failure(answer.get("error", {}))
+                if not repeatable and answer.get("ok") and "logged" in answer:
+                    trace.logged(answer["logged"] is True)
                 return answer
     except (OSError, ValueError):
         # FrameError and a malformed body are ValueErrors: both mean the
@@ -403,6 +405,14 @@ class DaemonServer:
 
         if command == "send":
             from .macauto import send_to_room
+            from kakaocommon.confirm import parse_seconds
+
+            confirm = args.get("confirm")
+            if confirm is not None:
+                try:
+                    confirm = parse_seconds(confirm)
+                except (TypeError, ValueError) as error:
+                    raise KamadoError(ErrorCode.INVALID_REQUEST, str(error)) from error
 
             target = args.get("room_id") if args.get("room_id") is not None else args.get("room")
             if target is None:
@@ -414,6 +424,7 @@ class DaemonServer:
                     str(args.get("text") or ""),
                     dry_run=bool(args.get("dry_run", False)),
                     open_room=bool(args.get("open_room", False)),
+                    confirm=confirm,
                 )
             )
 
