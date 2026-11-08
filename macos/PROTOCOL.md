@@ -198,6 +198,33 @@ equivalent and does not emit it.
 
 ## Sending
 
+### Optional durable operation identifiers
+
+`send --operation-id ID`, JSON `POST /send` member `operationId`, and text
+`POST /upload` form field `operationId` opt into at-most-once dispatch.
+IDs are 1-128 printable ASCII characters without spaces. Omission preserves
+the existing envelopes and behavior, with no receipt access.
+
+Receipts live in the user's `%LOCALAPPDATA%/kanao-cli/operations` (Windows)
+or `~/Library/Application Support/kamado-cli/operations` (macOS). Names use
+the ID's SHA-256. An atomic per-ID directory claim prevents concurrent
+processes from both dispatching. Before input, a temporary record is flushed,
+fsynced and replaced as `receipt.json` with phase `dispatching`. The fingerprint
+hashes operation kind, exact room selector and selector kind (CLI ID,
+CLI title, or HTTP ID-or-title), payload
+SHA-256 and options; uploads also bind their cleaned name. Message/file bytes
+are not recorded; any quoted message text in a failure message is redacted.
+Receipts retain result metadata and failure disposition,
+with terminal phase `submitted`, `unknown` or `not_delivered`.
+
+The same ID and fingerprint returns its recorded result without input.
+A changed fingerprint is `INVALID_REQUEST`. A claim left `dispatching`,
+empty or unreadable returns `SEND_FAILED`, `unknown/after_check`, with no
+input. A failed final receipt update does not turn a known success into a
+failure; its replay remains unknown. No automatic resubmission occurs.
+There is no expiry or automatic cleanup: removing a receipt forfeits its
+protection. Use a new ID only after checking an uncertain operation.
+
 ### Delivery and retry decisions
 
 Every failure carries `error.disposition`. Existing codes, messages, top-level

@@ -1210,7 +1210,8 @@ def make_sender() -> Sender:
 
 
 def send_to_room(
-    reader, target, text: str, *, dry_run: bool = False, open_room: bool = False
+    reader, target, text: str, *, dry_run: bool = False, open_room: bool = False,
+    operation_id: Optional[str] = None,
 ) -> dict:
     """Resolve the catalog before targeting an exact client window.
 
@@ -1218,6 +1219,18 @@ def send_to_room(
     and the aliases cannot drift apart between the two.
     """
     from .context import _resolve
+    from .errors import run_operation
+    from kakaocommon.operations import fingerprint
+
+    if operation_id is not None:
+        return run_operation(
+            operation_id,
+            fingerprint("send", str(target), text.encode("utf-8"),
+                        selectorKind="id" if isinstance(target, int) else "title",
+                        dryRun=dry_run, openRoom=open_room),
+            lambda: send_to_room(reader, target, text, dry_run=dry_run, open_room=open_room),
+            sensitive_text=text,
+        )
 
     with trace.stage("catalog"):
         if isinstance(target, str) and not target.strip():
