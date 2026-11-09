@@ -179,7 +179,7 @@ streams as it will.
 | --- | --- |
 | `AMBIGUOUS_CHAT` | Several rooms matched. `candidates` is attached; retry with `--room-id` |
 | `CHAT_NOT_FOUND` | No room by that title |
-| `KEY_UNAVAILABLE` | KakaoTalk has not opened that room this session, so its key is not in memory |
+| `KEY_UNAVAILABLE` | KakaoTalk has not opened that room this session, or has released its key again after its window closed and other rooms were opened and closed (#110), so its key is not in memory |
 | `KAKAO_NOT_RUNNING` | The client is not running or not signed in |
 | `NO_USER_DATA` | No signed-in profile directory was found |
 | `READ_FAILED` | A database could not be read or decrypted |

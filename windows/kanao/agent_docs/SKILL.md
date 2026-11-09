@@ -95,7 +95,7 @@ Read the answer in this order:
 | `ok: false` | Read `error.code`. It is never an empty-but-successful conversation. |
 | `AMBIGUOUS_CHAT` | Several rooms matched. Show the `candidates` and ask which; retry with `--room-id`. |
 | `CHAT_NOT_FOUND` | Ask for the title as saved in KakaoTalk. Never guess that a contact is "mom". |
-| `KEY_UNAVAILABLE` | KakaoTalk has never opened that room this session. Ask the user to open it, or — with their consent, since it marks the room read — retry `messages` with `--open`. |
+| `KEY_UNAVAILABLE` | KakaoTalk has not opened that room this session, or has let its key go again: a room whose window is closed can lose its key once other rooms are opened and closed after it (#110). Ask the user to open it, or — with their consent, since it marks the room read — retry `messages` with `--open`. |
 | `KAKAO_NOT_RUNNING` | Ask the user to start and sign in to KakaoTalk. |
 | `BUSY` | A concurrent database write while reading: retry once. |
 | `coverage.reachesLatestKnown: true` | The messages reach the newest record the catalog knows of — not necessarily the server's. |
