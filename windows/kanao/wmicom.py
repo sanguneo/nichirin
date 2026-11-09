@@ -1,4 +1,5 @@
-"""The Windows side of ``kanao.wmi``: a named event, and ``Win32_Process.Create``.
+"""The Windows side of ``kanao.wmi``: a named event, ``Win32_Process.Create``,
+the caller's CPU rate cap, and the interpreters registered under PEP 514.
 
 ``Create`` is called through WMI's COM interfaces from this process rather
 than through PowerShell. Inside a hard-capped job everything this process
@@ -11,6 +12,7 @@ service, which runs outside the job.
 from __future__ import annotations
 
 import ctypes
+import os
 from ctypes import POINTER, byref, c_long, c_ushort, c_void_p, c_wchar_p
 from typing import Sequence
 import subprocess
@@ -180,7 +182,107 @@ def set_event(name: str) -> None:
         kernel32.CloseHandle(handle)
 
 
+JOB_OBJECT_CPU_RATE_CONTROL_INFORMATION = 15
+CPU_RATE_CONTROL_ENABLE = 0x1
+CPU_RATE_CONTROL_HARD_CAP = 0x4
+CPU_RATE_CONTROL_MIN_MAX_RATE = 0x10
+"""A weight-based rate only shares the CPU under contention, so it is not a cap."""
+
+
+def cpu_capped() -> bool:
+    """Whether the job this process belongs to caps its CPU rate.
+
+    A query that fails answers True: relaunching costs a fraction of a second,
+    staying inside an unseen cap costs minutes. Only the immediate job is
+    visible, so a cap set on an outer job of a nested one is not seen.
+    """
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.IsProcessInJob.argtypes = (wintypes.HANDLE, wintypes.HANDLE, POINTER(wintypes.BOOL))
+    kernel32.QueryInformationJobObject.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, c_void_p, wintypes.DWORD, POINTER(wintypes.DWORD),
+    )
+    in_job = wintypes.BOOL()
+    if not kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, byref(in_job)):
+        return True
+    if not in_job.value:
+        return False
+
+    class _CpuRate(ctypes.Structure):
+        _fields_ = [("ControlFlags", wintypes.DWORD), ("CpuRate", wintypes.DWORD)]
+
+    rate = _CpuRate()
+    # A NULL handle asks about the job this process belongs to.
+    if not kernel32.QueryInformationJobObject(
+        None, JOB_OBJECT_CPU_RATE_CONTROL_INFORMATION, byref(rate), ctypes.sizeof(rate), None,
+    ):
+        return True
+    flags = rate.ControlFlags
+    return bool(flags & CPU_RATE_CONTROL_ENABLE) and bool(
+        flags & (CPU_RATE_CONTROL_HARD_CAP | CPU_RATE_CONTROL_MIN_MAX_RATE)
+    )
+
+
+def registered_pythons() -> list[tuple[tuple[int, int], str]]:
+    """``((major, minor), python.exe)`` for each CPython registered under PEP 514."""
+    import winreg
+
+    found: list[tuple[tuple[int, int], str]] = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                core = winreg.OpenKey(hive, r"Software\Python\PythonCore", 0, winreg.KEY_READ | view)
+            except OSError:
+                continue
+            with core:
+                index = 0
+                while True:
+                    try:
+                        tag = winreg.EnumKey(core, index)
+                    except OSError:
+                        break
+                    index += 1
+                    entry = _registered(winreg, core, tag)
+                    if entry is not None:
+                        found.append(entry)
+    return found
+
+
+def _registered(winreg, core, tag: str) -> tuple[tuple[int, int], str] | None:  # noqa: ANN001
+    try:
+        with winreg.OpenKey(core, tag) as key:
+            try:
+                version = str(winreg.QueryValueEx(key, "SysVersion")[0])
+            except OSError:
+                version = tag
+        with winreg.OpenKey(core, tag + r"\InstallPath") as install:
+            try:
+                executable = str(winreg.QueryValueEx(install, "ExecutablePath")[0])
+            except OSError:
+                executable = os.path.join(str(winreg.QueryValueEx(install, "")[0]), "python.exe")
+    except OSError:
+        return None
+    parts = version.split("-")[0].split(".")
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return (int(parts[0]), int(parts[1])), executable
+
+
 class WmiBoundary:
+    def capped(self) -> bool:
+        try:
+            return cpu_capped()
+        except (OSError, AttributeError):
+            return True
+
+    def pythons(self) -> list[tuple[tuple[int, int], str]]:
+        try:
+            return registered_pythons()
+        except (OSError, ImportError):
+            return []
+
     def signal(self, name: str) -> _Event:
         return _Event(name)
 
