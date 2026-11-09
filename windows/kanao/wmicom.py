@@ -84,8 +84,11 @@ class _Com:
         return self
 
     def __exit__(self, *_exc: object) -> None:
+        # A call that failed part way leaves later out-pointers NULL; releasing
+        # one would raise ValueError over the OSError that explains the failure.
         for reference in reversed(self.references):
-            _call(reference, RELEASE)
+            if reference:
+                _call(reference, RELEASE)
         for string in self.strings:
             self.oleaut32.SysFreeString(string)
         if self.initialized:
