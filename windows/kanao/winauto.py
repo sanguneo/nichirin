@@ -557,7 +557,6 @@ class RoomOpener:
                 "KakaoTalk's room list is not on screen and the main window "
                 "would not come back; restore it and try again",
             )
-
         known = {window.title for window in self._backend.chat_windows()}
         # The self-chat is opened from the account's own profile, which needs
         # no search and no prediction (#87); the search is what remains if
@@ -569,6 +568,21 @@ class RoomOpener:
         # The search lists members' rooms too, so the room asked for is not
         # always the first result; the caller predicts which row it is.
         found = self._from_own_profile(wanted, known) if self_chat else None
+        # The room list exists, hidden, while another tab is in front, and a
+        # freshly started client opens on its friends tab. Its search box is
+        # hidden with it: typing there never brings a result list, and a
+        # clicked row opens nothing (#110). Measured on Windows 11 right after
+        # a start: room list and search box hidden, friends list shown. The
+        # self-chat above goes through the friends list and is unaffected.
+        is_shown = getattr(self._backend, "is_shown", None)
+        if found is None and is_shown is not None and not is_shown(control):
+            if disturbed is not None:
+                self._backend.restore_main_window(disturbed)
+            raise KanaoError(
+                ErrorCode.WINDOW_NOT_FOUND,
+                "KakaoTalk's chat tab is not in front, so its room list cannot be "
+                "searched or clicked; show the chat tab once and try again",
+            )
         if found is None:
             searched, found = self._search(room, wanted, known, search_rows)
             if not searched:
@@ -1391,6 +1405,9 @@ class Win32Backend:
 
     def is_minimized(self, handle: int) -> bool:
         return bool(self._user32.IsIconic(handle))
+
+    def is_shown(self, handle: int) -> bool:
+        return bool(self._user32.IsWindowVisible(handle))
 
     def minimize_window(self, handle: int) -> None:
         # A window that took the keyboard is minimised the ordinary way, which
