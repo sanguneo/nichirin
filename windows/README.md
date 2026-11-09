@@ -432,7 +432,7 @@ curl -N -H "$H" "$T/stream?since=1001:5300&since=1002:412"
 | `404 INPUT_NOT_FOUND` | 창은 찾았는데 입력창이 없음 | 그 방 창을 다시 열기 |
 | `404 MESSAGE_NOT_FOUND` | 그 방에 그런 메시지가 없거나 파일이 아님 | `/attachments?kind=file`에서 id 확인 |
 | `410 FILE_EXPIRED` | 파일 링크가 만료됐고 저장된 사본도 없음 | 카카오톡에서 파일을 저장한 뒤 다시 |
-| `503 KEY_UNAVAILABLE` | 카카오톡이 그 DB를 안 열어둠 | **방 창을 한 번 띄우기** (명령은 `messages --open`) |
+| `503 KEY_UNAVAILABLE` | 카카오톡이 그 DB를 안 열어둠. 이번 세션에 연 방이라도 창을 닫은 뒤 다른 방을 여러 개 열고 닫으면 다시 잠길 수 있음(#110) | **방 창을 한 번 띄우기** (명령은 `messages --open`) |
 | `status`에서 `decryptableDatabases: 0` | 힙 스캔이 빈손 | 아래 64비트 주의 |
 
 > [!IMPORTANT]
