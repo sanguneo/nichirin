@@ -1380,6 +1380,12 @@ class Win32Backend:
         box = self._search_box()
         if box is None:
             return None
+        # A result list still on screen is the last search's: typed over, it
+        # stays shown without ever hiding (4 s watched), so its first row was
+        # the room searched before, not this one (#110). Emptied, it hides in
+        # about 0.31 s; it is let go before the new text goes in.
+        if self._search_results() is not None and not self._empty_search(box):
+            return None
         try:
             self._replace(box, text)
         except OSError:
@@ -1401,10 +1407,19 @@ class Win32Backend:
         box = self._search_box()
         if box is None:
             return
+        self._empty_search(box)
+
+    def _empty_search(self, box: int) -> bool:
+        """Empty the box and wait for the result list to hide. False if it stays."""
         try:
             self._replace(box, "")
         except OSError:
-            pass
+            return False
+        for _attempt in range(POLL_ATTEMPTS):
+            if self._search_results() is None:
+                return True
+            time.sleep(POLL_SECONDS)
+        return False
 
     def _main_window(self) -> Optional[int]:
         for handle in self._all_top_level():
