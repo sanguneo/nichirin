@@ -16,6 +16,13 @@ which is what the caller waits on.  The directory is removed afterwards.
 
 ``follow``, ``serve`` and ``tui`` never finish or need the caller's console,
 so they run directly, as if the wrapper were not there.
+
+The relaunch is taken only where it pays. WMI costs a fraction of a second on
+every call, so a caller whose job carries no CPU rate cap runs the CLI
+directly; ``KANAO_WMI=always`` or ``never`` overrides that check. And the CLI
+runs on the newest registered Python 3.11+ when the caller's is older,
+because from 3.11 the decrypted image reaches SQLite in memory instead of
+through a plaintext temporary file; ``KANAO_PYTHON`` names one instead.
 """
 
 from __future__ import annotations
@@ -40,6 +47,10 @@ DIRECT_COMMANDS = frozenset({"follow", "serve", "tui"})
 
 CHILD_FLAG = "--kanao-wmi-child"
 TIMEOUT_VARIABLE = "KANAO_WMI_TIMEOUT"
+MODE_VARIABLE = "KANAO_WMI"
+PYTHON_VARIABLE = "KANAO_PYTHON"
+DESERIALIZE = (3, 11)
+"""The first Python whose ``sqlite3`` can ``deserialize`` an image."""
 DEFAULT_TIMEOUT = 600.0
 GRACE_SECONDS = 60.0
 """How much longer than the child's own timeout the caller waits for its signal.
@@ -65,6 +76,14 @@ class Boundary(Protocol):
         """Start ``argv`` through WMI, hidden, in ``cwd``; raise ``LaunchFailed``."""
         ...
 
+    def capped(self) -> bool:
+        """Whether this process's job caps its CPU rate; unknown answers True."""
+        ...
+
+    def pythons(self) -> list[tuple[tuple[int, int], str]]:
+        """``((major, minor), python.exe)`` for each registered interpreter."""
+        ...
+
 
 @dataclass(frozen=True)
 class Entry:
@@ -77,11 +96,13 @@ def main(argv: Sequence[str], entry: Entry, boundary: Boundary | None = None) ->
         child(Path(argv[1]))
         return 0
     command = _command(argv)
-    if command in DIRECT_COMMANDS:
-        return _direct(entry.cli, argv)
+    boundary = boundary or WmiBoundary()
     try:
+        python = _python(os.environ, boundary)
+        if command in DIRECT_COMMANDS or not _wanted(os.environ, boundary):
+            return _direct(python, entry.cli, argv)
         timeout = _timeout(os.environ)
-        return _relaunch(argv, entry, boundary or WmiBoundary(), timeout)
+        return _relaunch(argv, entry, boundary, timeout, python)
     except KanaoError as error:
         _emit(error.envelope(writing=command == "send"))
         return 1
@@ -91,8 +112,42 @@ def _command(argv: Sequence[str]) -> str | None:
     return next((argument for argument in argv if not argument.startswith("-")), None)
 
 
-def _direct(cli: Path, argv: Sequence[str]) -> int:
-    process = subprocess.Popen([sys.executable, str(cli), *argv])
+def _wanted(environment: Mapping[str, str], boundary: Boundary) -> bool:
+    """Whether to relaunch through WMI: forced either way, or where a cap is."""
+    mode = environment.get(MODE_VARIABLE, "").strip().lower()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    if mode not in ("", "auto"):
+        raise KanaoError(
+            ErrorCode.INVALID_REQUEST,
+            f"{MODE_VARIABLE} must be always, never or auto, not {mode!r}",
+        )
+    return boundary.capped()
+
+
+def _python(environment: Mapping[str, str], boundary: Boundary) -> str:
+    """The interpreter the CLI runs on."""
+    named = environment.get(PYTHON_VARIABLE)
+    if named:
+        if not os.path.isfile(named):
+            raise KanaoError(
+                ErrorCode.INVALID_REQUEST, f"{PYTHON_VARIABLE} names no file: {named!r}"
+            )
+        return named
+    if sys.version_info >= DESERIALIZE:
+        return sys.executable
+    newer = [
+        (version, path)
+        for version, path in boundary.pythons()
+        if version >= DESERIALIZE and os.path.isfile(path)
+    ]
+    return max(newer)[1] if newer else sys.executable
+
+
+def _direct(python: str, cli: Path, argv: Sequence[str]) -> int:
+    process = subprocess.Popen([python, str(cli), *argv])
     while True:
         try:
             return process.wait()
@@ -118,7 +173,9 @@ def _timeout(environment: Mapping[str, str]) -> float:
     return value
 
 
-def _relaunch(argv: Sequence[str], entry: Entry, boundary: Boundary, timeout: float) -> int:
+def _relaunch(
+    argv: Sequence[str], entry: Entry, boundary: Boundary, timeout: float, python: str
+) -> int:
     writing = _command(argv) == "send"
     work = Path(tempfile.mkdtemp(prefix="kanao-wmi-"))
     try:
@@ -135,7 +192,7 @@ def _relaunch(argv: Sequence[str], entry: Entry, boundary: Boundary, timeout: fl
         with boundary.signal(name) as signal:
             try:
                 boundary.create(
-                    [sys.executable, str(entry.launcher), CHILD_FLAG, str(work)],
+                    [python, str(entry.launcher), CHILD_FLAG, str(work)],
                     os.getcwd(),
                 )
             except LaunchFailed as error:

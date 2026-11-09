@@ -62,8 +62,15 @@ in a hidden window and the current directory, and returns the same JSON and
 exit status. `follow`, `serve` and `tui` run directly, so they gain nothing.
 It waits up to `KANAO_WMI_TIMEOUT` seconds (default 600), then stops the
 command and returns `READ_FAILED` (`SEND_FAILED` for `send`). A failure to
-start through WMI is returned the same way and is not retried silently. Without
-a cap it only adds about half a second, so use it only where the cap is real.
+start through WMI is returned the same way and is not retried silently.
+
+It relaunches only when this process's job actually carries a CPU rate cap
+(a hard cap or a min/max rate; a weight is not one). Without a cap it runs the
+CLI directly, so calling it everywhere costs nothing measurable.
+`KANAO_WMI=always` or `KANAO_WMI=never` skips that check. When the calling
+Python is older than 3.11 it runs the CLI on the newest Python 3.11+ registered
+on the machine, where the decrypted databases reach SQLite in memory instead
+of through a plaintext temporary file; `KANAO_PYTHON` names one instead.
 
 <!-- skills:read -->
 

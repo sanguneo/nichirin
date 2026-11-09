@@ -66,10 +66,20 @@ class _RecordingSignal:
 
 
 class FakeBoundary:
-    def __init__(self, *, run=subprocess.run, failure: str | None = None, starts: bool = True):
+    def __init__(
+        self,
+        *,
+        run=subprocess.run,
+        failure: str | None = None,
+        starts: bool = True,
+        capped: bool = True,
+        pythons: list[tuple[tuple[int, int], str]] | None = None,
+    ):
         self.run = run
         self.failure = failure
         self.starts = starts
+        self.is_capped = capped
+        self.registered = pythons or []
         self.created: list[tuple[list[str], str]] = []
         self.work: Path | None = None
         self.signals: list[_RecordingSignal] = []
@@ -80,6 +90,12 @@ class FakeBoundary:
             recording = _RecordingSignal(event)
             self.signals.append(recording)
             yield recording
+
+    def capped(self) -> bool:
+        return self.is_capped
+
+    def pythons(self) -> list[tuple[tuple[int, int], str]]:
+        return self.registered
 
     def create(self, argv, cwd) -> None:
         self.created.append((list(argv), cwd))
@@ -102,7 +118,8 @@ class WmiTests(unittest.TestCase):
         environment = patch.dict(os.environ, {"FAKE_CLI_RECORD": str(self.record)})
         environment.start()
         self.addCleanup(environment.stop)
-        os.environ.pop(wmi.TIMEOUT_VARIABLE, None)
+        for variable in (wmi.TIMEOUT_VARIABLE, wmi.MODE_VARIABLE, wmi.PYTHON_VARIABLE):
+            os.environ.pop(variable, None)
 
     def wrapped(self, argv: list[str], boundary: FakeBoundary) -> tuple[int, bytes, bytes]:
         stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
@@ -197,6 +214,76 @@ class WmiTests(unittest.TestCase):
         self.assertEqual(error["code"], "READ_FAILED")
         self.assertEqual(boundary.signals[0].waited, [30 + wmi.GRACE_SECONDS])
         self.assert_cleaned(boundary)
+
+    def test_without_a_cap_the_cli_runs_directly_and_wmi_is_never_asked(self) -> None:
+        boundary = FakeBoundary(capped=False)
+        code, stdout, stderr = self.wrapped(["rooms"], boundary)
+        self.assertEqual(code, 0)
+        self.assertEqual(boundary.created, [])
+        self.assertEqual(json.loads(self.record.read_text(encoding="utf-8"))["argv"], ["rooms"])
+
+    def test_the_mode_variable_overrides_the_cap_check(self) -> None:
+        for mode, capped, relaunched in (
+            ("always", False, True),
+            ("ALWAYS", False, True),
+            ("never", True, False),
+            ("auto", True, True),
+            ("auto", False, False),
+        ):
+            with self.subTest(mode=mode, capped=capped), patch.dict(os.environ, {wmi.MODE_VARIABLE: mode}):
+                boundary = FakeBoundary(capped=capped)
+                with patch.dict(os.environ, {"FAKE_CLI_QUIET": "1"}):
+                    code = wmi.main(["rooms"], self.entry, boundary)
+                self.assertEqual(code, 0)
+                self.assertEqual(bool(boundary.created), relaunched)
+
+    def test_an_unknown_mode_is_refused_before_anything_starts(self) -> None:
+        with patch.dict(os.environ, {wmi.MODE_VARIABLE: "sometimes"}):
+            boundary = FakeBoundary()
+            error = self.envelope(["rooms"], boundary)
+        self.assertEqual(error["code"], "INVALID_REQUEST")
+        self.assertIn(wmi.MODE_VARIABLE, error["message"])
+        self.assertEqual(boundary.created, [])
+        self.assertFalse(self.record.exists())
+
+    def test_an_older_caller_runs_the_cli_on_the_newest_registered_311_or_later(self) -> None:
+        old, newer, newest = (self.root / name for name in ("old.exe", "newer.exe", "newest.exe"))
+        for path in (old, newer, newest):
+            path.write_bytes(b"")
+        missing = str(self.root / "missing.exe")
+        registered = [
+            ((3, 10), str(old)),
+            ((3, 13), str(newer)),
+            ((3, 14), str(newest)),
+            ((3, 15), missing),
+        ]
+        boundary = FakeBoundary(pythons=registered)
+        with patch.object(sys, "version_info", (3, 10, 11)):
+            self.assertEqual(wmi._python(os.environ, boundary), str(newest))
+            self.assertEqual(wmi._python(os.environ, FakeBoundary(pythons=registered[:1])), sys.executable)
+        with patch.object(sys, "version_info", (3, 12, 0)):
+            self.assertEqual(wmi._python(os.environ, boundary), sys.executable)
+        with patch.object(sys, "version_info", (3, 10, 11)):
+            self.assertEqual(wmi._python({wmi.PYTHON_VARIABLE: str(newer)}, boundary), str(newer))
+
+    def test_the_chosen_interpreter_starts_the_child_and_the_direct_run(self) -> None:
+        boundary = FakeBoundary(starts=False)
+        with patch.object(wmi, "_python", return_value="C:/chosen/python.exe"):
+            self.wrapped(["rooms"], boundary)
+        (argv, _cwd), = boundary.created
+        self.assertEqual(argv[0], "C:/chosen/python.exe")
+        with patch.object(wmi.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            with patch.object(wmi, "_python", return_value="C:/chosen/python.exe"):
+                wmi.main(["rooms"], self.entry, FakeBoundary(capped=False))
+        self.assertEqual(popen.call_args.args[0][0], "C:/chosen/python.exe")
+
+    def test_a_kanao_python_that_names_no_file_is_refused(self) -> None:
+        with patch.dict(os.environ, {wmi.PYTHON_VARIABLE: str(self.root / "absent.exe")}):
+            boundary = FakeBoundary()
+            error = self.envelope(["rooms"], boundary)
+        self.assertEqual(error["code"], "INVALID_REQUEST")
+        self.assertEqual(boundary.created, [])
 
     def test_an_unusable_timeout_is_refused_before_anything_starts(self) -> None:
         for value in ("abc", "0", "-5", "nan"):
