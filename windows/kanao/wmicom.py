@@ -250,7 +250,16 @@ def registered_pythons() -> list[tuple[tuple[int, int], str]]:
                     entry = _registered(winreg, core, tag)
                     if entry is not None:
                         found.append(entry)
-    return found
+    # HKCU\Software is shared between the 64- and 32-bit views, so a per-user
+    # install is read once through each and was listed twice.
+    seen: set[str] = set()
+    unique: list[tuple[tuple[int, int], str]] = []
+    for version, executable in found:
+        key = os.path.normcase(os.path.normpath(executable))
+        if key not in seen:
+            seen.add(key)
+            unique.append((version, executable))
+    return unique
 
 
 def _registered(winreg, core, tag: str) -> tuple[tuple[int, int], str] | None:  # noqa: ANN001
