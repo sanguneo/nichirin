@@ -26,6 +26,9 @@
   `KANAO_WMI=always|never`로 판정을 덮어쓸 수 있습니다(#111).
 - `kanao-wmi`를 Python 3.10으로 부르면 등록된 최신 Python 3.11+로 CLI를 실행합니다. 복호화한 DB가
   평문 임시 파일 대신 메모리로 SQLite에 들어갑니다. `KANAO_PYTHON`으로 인터프리터를 지정할 수 있습니다.
+- `kanao-wmi`의 WMI 호출이 중간에 실패하면 정리 단계가 채워지지 않은 COM 참조를 해제하려다
+  `ValueError: NULL pointer access`로 원래 오류를 덮었습니다. 이제 빈 참조는 건너뛰어 실패가
+  `READ_FAILED`/`SEND_FAILED` 봉투로 그대로 보고됩니다(#118 리뷰).
 - 입력 전 확정 거절(빈/NUL 본문, 클라이언트 종료)의 쓰기 오류에 빠졌던 `delivery: not_delivered`를
   보완했습니다. 읽기 기본값과 제출 후 `unknown/after_check`는 그대로입니다.
 
