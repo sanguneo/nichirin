@@ -46,6 +46,9 @@ class FakeDesktop:
         self._all_rows: list[str] | None = None
         self.contacts: list[str] | None = None
         self.chat_tab = True
+        self.tab_switches = 0
+        self.tab_switchable = True
+        self.search_left_open = False
 
     # -- opening --------------------------------------------------------
     def room_list(self) -> int | None:
@@ -58,7 +61,16 @@ class FakeDesktop:
         return self.main
 
     def is_shown(self, handle: int) -> bool:
-        return handle != LIST_CONTROL or self.chat_tab
+        return handle != LIST_CONTROL or (self.chat_tab and not self.search_left_open)
+
+    def search_shown(self) -> bool:
+        return self.chat_tab and self.search_left_open
+
+    def show_chat_tab(self) -> bool:
+        self.tab_switches += 1
+        if self.tab_switchable:
+            self.chat_tab = True
+        return self.chat_tab
 
     def show_main_window(self) -> bool:
         self.restored += 1
@@ -95,7 +107,7 @@ class FakeDesktop:
                 self.windows.append(ChatWindow(handle=200 + row, title=title))
 
     def search_rooms(self, text: str) -> int | None:
-        if not self.searchable:
+        if not self.searchable or not self.chat_tab:
             return None
         self.searches.append(text)
         self.log.append(f"search:{text}")
@@ -264,15 +276,32 @@ class MainWindowTests(unittest.TestCase):
         opener(desktop).open("받는 방")
         self.assertEqual(desktop.restored, 0, "the main window was disturbed for nothing")
 
-    def test_a_hidden_chat_tab_is_a_typed_failure_before_anything_is_clicked(self) -> None:
+    def test_a_hidden_chat_tab_is_brought_forward_before_searching(self) -> None:
         desktop = FakeDesktop(["받는 방"])
         desktop.chat_tab = False
+        desktop.searchable = True
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(window.title, "받는 방")
+        self.assertEqual(desktop.tab_switches, 1)
+
+    def test_a_chat_tab_that_will_not_come_forward_is_a_typed_failure(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.chat_tab = False
+        desktop.tab_switchable = False
         desktop.searchable = True
         with self.assertRaises(KanaoError) as caught:
             opener(desktop).open("받는 방")
         self.assertEqual(caught.exception.code, ErrorCode.WINDOW_NOT_FOUND)
         self.assertIn("chat tab", str(caught.exception))
         self.assertEqual((desktop.searches, desktop.clicks), ([], []))
+
+    def test_a_search_left_on_screen_still_opens_the_next_room(self) -> None:
+        desktop = FakeDesktop(["받는 방"])
+        desktop.search_left_open = True
+        desktop.searchable = True
+        window = opener(desktop).open("받는 방")
+        self.assertEqual(window.title, "받는 방")
+        self.assertEqual(desktop.tab_switches, 0, "a usable search was taken for a hidden tab")
 
     def test_the_self_chat_still_opens_from_the_friends_tab(self) -> None:
         desktop = FakeDesktop([])

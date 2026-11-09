@@ -42,6 +42,15 @@ ROOM_LIST_PREFIX = "ChatRoomListCtrl"
 CONTACT_LIST_PREFIX = "ContactListCtrl"
 SEARCH_LIST_PREFIX = "SearchListCtrl"
 LIST_VIEW_PREFIX = "ChatRoomListView"
+TAB_BAR_PREFIX = "OnlineMainView"
+CHAT_TAB_Y = 59
+"""The chat icon's centre on the main view's left bar, from its top at 96 DPI.
+
+The bar is drawn by ``OnlineMainView`` itself, not made of child windows, and
+a click posted there brought the room list up within 0.2 s (Windows 11 at 100%,
+2026-11-09). Its column is half the bar's width, which is where the room-list
+view begins, so only this row needs scaling.
+"""
 
 # The room list is owner-drawn: its rows are neither child windows nor UIA
 # elements, so a row can only be addressed by coordinate. These were measured
@@ -462,6 +471,23 @@ class RoomOpener:
             return None
         return self._try_row(control, 0, wanted, known)
 
+    def _chat_tab_ready(self, control: int) -> bool:
+        """Whether the room list or its search box can be used, switching tabs if not."""
+        is_shown = getattr(self._backend, "is_shown", None)
+        if is_shown is None:
+            return True
+        search_shown = getattr(self._backend, "search_shown", None)
+
+        def usable() -> bool:
+            return is_shown(control) or bool(search_shown is not None and search_shown())
+
+        if usable():
+            return True
+        show_chat_tab = getattr(self._backend, "show_chat_tab", None)
+        if show_chat_tab is not None:
+            show_chat_tab()
+        return usable()
+
     def _search(
         self,
         room: str,
@@ -572,16 +598,18 @@ class RoomOpener:
         # freshly started client opens on its friends tab. Its search box is
         # hidden with it: typing there never brings a result list, and a
         # clicked row opens nothing (#110). Measured on Windows 11 right after
-        # a start: room list and search box hidden, friends list shown. The
-        # self-chat above goes through the friends list and is unaffected.
-        is_shown = getattr(self._backend, "is_shown", None)
-        if found is None and is_shown is not None and not is_shown(control):
+        # a start: room list and search box hidden, friends list shown. After
+        # one search the list stays hidden behind the search box, which still
+        # answers, so that state is let through. The self-chat above goes
+        # through the friends list and is unaffected.
+        if found is None and not self._chat_tab_ready(control):
             if disturbed is not None:
                 self._backend.restore_main_window(disturbed)
             raise KanaoError(
                 ErrorCode.WINDOW_NOT_FOUND,
-                "KakaoTalk's chat tab is not in front, so its room list cannot be "
-                "searched or clicked; show the chat tab once and try again",
+                "KakaoTalk's chat tab is not in front and could not be brought "
+                "forward, so its room list cannot be searched or clicked; show the "
+                "chat tab once and try again",
             )
         if found is None:
             searched, found = self._search(room, wanted, known, search_rows)
@@ -1408,6 +1436,33 @@ class Win32Backend:
 
     def is_shown(self, handle: int) -> bool:
         return bool(self._user32.IsWindowVisible(handle))
+
+    def search_shown(self) -> bool:
+        box = self._search_box()
+        return bool(box and self._user32.IsWindowVisible(box))
+
+    def show_chat_tab(self) -> bool:
+        """Bring the chat tab forward with a click posted on its icon. No cursor moves."""
+        bar = self._main_control(TAB_BAR_PREFIX)
+        rooms = self._list_view()
+        if bar is None or rooms is None:
+            return False
+        x = max(1, (self._rect(rooms)[0] - self._rect(bar)[0]) // 2)
+        y = round(CHAT_TAB_Y * self._dpi(bar) / MEASURED_DPI)
+        position = ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+        with self._as_window(bar):
+            for message, button in (
+                (_WM_MOUSEMOVE, 0),
+                (_WM_LBUTTONDOWN, _MK_LBUTTON),
+                (_WM_LBUTTONUP, 0),
+            ):
+                self._user32.PostMessageW(bar, message, button, position)
+        for _attempt in range(POLL_ATTEMPTS):
+            control = self.room_list()
+            if control is not None and self._user32.IsWindowVisible(control):
+                return True
+            time.sleep(POLL_SECONDS)
+        return False
 
     def minimize_window(self, handle: int) -> None:
         # A window that took the keyboard is minimised the ordinary way, which
