@@ -1,6 +1,6 @@
 ---
 name: kamado-cli
-version: 0.29.3
+version: 0.30.0
 description: "Read, search, and follow the user's local KakaoTalk conversations, list friends, draft replies, and send explicitly authorized text through the macOS client. Use for kakao, kakaotalk, katok, katalk, 카톡, 카카오톡, 대화 요약, 친구 목록, 답장 써줘, 메시지 보내줘. Ships a self-contained Python CLI; no account paths or keys need configuring."
 compatibility: "macOS only (tested on 15.7), Python 3.9+, no third-party runtime dependencies. Full Disk Access for reading; Accessibility and a running, signed-in KakaoTalk client for sending. Reading works with the client closed."
 ---

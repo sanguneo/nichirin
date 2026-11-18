@@ -40,7 +40,7 @@ any time; branch on `code`, never on `message`.**
 ## Offline agent documentation (CLI only)
 
 `kamado skills get [send|read|serve]` returns
-`{"ok": true, "topic": "send", "version": "0.29.3", "content": "..."}`.
+`{"ok": true, "topic": "send", "version": "0.30.0", "content": "..."}`.
 With no topic it returns the full installed `SKILL.md` and `topic: "all"`.
 An explicit topic includes the matching sections plus common setup, limits,
 errors and data-handling guidance. `content` is Markdown with YAML frontmatter;

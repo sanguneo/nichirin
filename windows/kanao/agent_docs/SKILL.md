@@ -1,6 +1,6 @@
 ---
 name: kanao-cli
-version: 0.31.3
+version: 0.32.0
 description: "Read, search, and follow the user's local KakaoTalk conversations, list friends, draft replies, and send explicitly authorized text through the Windows client. Use for kakao, kakaotalk, katok, katalk, 카톡, 카카오톡, 대화 요약, 친구 목록, 답장 써줘, 메시지 보내줘. Ships a self-contained Python CLI; no account paths or keys need configuring."
 compatibility: "Windows 10/11, 64-bit Python 3.10+, KakaoTalk desktop client running and signed in."
 ---
