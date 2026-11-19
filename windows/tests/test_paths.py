@@ -9,6 +9,9 @@ from pathlib import Path
 from kanao import paths
 from kanao.errors import ErrorCode, KanaoError
 
+QT_USER_DATABASE = "talkUser.edb"
+"""Where the Qt client 26.10.0.492 wrote it on a live profile."""
+
 
 class UserDirectoryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -16,9 +19,10 @@ class UserDirectoryTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.local = Path(directory.name)
         self.profiles = self.local / "Kakao" / "KakaoTalk" / "users"
+        self.qt_profiles = self.local / "Kakao" / "Talk" / "users"
 
-    def add_profile(self, name: str, mtime: int, complete: bool = True) -> Path:
-        profile = self.profiles / name
+    def add_profile(self, name: str, mtime: int, complete: bool = True, root: Path | None = None) -> Path:
+        profile = (root or self.profiles) / name
         profile.mkdir(parents=True)
         if complete:
             (profile / "chat_data").mkdir()
@@ -63,6 +67,32 @@ class UserDirectoryTests(unittest.TestCase):
             paths.user_directory({"LOCALAPPDATA": str(self.local)})
         self.assertEqual(raised.exception.code, ErrorCode.NO_USER_DATA)
         self.assertIn("sign in", raised.exception.message)
+
+    def test_finds_the_profile_of_the_qt_client(self) -> None:
+        """26.10 (KakaoTalkUI.exe) keeps its profiles under Kakao\\Talk\\users."""
+        expected = self.add_profile("qt", 1_000, root=self.qt_profiles)
+        self.assertEqual(paths.user_directory({"LOCALAPPDATA": str(self.local)}), expected)
+
+    def test_the_most_recently_used_profile_wins_across_both_clients(self) -> None:
+        self.add_profile("classic", 1_000)
+        active = self.add_profile("qt", 9_000, root=self.qt_profiles)
+        self.assertEqual(paths.user_directory({"LOCALAPPDATA": str(self.local)}), active)
+
+
+class UserDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.profile = Path(directory.name)
+        (self.profile / "chat_data").mkdir()
+
+    def test_the_classic_client_keeps_it_at_the_profile_root(self) -> None:
+        (self.profile / "TalkUserDB.edb").touch()
+        self.assertEqual(paths.user_database(self.profile), "TalkUserDB.edb")
+
+    def test_the_qt_client_names_it_talk_user(self) -> None:
+        (self.profile / QT_USER_DATABASE).touch()
+        self.assertEqual(paths.user_database(self.profile), QT_USER_DATABASE)
 
 
 class NameTests(unittest.TestCase):

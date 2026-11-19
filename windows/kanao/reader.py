@@ -131,6 +131,11 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
 
 
+def _profile_table(users: sqlite3.Connection) -> str:
+    """``Profile`` in the classic client's user database, ``Profiles`` in the Qt client's."""
+    return "Profiles" if _columns(users, "Profiles") and not _columns(users, "Profile") else "Profile"
+
+
 def _profile_images(users: sqlite3.Connection) -> dict[int, str]:
     """Map user ids to their small profile picture, where the client has one.
 
@@ -142,8 +147,9 @@ def _profile_images(users: sqlite3.Connection) -> dict[int, str]:
     which is an answer, not an error.
     """
     found: dict[int, str] = {}
-    if "profileImageInfo" in _columns(users, "Profile"):
-        for user_id, info in users.execute("SELECT userId, profileImageInfo FROM Profile"):
+    profile = _profile_table(users)
+    if "profileImageInfo" in _columns(users, profile):
+        for user_id, info in users.execute(f"SELECT userId, profileImageInfo FROM {profile}"):
             parsed = model.parse_attachment(info)
             address = _image_address(parsed.get("thumbnailUrl"))
             if address is not None:
@@ -366,7 +372,7 @@ class Reader:
         return self._cache.connect(self.keyring.path_for(name), self._key_for(name))
 
     def _users(self) -> sqlite3.Connection:
-        name = paths.USER_DATABASE
+        name = paths.user_database(self.keyring.user_directory)
         return self._cache.connect(self.keyring.path_for(name), self._key_for(name))
 
     def names(self) -> dict[int, str]:
@@ -412,7 +418,7 @@ class Reader:
             found: dict[int, str] = {
                 int(user_id): str(nickname)
                 for user_id, nickname in users.execute(
-                    "SELECT userId, nickname FROM Profile WHERE nickname IS NOT NULL"
+                    f"SELECT userId, nickname FROM {_profile_table(users)} WHERE nickname IS NOT NULL"
                 )
             }
             found.update(

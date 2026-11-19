@@ -72,6 +72,12 @@ class NameTests(unittest.TestCase):
         with build_reader() as reader:
             self.assertEqual(reader.names()[OWN_ID], "My Own Name")
 
+    def test_the_qt_client_profiles_table_names_the_signed_in_account(self) -> None:
+        """26.10 (KakaoTalkUI.exe) calls the table Profiles."""
+        with build_reader() as reader:
+            reader._cache.databases[paths.USER_DATABASE].execute("ALTER TABLE Profile RENAME TO Profiles")  # type: ignore[attr-defined]
+            self.assertEqual(reader.names()[OWN_ID], "My Own Name")
+
     def test_a_contact_with_no_name_at_all_is_left_out_rather_than_invented(self) -> None:
         with build_reader() as reader:
             self.assertNotIn(STRANGER_ID, {key: value for key, value in reader.names().items() if key == STRANGER_ID and value == ""})
