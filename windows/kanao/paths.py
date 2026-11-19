@@ -14,12 +14,16 @@ from .errors import ErrorCode, KanaoError
 
 CHAT_DATA_DIRECTORY: Final = "chat_data"
 USER_DATABASE: Final = "TalkUserDB.edb"
+USER_DATABASES: Final = (USER_DATABASE, "talkUser.edb", f"{CHAT_DATA_DIRECTORY}/talkUser.edb")
+"""Where each client keeps the user database: the classic client first, then the Qt client."""
 CATALOG_DATABASE: Final = f"{CHAT_DATA_DIRECTORY}/chatListInfo.edb"
 OPEN_LINK_DATABASE: Final = f"{CHAT_DATA_DIRECTORY}/openLinkListInfo.edb"
 """Open chat links: ``openLinkList(linkId, linkImageUrl, …)``, the open room's own picture."""
 DATABASE_SUFFIX: Final = ".edb"
 
 _STATE_FILE: Final = "appstate.dat"
+_PROFILE_ROOTS: Final = (("Kakao", "KakaoTalk", "users"), ("Kakao", "Talk", "users"))
+"""The classic client's profiles, then the Qt client's (26.10, ``KakaoTalkUI.exe``)."""
 
 
 def user_directory(environment: os._Environ[str] | dict[str, str] | None = None) -> Path:
@@ -37,16 +41,20 @@ def user_directory(environment: os._Environ[str] | dict[str, str] | None = None)
             "LOCALAPPDATA is not set, so the KakaoTalk profile directory cannot be located",
         )
 
-    profiles_root = Path(local_app_data) / "Kakao" / "KakaoTalk" / "users"
-    if not profiles_root.is_dir():
+    roots = [Path(local_app_data).joinpath(*parts) for parts in _PROFILE_ROOTS]
+    present = [root for root in roots if root.is_dir()]
+    if not present:
         raise KanaoError(
             ErrorCode.NO_USER_DATA,
-            f"No KakaoTalk profile directory exists at {profiles_root}",
+            f"No KakaoTalk profile directory exists at {' or '.join(map(str, roots))}",
         )
 
+    # A machine that moved to the Qt client keeps the classic client's profiles
+    # beside the new ones, so both roots compete under the same rule.
     candidates = [
         profile
-        for profile in profiles_root.iterdir()
+        for root in present
+        for profile in root.iterdir()
         if profile.is_dir()
         and (profile / _STATE_FILE).is_file()
         and (profile / CHAT_DATA_DIRECTORY).is_dir()
@@ -54,10 +62,18 @@ def user_directory(environment: os._Environ[str] | dict[str, str] | None = None)
     if not candidates:
         raise KanaoError(
             ErrorCode.NO_USER_DATA,
-            f"No signed-in KakaoTalk profile was found under {profiles_root}; "
+            f"No signed-in KakaoTalk profile was found under {' or '.join(map(str, present))}; "
             "sign in to the KakaoTalk desktop client first",
         )
     return max(candidates, key=lambda profile: (profile / _STATE_FILE).stat().st_mtime_ns)
+
+
+def user_database(user_directory: Path) -> str:
+    """Return the profile-relative name of the user database this client writes."""
+    for name in USER_DATABASES:
+        if (user_directory / name).is_file():
+            return name
+    return USER_DATABASE
 
 
 def database_paths(user_directory: Path) -> Iterator[Path]:

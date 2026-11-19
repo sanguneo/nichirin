@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import struct
 import unittest
+from unittest.mock import patch
 
 from kanao.process import (
     CONTEXT_SIZE,
@@ -17,6 +18,7 @@ from kanao.process import (
     SALT_SIZE,
     CodecContext,
     decode_context,
+    find_pid,
     resolve_context,
     scan_blocks,
 )
@@ -169,6 +171,51 @@ class BlockWalkTests(unittest.TestCase):
 
     def test_handles_an_empty_stream_of_blocks(self) -> None:
         self.assertEqual(list(scan_blocks([], _memory())), [])
+
+
+class _Toolhelp:
+    """kernel32's process snapshot, listing the given executables in order."""
+
+    def __init__(self, executables: list[str]) -> None:
+        self.executables = executables
+        self.position = 0
+
+    def CreateToolhelp32Snapshot(self, _flags: int, _pid: int) -> int:
+        return 7
+
+    def Process32FirstW(self, _snapshot: int, entry) -> bool:
+        self.position = 0
+        return self._fill(entry)
+
+    def Process32NextW(self, _snapshot: int, entry) -> bool:
+        self.position += 1
+        return self._fill(entry)
+
+    def _fill(self, entry) -> bool:
+        if self.position >= len(self.executables):
+            return False
+        entry._obj.szExeFile = self.executables[self.position]
+        entry._obj.th32ProcessID = 100 + self.position
+        return True
+
+    def CloseHandle(self, _handle: int) -> bool:
+        return True
+
+
+class FindPidTests(unittest.TestCase):
+    def find(self, executables: list[str]):
+        with patch("kanao.process._library", return_value=_Toolhelp(executables)):
+            return find_pid()
+
+    def test_finds_the_classic_client(self) -> None:
+        self.assertEqual(self.find(["explorer.exe", "KakaoTalk.exe"]), 101)
+
+    def test_finds_the_qt_client_that_replaced_it(self) -> None:
+        """26.10 runs as KakaoTalkUI.exe; status answered running:false beside it."""
+        self.assertEqual(self.find(["explorer.exe", "KakaoTalkUI.exe"]), 101)
+
+    def test_answers_none_when_neither_client_runs(self) -> None:
+        self.assertIsNone(self.find(["explorer.exe", "KakaoTalkHelper.exe"]))
 
 
 if __name__ == "__main__":

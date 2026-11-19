@@ -59,7 +59,12 @@ _READABLE = frozenset({0x02, 0x04, 0x08, 0x20, 0x40, 0x80})
 _WRITABLE = frozenset({0x04, 0x08, 0x40, 0x80})
 _CHUNK_SIZE: Final = 1024 * 1024
 
-_EXECUTABLE_NAME: Final = "kakaotalk.exe"
+_EXECUTABLE_NAMES: Final = frozenset({"kakaotalk.exe", "kakaotalkui.exe"})
+"""The classic client, and the Qt client (26.10, ``KakaoTalkUI.exe``) that replaces it.
+
+Measured on the Qt client 26.10.0.492: the same 64-bit ``codec_ctx`` layout, so
+only the process name differs.
+"""
 
 ReadMemory = Callable[[int, int], Optional[bytes]]
 """Reads *size* bytes at an address, or returns None when unreadable."""
@@ -267,7 +272,7 @@ def find_pid() -> Optional[int]:
         if not library.Process32FirstW(snapshot, ctypes.byref(entry)):
             return None
         while True:
-            if entry.szExeFile.casefold() == _EXECUTABLE_NAME:
+            if entry.szExeFile.casefold() in _EXECUTABLE_NAMES:
                 return int(entry.th32ProcessID)
             if not library.Process32NextW(snapshot, ctypes.byref(entry)):
                 return None
