@@ -28,6 +28,7 @@ from tests.fixtures import (
     StubCache,
     build_profile,
     build_reader,
+    members_blob,
 )
 
 
@@ -214,6 +215,45 @@ class RoomTests(unittest.TestCase):
     def test_the_self_chat_is_named_as_such(self) -> None:
         with build_reader() as reader:
             self.assertEqual(room_of(reader, SELF_ROOM).title, "나와의 채팅")
+
+    def test_a_memo_chat_with_no_display_members_is_self(self) -> None:
+        for members in (None, members_blob([])):
+            with self.subTest(members=members), build_reader() as reader:
+                self.addCleanup(reader.connection().close)
+                reader.connection().execute(
+                    "UPDATE NTChatRoom SET displayMemberIds = ? WHERE chatId = ?",
+                    (members, SELF_ROOM),
+                )
+                room = room_of(reader, SELF_ROOM)
+                self.assertEqual((room.kind, room.title), ("self", "나와의 채팅"))
+                self.assertEqual(
+                    [found.id for found in reader.resolve("나와의 채팅")], [SELF_ROOM]
+                )
+
+    def test_empty_members_do_not_make_other_room_types_self(self) -> None:
+        for type_code in (0, 1, 2, 999, None):
+            with self.subTest(type_code=type_code), build_reader() as reader:
+                self.addCleanup(reader.connection().close)
+                reader.connection().execute(
+                    "UPDATE NTChatRoom SET type = ?, displayMemberIds = NULL "
+                    "WHERE chatId = ?",
+                    (type_code, GROUP_ROOM),
+                )
+                self.assertEqual(room_of(reader, GROUP_ROOM).kind, "group")
+
+    def test_memo_type_does_not_override_a_link_peer_or_other_members(self) -> None:
+        for room_id, members, expected in (
+            (DIRECT_ROOM, None, "direct"),
+            (OPEN_ROOM, None, "open-group"),
+            (GROUP_ROOM, members_blob([OWN_ID, PEER_ID]), "group"),
+        ):
+            with self.subTest(room_id=room_id), build_reader() as reader:
+                self.addCleanup(reader.connection().close)
+                reader.connection().execute(
+                    "UPDATE NTChatRoom SET type = 5, displayMemberIds = ? "
+                    "WHERE chatId = ?", (members, room_id),
+                )
+                self.assertEqual(room_of(reader, room_id).kind, expected)
 
     def test_room_kinds_are_stable_names_an_agent_can_branch_on(self) -> None:
         with build_reader() as reader:

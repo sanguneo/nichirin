@@ -13,13 +13,11 @@ Three things about the macOS client's schema shape this file:
 * **The signed-in account states itself.**  ``NTChatContext`` holds the user
   id, which the Windows schema never did — that build had to infer the account
   from whoever sat alone in the self-chat.
-* **A room's kind is read from its shape, not from its type code.**  The type
-  column is an integer here rather than a name, and an integer whose meaning
-  this program has not confirmed is not something to brand a conversation
-  with.  Whether a room carries an open-chat link, names a single counterpart,
-  or holds nobody but the account itself are facts with no such ambiguity, so
-  the kind is derived from those and the raw code is passed through untouched
-  for a caller that knows better.
+* **A room's kind is read from its shape, with one confirmed type code.**
+  An open-chat link or a single counterpart takes precedence. MemoChat is
+  type 5 on macOS and can have an empty display-member list, so that code
+  identifies the self-chat when there is no link, peer or other member.
+  Other codes remain uninterpreted and are passed through untouched.
 
 Column names are looked up rather than assumed for the same reason: this
 schema is the client's, it has changed before, and a query naming a column
@@ -719,13 +717,16 @@ class Reader:
         return set(_plist_user_ids(row[0]))
 
     def _kind_of(
-        self, link_id: int, peer_id: int, member_ids: list[int], own: Optional[int]
+        self, link_id: int, peer_id: int, member_ids: list[int], own: Optional[int],
+        type_code: Optional[int],
     ) -> str:
-        """Name a room by its shape rather than by an unconfirmed type code."""
+        """Name a room by its shape and the measured MemoChat type code."""
         if link_id:
             return model.OPEN_DIRECT_CHAT if peer_id else model.OPEN_GROUP_CHAT
         if peer_id:
             return model.DIRECT_CHAT
+        if type_code == 5 and not member_ids:
+            return model.SELF_CHAT
         if own is not None and member_ids and set(member_ids) <= {own}:
             return model.SELF_CHAT
         return model.GROUP_CHAT
@@ -775,7 +776,7 @@ class Reader:
             peer_id = int(peer or 0)
             link = int(link_id or 0)
             member_ids = _plist_user_ids(raw_members)
-            kind = self._kind_of(link, peer_id, member_ids, own)
+            kind = self._kind_of(link, peer_id, member_ids, own, type_code)
             picture = room_pictures.get(room_id)
             if picture is None and kind == model.OPEN_GROUP_CHAT:
                 picture = link_pictures.get(link)
